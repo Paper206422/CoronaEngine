@@ -1,9 +1,9 @@
-#include <corona/events/engine_events.h>           // 引擎事件（本文件预留扩展）
-#include <corona/events/mechanics_system_events.h>   // mechanics 事件声明
-#include <corona/kernel/core/i_logger.h>             // CFW_LOG_* 日志
-#include <corona/kernel/event/i_event_bus.h>         // 事件总线（依赖链）
-#include <corona/kernel/event/i_event_stream.h>      // 事件流（依赖链）
-#include <corona/systems/mechanics/mechanics_system.h> // MechanicsSystem 声明
+#include <corona/events/engine_events.h>
+#include <corona/events/mechanics_system_events.h>
+#include <corona/kernel/core/i_logger.h>
+#include <corona/kernel/event/i_event_bus.h>
+#include <corona/kernel/event/i_event_stream.h>    
+#include <corona/systems/mechanics/mechanics_system.h>
 #include <algorithm>    // min,max,clamp,sort,unique
 #include <array>        // std::array（八叉树子节点）
 #include <cmath>        // asin,atan2,fabs,abs
@@ -18,24 +18,7 @@
 
 #include "corona/shared_data_hub.h" // 场景/几何/transform 集中存储
 #include "ktm/ktm.h"                // 向量矩阵四元数
-// 不依赖 nanobind；脚本回调自行处理 GIL。
-//
-// CORONA_MECHANICS_USE_OBB_SAT：0 默认 AABB 窄相；1 为 OBB+SAT。KTM 矩阵按列：元素 (r,c)=M[c][r]。
-//
-// === 全文件逐符号导读（对照下方实现） =====================================
-// make_fvec3：result 为输出；三赋值后返回。
-// mat3_at_rc / mat4_at_rc：数学行列表达到 KTM 存储。
-// vec3_*：向量加减、数乘。
-// transform_*：M=TRS；local_h 齐次点；world_h=M*local_h。
-// world_aabb_*：8 顶点包络世界 AABB；min_y 取最低点给地板。
-// quat_from_model_euler / euler_xyz_from_rot_mat / sync_* / integrate_*：姿态表示与积分。
-// world_inertia_inv_apply：体对角惯量逆映射到世界。
-// MechanicsWorldAABB / build_mechanics_obb / sat_obb_obb：碰撞几何与 SAT。
-// Octree* / aabb_overlap：粗测八叉树。
-// g_handle_to_*：跨帧速度、角速度、四元数、休眠。
-// update_physics：阶段1 收集与属性；2 外力阻尼；3 预测+AABB+惯量；4 写 scene AABB；
-//   5 八叉树+窄相+冲量摩擦+位置校正；6 积分+地板；休眠；clean_cache。
-// ============================================================================
+
 
 #ifndef CORONA_MECHANICS_USE_OBB_SAT
 #define CORONA_MECHANICS_USE_OBB_SAT 0
