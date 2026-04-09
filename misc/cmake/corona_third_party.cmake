@@ -22,8 +22,7 @@ include(FetchContent)
 # ------------------------------------------------------------------------------
 FetchContent_Declare(CabbageHardware
     GIT_REPOSITORY https://github.com/CoronaEngine/CabbageHardware.git
-    GIT_TAG main
-    GIT_SHALLOW TRUE
+    GIT_TAG ff504f5bca3a466480b12709430323c578815b34
     EXCLUDE_FROM_ALL
 )
 
@@ -50,8 +49,7 @@ FetchContent_Declare(nanobind
 
 FetchContent_Declare(CoronaResource
     GIT_REPOSITORY https://github.com/CoronaEngine/CoronaResource.git
-    GIT_TAG main
-    GIT_SHALLOW TRUE
+    GIT_TAG fe1f7bdeb887b4937e284c0bd220def31674a8e8
     EXCLUDE_FROM_ALL
 )
 
@@ -64,8 +62,7 @@ FetchContent_Declare(Vision
 
 FetchContent_Declare(CoronaFramework
     GIT_REPOSITORY https://github.com/CoronaEngine/CoronaFramework.git
-    GIT_TAG main
-    GIT_SHALLOW TRUE
+    GIT_TAG 65b0617add60e2734fa10ae3394f0f9cf03b8c52
     EXCLUDE_FROM_ALL
 )
 
