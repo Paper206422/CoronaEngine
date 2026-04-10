@@ -209,11 +209,10 @@ struct EnvironmentDevice {
 };
 
 struct SceneDevice {
+    bool enabled{true};
     std::uintptr_t environment{};
     std::vector<std::uintptr_t> actor_handles;
     std::vector<std::uintptr_t> camera_handles;
-
-    // 场景世界空间 AABB（由 MechanicsSystem 每帧更新）
     ktm::fvec3 min_world;
     ktm::fvec3 max_world;
     ktm::fvec3 center_world;

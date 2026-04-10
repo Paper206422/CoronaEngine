@@ -354,6 +354,9 @@ void MechanicsSystem::update_physics() {
     scene_handles.reserve(4);
 
     for (const auto& scene : scene_storage) {
+        if (!scene.enabled)
+            continue;
+
         scene_handles.push_back(reinterpret_cast<std::uintptr_t>(&scene));
 
         // 读取场景环境参数

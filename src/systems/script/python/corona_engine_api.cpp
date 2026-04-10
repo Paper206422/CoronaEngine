@@ -299,6 +299,26 @@ std::array<float, 6> Corona::API::Scene::get_aabb() const {
     return {0, 0, 0, 0, 0, 0};
 }
 
+void Corona::API::Scene::set_enabled(bool enabled) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Scene::set_enabled] Invalid scene handle");
+        return;
+    }
+    if (auto accessor = SharedDataHub::instance().scene_storage().acquire_write(handle_)) {
+        accessor->enabled = enabled;
+    } else {
+        CFW_LOG_ERROR("[Scene::set_enabled] Failed to acquire write access to scene storage");
+    }
+}
+
+bool Corona::API::Scene::is_enabled() const {
+    if (handle_ == 0) return false;
+    if (auto accessor = SharedDataHub::instance().scene_storage().try_acquire_read(handle_)) {
+        return accessor->enabled;
+    }
+    return false;
+}
+
 // ########################
 //      Environment
 // ########################
