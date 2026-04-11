@@ -76,6 +76,7 @@ class OpticsSystem : public Kernel::SystemBase {
     {
         void* surface = nullptr;
         std::string file_path;
+        std::shared_ptr<std::promise<bool>> completion_promise;
     };
     std::vector<PendingScreenshot> pending_screenshots_;
     std::mutex screenshot_mutex_;

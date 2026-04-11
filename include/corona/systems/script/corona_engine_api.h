@@ -244,6 +244,7 @@ class Camera {
              const std::array<float, 3>& world_up, float fov);
     void set_surface(void* surface);
     void save_screenshot(const std::string& path) const;
+    bool save_screenshot_sync(const std::string& path) const;
 
     void set_output_mode(const std::string& mode);
     [[nodiscard]] std::string get_output_mode() const;

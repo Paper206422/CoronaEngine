@@ -239,7 +239,9 @@ void BindAll(nanobind::module_& m) {
              nb::arg("position"), nb::arg("forward"), nb::arg("world_up"), nb::arg("fov"),
              "Set all camera parameters at once")
         .def("save_screenshot", &Camera::save_screenshot, nb::arg("path"),
-             "Save a screenshot from this camera's perspective to file")
+             "Save a screenshot from this camera's perspective to file (async)")
+        .def("save_screenshot_sync", &Camera::save_screenshot_sync, nb::arg("path"),
+             "Save a screenshot and block until it completes. Returns True on success.")
         .def("set_output_mode", &Camera::set_output_mode, nb::arg("mode"),
              "Set camera output mode. mode: 'final_color', 'base_color', 'normal', 'position', 'object_id'")
         .def("get_output_mode", &Camera::get_output_mode,
