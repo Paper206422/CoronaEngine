@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <iterator>
 #include <CabbageHardware.h>
 #include <corona/events/display_system_events.h>
@@ -1639,9 +1640,44 @@ void Corona::API::Camera::save_screenshot(const std::string& path) const {
     }
 
     if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
-        event_bus->publish<Events::ScreenshotRequestEvent>({surface, path});
+        event_bus->publish<Events::ScreenshotRequestEvent>({surface, path, nullptr});
         CFW_LOG_INFO("[Camera::save_screenshot] Screenshot request queued: {}", path);
     }
+}
+
+bool Corona::API::Camera::save_screenshot_sync(const std::string& path) const {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Camera::save_screenshot_sync] Invalid camera handle");
+        return false;
+    }
+
+    void* surface = nullptr;
+    if (auto accessor = SharedDataHub::instance().camera_storage().acquire_read(handle_)) {
+        surface = accessor->surface;
+    }
+
+    if (surface == nullptr) {
+        CFW_LOG_WARNING("[Camera::save_screenshot_sync] Camera has no associated surface");
+        return false;
+    }
+
+    auto promise = std::make_shared<std::promise<bool>>();
+    auto future = promise->get_future();
+
+    if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
+        event_bus->publish<Events::ScreenshotRequestEvent>({surface, path, std::move(promise)});
+        CFW_LOG_INFO("[Camera::save_screenshot_sync] Screenshot request queued (sync): {}", path);
+    } else {
+        return false;
+    }
+
+    // Block until OpticsSystem processes this screenshot
+    auto status = future.wait_for(std::chrono::seconds(10));
+    if (status == std::future_status::timeout) {
+        CFW_LOG_WARNING("[Camera::save_screenshot_sync] Timeout waiting for screenshot: {}", path);
+        return false;
+    }
+    return future.get();
 }
 
 void Corona::API::Camera::set_output_mode(const std::string& mode) {

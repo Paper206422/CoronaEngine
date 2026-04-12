@@ -174,7 +174,7 @@ namespace Corona::Systems
                         return;
                     }
                     std::lock_guard<std::mutex> lock(screenshot_mutex_);
-                    pending_screenshots_.push_back({event.surface, event.file_path});
+                    pending_screenshots_.push_back({event.surface, event.file_path, event.completion_promise});
                 });
         }
 
@@ -563,6 +563,9 @@ namespace Corona::Systems
         const uint32_t h = hardware_->gbufferSize.y;
         if (w == 0 || h == 0) {
             CFW_LOG_WARNING("OpticsSystem: Cannot take screenshot - zero render dimensions");
+            for (auto& req : matched) {
+                if (req.completion_promise) req.completion_promise->set_value(false);
+            }
             return;
         }
 
@@ -571,6 +574,9 @@ namespace Corona::Systems
         HardwareBuffer staging_buffer(static_cast<uint32_t>(buffer_size), BufferUsage::StorageBuffer);
         if (!staging_buffer) {
             CFW_LOG_ERROR("OpticsSystem: Failed to create staging buffer for screenshot");
+            for (auto& req : matched) {
+                if (req.completion_promise) req.completion_promise->set_value(false);
+            }
             return;
         }
 
@@ -580,6 +586,9 @@ namespace Corona::Systems
         std::vector<uint16_t> half_data(pixel_count * 4);
         if (!staging_buffer.copyToData(half_data.data(), buffer_size)) {
             CFW_LOG_ERROR("OpticsSystem: Failed to read screenshot data from GPU");
+            for (auto& req : matched) {
+                if (req.completion_promise) req.completion_promise->set_value(false);
+            }
             return;
         }
 
@@ -602,8 +611,14 @@ namespace Corona::Systems
 
             if (manager.export_sync(rid, file_path)) {
                 CFW_LOG_INFO("OpticsSystem: Screenshot saved to {}", req.file_path);
+                if (req.completion_promise) {
+                    req.completion_promise->set_value(true);
+                }
             } else {
                 CFW_LOG_ERROR("OpticsSystem: Failed to save screenshot to {}", req.file_path);
+                if (req.completion_promise) {
+                    req.completion_promise->set_value(false);
+                }
             }
         }
     }
