@@ -2,6 +2,8 @@
 
 #include <corona/kernel/utils/storage.h>
 
+#include <future>
+#include <memory>
 #include <string>
 
 namespace Corona {
@@ -38,7 +40,7 @@ struct ScreenshotRequestEvent
 {
     void* surface = nullptr;
     std::string file_path;
-    std::string buffer_type;  // "final_color", "object_id", "base_color", "normal", "position"
+    std::shared_ptr<std::promise<bool>> completion_promise;
 };
 
 }  // namespace Corona::Events

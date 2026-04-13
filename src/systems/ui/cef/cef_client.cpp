@@ -274,11 +274,11 @@ bool OffscreenCefClient::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
         default: break;
     }
 
-    if (!source.empty()) {
-        VUE_LOG_INFO("[{}] {}:{} - {}", levelStr, source.ToString().c_str(), line, message.ToString().c_str());
-    } else {
-        VUE_LOG_INFO("[{}] {}", levelStr, message.ToString().c_str());
-    }
+    // if (!source.empty()) {
+    //     VUE_LOG_INFO("[{}] {}:{} - {}", levelStr, source.ToString().c_str(), line, message.ToString().c_str());
+    // } else {
+    //     VUE_LOG_INFO("[{}] {}", levelStr, message.ToString().c_str());
+    // }
     return true;
 }
 

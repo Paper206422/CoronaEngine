@@ -330,7 +330,8 @@ void BrowserRenderer::render_single_tab(int tab_id,
     ImGuiWindowFlags browser_window_flags = ImGuiWindowFlags_NoTitleBar |
                                             ImGuiWindowFlags_NoScrollbar |
                                             ImGuiWindowFlags_NoNavInputs |
-                                            ImGuiWindowFlags_NoNavFocus;
+                                            ImGuiWindowFlags_NoNavFocus |
+                                            ImGuiWindowFlags_NoMove;
 
     bool is_main_tab = (tab->docking_pos == "main");
     if (is_main_tab) {
@@ -401,6 +402,8 @@ void BrowserRenderer::render_single_tab(int tab_id,
                         ImGui::DockContextProcessUndockWindow(g, window);
                         window = ImGui::GetCurrentWindow();  // 分离后窗口可能重建
                     }
+
+                    window->Flags &= ~ImGuiWindowFlags_NoMove;  // 允许移动
 
                     // 启动 ImGui 内置窗口移动（支持Multi-Viewport跨窗口拖拽）
                     ImGui::StartMouseMovingWindow(window);

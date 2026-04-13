@@ -20,6 +20,11 @@ struct MeshDevice {
     HardwareBuffer indexBuffer;
     HardwareBuffer vertexBuffer;
 
+    // StorageBuffer mirrors for compute shader (VBuffer resolve) access.
+    // CabbageHardware BufferUsage is non-combinable, so we keep separate copies.
+    HardwareBuffer indexStorageBuffer;
+    HardwareBuffer vertexStorageBuffer;
+
     uint32_t materialIndex;
     HardwareImage textureBuffer;
     
@@ -86,10 +91,11 @@ struct MechanicsDevice {
     float restitution{0.8f};
     float damping{0.99f};
 
-    // Use std::array<float,3> for callback parameters so scripting bindings (nanobind)
-    // can convert Python tuples/lists directly without depending on engine internal types.
-    // New signature includes a "began" flag to indicate collision start (true) or end (false).
+    // 碰撞回调函数
     std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)> collision_callback;
+
+    // 移动回调函数
+    std::function<void()> on_move_callback;
 };
 
 struct AcousticsDevice {
@@ -100,11 +106,24 @@ struct AcousticsDevice {
 struct OpticsDevice {
     std::uintptr_t geometry_handle{};
 
+    bool visible{true};  // 控制模型是否参与渲染
+
+    // Disney Principled BRDF parameters
     float metallic{0.0f};
     float roughness{0.5f};
+    float subsurface{0.0f};
+    float specular{0.5f};
+    float specularTint{0.0f};
+    float anisotropic{0.0f};
+    float sheen{0.0f};
+    float sheenTint{0.5f};
+    float clearcoat{0.0f};
+    float clearcoatGloss{1.0f};
+
+    // Legacy parameters (kept for backward compatibility)
     ktm::fvec3 ambient{0.2f, 0.2f, 0.2f};
     ktm::fvec3 diffuse{0.8f, 0.8f, 0.8f};
-    ktm::fvec3 specular{1.0f, 1.0f, 1.0f};
+    ktm::fvec3 specular_color{1.0f, 1.0f, 1.0f};
     float shininess{32.0f};
 };
 
@@ -120,6 +139,15 @@ struct ActorDevice {
     std::vector<std::uintptr_t> profile_handles;
 };
 
+enum class CameraOutputMode : uint8_t {
+    FinalColor,
+    BaseColor,
+    Normal,
+    WorldPosition,
+    ObjectID,
+    VisibilityBuffer,
+};
+
 struct CameraDevice {
     void* surface{};
 
@@ -130,6 +158,7 @@ struct CameraDevice {
     float aspect{16.0f / 9.0f};
     float near_plane{0.1f};
     float far_plane{100.0f};
+    CameraOutputMode output_mode{CameraOutputMode::FinalColor};
 
     CameraDevice() {
         position.x = 0.0f;
@@ -166,6 +195,12 @@ struct EnvironmentDevice {
     ktm::fvec3 sun_position;
     std::uint32_t floor_grid_enabled{1};
 
+    // 统一光照参数（供 OpticsSystem lighting/sky/tonemap 共用）
+    ktm::fvec3 sun_color{1.0f, 0.949f, 0.853f};   // ~5500K 日光色温
+    float sun_intensity{10.0f};                      // 太阳直射辐照度
+    float sky_intensity{20.0f};                      // 大气散射功率
+    float exposure{1.0f};                            // 全局曝光
+
     // 物理场景参数
     ktm::fvec3 gravity{0.0f, -9.8f, 0.0f};
     float floor_y{0.0f};
@@ -174,11 +209,10 @@ struct EnvironmentDevice {
 };
 
 struct SceneDevice {
+    bool enabled{true};
     std::uintptr_t environment{};
     std::vector<std::uintptr_t> actor_handles;
     std::vector<std::uintptr_t> camera_handles;
-
-    // 场景世界空间 AABB（由 MechanicsSystem 每帧更新）
     ktm::fvec3 min_world;
     ktm::fvec3 max_world;
     ktm::fvec3 center_world;

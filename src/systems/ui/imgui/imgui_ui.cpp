@@ -22,8 +22,26 @@ namespace Corona::Systems::UI
             return false;
         }
 
+
         SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-        window = SDL_CreateWindow("Corona Engine (CabbageHardware)", 1280, 720, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
+
+        // 获取当前桌面分辨率，并为 SDL 窗口标题栏预留高度（估计值）
+        int initial_width = 1920;
+        int initial_height = 1080;
+        // SDL3: SDL_GetDesktopDisplayMode 接受一个 SDL_DisplayID
+        const int kTitlebarEstimate = 80; // 估计的标题栏高度（像素）
+        SDL_DisplayID primary_display = SDL_GetPrimaryDisplay();
+        const SDL_DisplayMode* desktop_mode = nullptr;
+        if (primary_display != 0) {
+            desktop_mode = SDL_GetDesktopDisplayMode(primary_display);
+        }
+
+        if (desktop_mode) {
+            initial_width = desktop_mode->w * 0.8;
+            initial_height = desktop_mode->h * 0.8;
+        }
+
+        window = SDL_CreateWindow("Corona Engine (CabbageHardware)", initial_width, initial_height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
         if (window == nullptr) 
         {
             CFW_LOG_ERROR("Failed to create window: {}", SDL_GetError());
@@ -32,8 +50,9 @@ namespace Corona::Systems::UI
         }
 
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-        SDL_ShowWindow(window);
+        //SDL_ShowWindow(window);
         SDL_StartTextInput(window);
+        //SDL_MaximizeWindow(window);
         SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "1");
         BrowserManager::instance().set_main_window(window);
 

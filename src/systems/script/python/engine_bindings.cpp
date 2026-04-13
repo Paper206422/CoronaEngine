@@ -94,11 +94,43 @@ void BindAll(nanobind::module_& m) {
                     }
                 };
 
-                 self.set_collision_callback(cb);
-             },
+                 self.set_collision_callback(cb); },
 
-             nb::arg("callback"),
-             "Set collision callback. Callback receives (other_handle, normal, point) where normal and point are (x,y,z) tuples.");
+             nb::arg("callback"), "Set collision callback. Callback receives (other_handle, normal, point) where normal and point are (x,y,z) tuples.")
+        .def("set_on_move_callback", [](Mechanics& self, nb::object callback) {
+                using CallbackType = std::function<void()>;
+                 
+                if (callback.is_none()) {
+                    // 清除回调
+                    self.set_on_move_callback(CallbackType{});
+                    return;
+                }
+                 
+                // 捕获 Python 可调用对象
+                auto func_ptr = std::shared_ptr<nb::object>(new nb::object(callback), [](nb::object* p) {
+                    try {
+                        nb::gil_scoped_acquire gil;
+                        delete p;
+                    } catch (...) {
+                        delete p;
+                    }
+                });
+                 
+                CallbackType cb = [func_ptr]() mutable {
+                    // 获取 Python GIL，因为回调可能从其他线程调用
+                    nb::gil_scoped_acquire gil;
+                    try {
+                        // 调用 Python 回调
+                        (*func_ptr).attr("__call__")();
+                    } catch (const std::exception& e) {
+                        CFW_LOG_ERROR("[Bindings::move_callback] std::exception when invoking Python callback: {}", e.what());
+                    } catch (...) {
+                        CFW_LOG_ERROR("[Bindings::move_callback] Unknown exception when invoking Python callback");
+                    }
+                };
+                 
+                self.set_on_move_callback(cb); },
+            nb::arg("callback"), "Set move callback for geometry.");
 
     // ============================================================================
     // Optics: 光学/渲染组件
@@ -106,16 +138,36 @@ void BindAll(nanobind::module_& m) {
     nb::class_<Optics>(m, "Optics")
         .def(nb::init<Geometry&>(), nb::arg("geometry"),
              "Create an Optics component attached to a Geometry")
+        .def("set_visible", &Optics::set_visible, nb::arg("visible"),
+             "Set whether this model is rendered")
+        .def("get_visible", &Optics::get_visible,
+             "Get whether this model is rendered")
         .def("set_metallic", &Optics::set_metallic, nb::arg("metallic"))
         .def("get_metallic", &Optics::get_metallic)
         .def("set_roughness", &Optics::set_roughness, nb::arg("roughness"))
         .def("get_roughness", &Optics::get_roughness)
+        .def("set_subsurface", &Optics::set_subsurface, nb::arg("subsurface"))
+        .def("get_subsurface", &Optics::get_subsurface)
+        .def("set_specular", &Optics::set_specular, nb::arg("specular"))
+        .def("get_specular", &Optics::get_specular)
+        .def("set_specular_tint", &Optics::set_specular_tint, nb::arg("specular_tint"))
+        .def("get_specular_tint", &Optics::get_specular_tint)
+        .def("set_anisotropic", &Optics::set_anisotropic, nb::arg("anisotropic"))
+        .def("get_anisotropic", &Optics::get_anisotropic)
+        .def("set_sheen", &Optics::set_sheen, nb::arg("sheen"))
+        .def("get_sheen", &Optics::get_sheen)
+        .def("set_sheen_tint", &Optics::set_sheen_tint, nb::arg("sheen_tint"))
+        .def("get_sheen_tint", &Optics::get_sheen_tint)
+        .def("set_clearcoat", &Optics::set_clearcoat, nb::arg("clearcoat"))
+        .def("get_clearcoat", &Optics::get_clearcoat)
+        .def("set_clearcoat_gloss", &Optics::set_clearcoat_gloss, nb::arg("clearcoat_gloss"))
+        .def("get_clearcoat_gloss", &Optics::get_clearcoat_gloss)
         .def("set_ambient", &Optics::set_ambient, nb::arg("ambient"))
         .def("get_ambient", &Optics::get_ambient)
         .def("set_diffuse", &Optics::set_diffuse, nb::arg("diffuse"))
         .def("get_diffuse", &Optics::get_diffuse)
-        .def("set_specular", &Optics::set_specular, nb::arg("specular"))
-        .def("get_specular", &Optics::get_specular)
+        .def("set_specular_color", &Optics::set_specular_color, nb::arg("specular_color"))
+        .def("get_specular_color", &Optics::get_specular_color)
         .def("set_shininess", &Optics::set_shininess, nb::arg("shininess"))
         .def("get_shininess", &Optics::get_shininess);
 
@@ -187,9 +239,13 @@ void BindAll(nanobind::module_& m) {
              nb::arg("position"), nb::arg("forward"), nb::arg("world_up"), nb::arg("fov"),
              "Set all camera parameters at once")
         .def("save_screenshot", &Camera::save_screenshot, nb::arg("path"),
-             "Save a screenshot from this camera's perspective to file")
-        .def("save_gbuffer", &Camera::save_gbuffer, nb::arg("path"), nb::arg("buffer_type"),
-             "Save a GBuffer pass to file. buffer_type: 'final_color', 'object_id', 'base_color', 'normal', 'position'")
+             "Save a screenshot from this camera's perspective to file (async)")
+        .def("save_screenshot_sync", &Camera::save_screenshot_sync, nb::arg("path"),
+             "Save a screenshot and block until it completes. Returns True on success.")
+        .def("set_output_mode", &Camera::set_output_mode, nb::arg("mode"),
+             "Set camera output mode. mode: 'final_color', 'base_color', 'normal', 'position', 'object_id'")
+        .def("get_output_mode", &Camera::get_output_mode,
+             "Get current camera output mode as string")
         .def("set_surface", [](Camera& self, std::uintptr_t surface) { self.set_surface(reinterpret_cast<void*>(surface)); }, nb::arg("surface"), "Set render surface (pass window ID as integer)")
         .def("get_position", &Camera::get_position, "Get camera position [x, y, z]")
         .def("get_forward", &Camera::get_forward, "Get camera forward direction [x, y, z]")
@@ -283,7 +339,12 @@ void BindAll(nanobind::module_& m) {
         .def("has_camera", &Scene::has_camera, nb::arg("camera"),
              "Check if camera is in the scene")
         .def("get_aabb", &Scene::get_aabb,
-             "Get scene world AABB as [min_x, min_y, min_z, max_x, max_y, max_z]");
+             "Get scene world AABB as [min_x, min_y, min_z, max_x, max_y, max_z]")
+        // Scene enable/disable
+        .def("set_enabled", &Scene::set_enabled, nb::arg("enabled"),
+             "Enable or disable the scene (disabled scenes skip rendering and physics)")
+        .def("is_enabled", &Scene::is_enabled,
+             "Return True if the scene is currently enabled");
 
     // ============================================================================
     // Scene I/O utilities

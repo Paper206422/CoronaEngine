@@ -2,6 +2,9 @@
 #include <corona/systems/script/python_api.h>
 #include <corona/kernel/core/i_logger.h>
 #include <nanobind/stl/string.h>
+#include <corona/kernel/event/i_event_bus.h>
+#include <corona/events/imgui_system_events.h>
+#include <corona/kernel/core/kernel_context.h>
 #include <windows.h>
 
 #include <iostream>
@@ -150,6 +153,9 @@ bool PythonAPI::ensureInitialized() {
             pJsCallFunc = std::move(call_attr);
             messageFunc = std::move(log_attr);
             pStartFunc();
+            if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
+                event_bus->publish<Events::ScriptFinishStartEvent>({});
+            }
             CFW_LOG_INFO("PythonAPI: Python interpreter initialized successfully");
         } catch (const nanobind::python_error& e) {
             log_python_error(e);

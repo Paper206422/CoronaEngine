@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <iterator>
 #include <CabbageHardware.h>
 #include <corona/events/display_system_events.h>
@@ -299,6 +300,26 @@ std::array<float, 6> Corona::API::Scene::get_aabb() const {
     return {0, 0, 0, 0, 0, 0};
 }
 
+void Corona::API::Scene::set_enabled(bool enabled) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Scene::set_enabled] Invalid scene handle");
+        return;
+    }
+    if (auto accessor = SharedDataHub::instance().scene_storage().acquire_write(handle_)) {
+        accessor->enabled = enabled;
+    } else {
+        CFW_LOG_ERROR("[Scene::set_enabled] Failed to acquire write access to scene storage");
+    }
+}
+
+bool Corona::API::Scene::is_enabled() const {
+    if (handle_ == 0) return false;
+    if (auto accessor = SharedDataHub::instance().scene_storage().try_acquire_read(handle_)) {
+        return accessor->enabled;
+    }
+    return false;
+}
+
 // ########################
 //      Environment
 // ########################
@@ -540,6 +561,10 @@ Corona::API::Geometry::Geometry(const std::string& model_path) {
 
         dev.vertexBuffer = HardwareBuffer(scene->get_mesh_vertices(mesh_idx), BufferUsage::VertexBuffer);
         dev.indexBuffer = HardwareBuffer(scene->get_mesh_indices(mesh_idx), BufferUsage::IndexBuffer);
+
+        // StorageBuffer mirrors for VBuffer material resolve compute shader access
+        dev.vertexStorageBuffer = HardwareBuffer(scene->get_mesh_vertices(mesh_idx), BufferUsage::StorageBuffer);
+        dev.indexStorageBuffer = HardwareBuffer(scene->get_mesh_indices(mesh_idx), BufferUsage::StorageBuffer);
 
         dev.materialIndex = (mesh.material_index != Resource::InvalidIndex)
                                 ? mesh.material_index
@@ -888,6 +913,14 @@ Corona::API::Geometry* Corona::API::Optics::get_geometry() const {
     return geometry_;
 }
 
+void Corona::API::Optics::set_visible(bool visible) {
+    if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->visible = visible;
+}
+bool Corona::API::Optics::get_visible() const {
+    if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return r->visible;
+    return true;
+}
+
 void Corona::API::Optics::set_metallic(float metallic) {
     if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->metallic = metallic;
 }
@@ -901,6 +934,62 @@ void Corona::API::Optics::set_roughness(float roughness) {
 float Corona::API::Optics::get_roughness() const {
     if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return r->roughness;
     return 0.5f;
+}
+void Corona::API::Optics::set_subsurface(float subsurface) {
+    if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->subsurface = subsurface;
+}
+float Corona::API::Optics::get_subsurface() const {
+    if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return r->subsurface;
+    return 0.0f;
+}
+void Corona::API::Optics::set_specular(float specular) {
+    if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->specular = specular;
+}
+float Corona::API::Optics::get_specular() const {
+    if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return r->specular;
+    return 0.5f;
+}
+void Corona::API::Optics::set_specular_tint(float specularTint) {
+    if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->specularTint = specularTint;
+}
+float Corona::API::Optics::get_specular_tint() const {
+    if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return r->specularTint;
+    return 0.0f;
+}
+void Corona::API::Optics::set_anisotropic(float anisotropic) {
+    if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->anisotropic = anisotropic;
+}
+float Corona::API::Optics::get_anisotropic() const {
+    if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return r->anisotropic;
+    return 0.0f;
+}
+void Corona::API::Optics::set_sheen(float sheen) {
+    if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->sheen = sheen;
+}
+float Corona::API::Optics::get_sheen() const {
+    if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return r->sheen;
+    return 0.0f;
+}
+void Corona::API::Optics::set_sheen_tint(float sheenTint) {
+    if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->sheenTint = sheenTint;
+}
+float Corona::API::Optics::get_sheen_tint() const {
+    if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return r->sheenTint;
+    return 0.5f;
+}
+void Corona::API::Optics::set_clearcoat(float clearcoat) {
+    if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->clearcoat = clearcoat;
+}
+float Corona::API::Optics::get_clearcoat() const {
+    if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return r->clearcoat;
+    return 0.0f;
+}
+void Corona::API::Optics::set_clearcoat_gloss(float clearcoatGloss) {
+    if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->clearcoatGloss = clearcoatGloss;
+}
+float Corona::API::Optics::get_clearcoat_gloss() const {
+    if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return r->clearcoatGloss;
+    return 1.0f;
 }
 void Corona::API::Optics::set_ambient(const std::array<float, 3>& ambient) {
     if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->ambient = {ambient[0], ambient[1], ambient[2]};
@@ -916,11 +1005,11 @@ std::array<float, 3> Corona::API::Optics::get_diffuse() const {
     if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return {r->diffuse.x, r->diffuse.y, r->diffuse.z};
     return {0.8f, 0.8f, 0.8f};
 }
-void Corona::API::Optics::set_specular(const std::array<float, 3>& specular) {
-    if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->specular = {specular[0], specular[1], specular[2]};
+void Corona::API::Optics::set_specular_color(const std::array<float, 3>& specular) {
+    if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->specular_color = {specular[0], specular[1], specular[2]};
 }
-std::array<float, 3> Corona::API::Optics::get_specular() const {
-    if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return {r->specular.x, r->specular.y, r->specular.z};
+std::array<float, 3> Corona::API::Optics::get_specular_color() const {
+    if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return {r->specular_color.x, r->specular_color.y, r->specular_color.z};
     return {1.0f, 1.0f, 1.0f};
 }
 void Corona::API::Optics::set_shininess(float shininess) {
@@ -1067,6 +1156,21 @@ void Corona::API::Mechanics::set_collision_callback(
         };
     } else {
         CFW_LOG_ERROR("[Mechanics::set_collision_callback] Failed to acquire write access to mechanics storage");
+    }
+}
+
+void Corona::API::Mechanics::set_on_move_callback(
+    std::function<void()> callback) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Mechanics::set_on_move_callback] Invalid mechanics handle");
+        return;
+    }
+
+    if (auto accessor = SharedDataHub::instance().mechanics_storage().acquire_write(handle_)) {
+        accessor->on_move_callback = std::move(callback);
+        CFW_LOG_DEBUG("[Mechanics::set_on_move_callback] Callback set for handle {}", handle_);
+    } else {
+        CFW_LOG_ERROR("[Mechanics::set_on_move_callback] Failed to acquire write access");
     }
 }
 
@@ -1536,15 +1640,15 @@ void Corona::API::Camera::save_screenshot(const std::string& path) const {
     }
 
     if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
-        event_bus->publish<Events::ScreenshotRequestEvent>({surface, path});
+        event_bus->publish<Events::ScreenshotRequestEvent>({surface, path, nullptr});
         CFW_LOG_INFO("[Camera::save_screenshot] Screenshot request queued: {}", path);
     }
 }
 
-void Corona::API::Camera::save_gbuffer(const std::string& path, const std::string& buffer_type) const {
+bool Corona::API::Camera::save_screenshot_sync(const std::string& path) const {
     if (handle_ == 0) {
-        CFW_LOG_WARNING("[Camera::save_gbuffer] Invalid camera handle");
-        return;
+        CFW_LOG_WARNING("[Camera::save_screenshot_sync] Invalid camera handle");
+        return false;
     }
 
     void* surface = nullptr;
@@ -1553,14 +1657,70 @@ void Corona::API::Camera::save_gbuffer(const std::string& path, const std::strin
     }
 
     if (surface == nullptr) {
-        CFW_LOG_WARNING("[Camera::save_gbuffer] Camera has no associated surface");
+        CFW_LOG_WARNING("[Camera::save_screenshot_sync] Camera has no associated surface");
+        return false;
+    }
+
+    auto promise = std::make_shared<std::promise<bool>>();
+    auto future = promise->get_future();
+
+    if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
+        event_bus->publish<Events::ScreenshotRequestEvent>({surface, path, std::move(promise)});
+        CFW_LOG_INFO("[Camera::save_screenshot_sync] Screenshot request queued (sync): {}", path);
+    } else {
+        return false;
+    }
+
+    // Block until OpticsSystem processes this screenshot
+    auto status = future.wait_for(std::chrono::seconds(10));
+    if (status == std::future_status::timeout) {
+        CFW_LOG_WARNING("[Camera::save_screenshot_sync] Timeout waiting for screenshot: {}", path);
+        return false;
+    }
+    return future.get();
+}
+
+void Corona::API::Camera::set_output_mode(const std::string& mode) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Camera::set_output_mode] Invalid camera handle");
         return;
     }
 
-    if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
-        event_bus->publish<Events::ScreenshotRequestEvent>({surface, path, buffer_type});
-        CFW_LOG_INFO("[Camera::save_gbuffer] GBuffer ({}) request queued: {}", buffer_type, path);
+    CameraOutputMode output_mode = CameraOutputMode::FinalColor;
+    if (mode == "base_color") {
+        output_mode = CameraOutputMode::BaseColor;
+    } else if (mode == "normal") {
+        output_mode = CameraOutputMode::Normal;
+    } else if (mode == "position") {
+        output_mode = CameraOutputMode::WorldPosition;
+    } else if (mode == "object_id") {
+        output_mode = CameraOutputMode::ObjectID;
+    } else if (mode != "final_color") {
+        CFW_LOG_WARNING("[Camera::set_output_mode] Unknown mode '{}', defaulting to final_color", mode);
     }
+
+    if (auto accessor = SharedDataHub::instance().camera_storage().acquire_write(handle_)) {
+        accessor->output_mode = output_mode;
+    }
+    CFW_LOG_INFO("[Camera::set_output_mode] Mode set to '{}'", mode);
+}
+
+std::string Corona::API::Camera::get_output_mode() const {
+    if (handle_ == 0) {
+        return "final_color";
+    }
+
+    if (auto accessor = SharedDataHub::instance().camera_storage().acquire_read(handle_)) {
+        switch (accessor->output_mode) {
+            case CameraOutputMode::BaseColor:     return "base_color";
+            case CameraOutputMode::Normal:        return "normal";
+            case CameraOutputMode::WorldPosition: return "position";
+            case CameraOutputMode::ObjectID:      return "object_id";
+            case CameraOutputMode::FinalColor:    [[fallthrough]];
+            default:                              return "final_color";
+        }
+    }
+    return "final_color";
 }
 
 // ########################

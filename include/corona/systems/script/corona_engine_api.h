@@ -76,6 +76,9 @@ class Mechanics {
 
     // 设置碰撞回调（参数为对方 actor 句柄、began(true=enter,false=exit)、法线、碰撞点）
     void set_collision_callback(std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)> callback);
+
+    // 设置移动回调
+    void set_on_move_callback(std::function<void()> callback);
    private:
     friend class Actor;
 
@@ -98,12 +101,30 @@ class Optics {
     [[nodiscard]] float get_metallic() const;
     void set_roughness(float roughness);
     [[nodiscard]] float get_roughness() const;
+    void set_subsurface(float subsurface);
+    [[nodiscard]] float get_subsurface() const;
+    void set_specular(float specular);
+    [[nodiscard]] float get_specular() const;
+    void set_specular_tint(float specularTint);
+    [[nodiscard]] float get_specular_tint() const;
+    void set_anisotropic(float anisotropic);
+    [[nodiscard]] float get_anisotropic() const;
+    void set_sheen(float sheen);
+    [[nodiscard]] float get_sheen() const;
+    void set_sheen_tint(float sheenTint);
+    [[nodiscard]] float get_sheen_tint() const;
+    void set_clearcoat(float clearcoat);
+    [[nodiscard]] float get_clearcoat() const;
+    void set_clearcoat_gloss(float clearcoatGloss);
+    [[nodiscard]] float get_clearcoat_gloss() const;
+    void set_visible(bool visible);
+    [[nodiscard]] bool get_visible() const;
     void set_ambient(const std::array<float, 3>& ambient);
     [[nodiscard]] std::array<float, 3> get_ambient() const;
     void set_diffuse(const std::array<float, 3>& diffuse);
     [[nodiscard]] std::array<float, 3> get_diffuse() const;
-    void set_specular(const std::array<float, 3>& specular);
-    [[nodiscard]] std::array<float, 3> get_specular() const;
+    void set_specular_color(const std::array<float, 3>& specular);
+    [[nodiscard]] std::array<float, 3> get_specular_color() const;
     void set_shininess(float shininess);
     [[nodiscard]] float get_shininess() const;
 
@@ -223,7 +244,10 @@ class Camera {
              const std::array<float, 3>& world_up, float fov);
     void set_surface(void* surface);
     void save_screenshot(const std::string& path) const;
-    void save_gbuffer(const std::string& path, const std::string& buffer_type) const;
+    bool save_screenshot_sync(const std::string& path) const;
+
+    void set_output_mode(const std::string& mode);
+    [[nodiscard]] std::string get_output_mode() const;
 
     [[nodiscard]] std::array<float, 3> get_position() const;
     [[nodiscard]] std::array<float, 3> get_forward() const;
@@ -311,6 +335,11 @@ class Scene {
 
     /// 获取场景世界 AABB，返回 {min_x, min_y, min_z, max_x, max_y, max_z}
     [[nodiscard]] std::array<float, 6> get_aabb() const;
+
+    // ========== 场景启用/禁用 ==========
+    /// 启用或禁用场景（禁用后跳过渲染与物理模拟）
+    void set_enabled(bool enabled);
+    [[nodiscard]] bool is_enabled() const;
 
    private:
     std::uintptr_t handle_{};

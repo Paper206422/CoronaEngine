@@ -2,6 +2,9 @@
 
 #include <SDL3/SDL.h>
 #include <corona/kernel/system/i_system.h>
+#include <corona/events/imgui_system_events.h>
+#include <corona/kernel/event/i_event_bus.h>
+#include <corona/kernel/event/i_event_stream.h>
 #include <corona/systems/ui/vulkan_backend.h>
 #include <imgui.h>
 
@@ -76,6 +79,9 @@ namespace Corona::Systems
         std::unique_ptr<VulkanBackend> vulkan_backend_;
 
         int active_tab_id_ = -1;
+
+        Kernel::EventId sdl_start_id_ = 0;
+
     };
 
 }  // namespace Corona::Systems

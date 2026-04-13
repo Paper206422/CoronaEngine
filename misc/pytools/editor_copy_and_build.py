@@ -24,6 +24,49 @@ def echo(msg: str) -> None:
     print(msg)
 
 
+_STALE_EXTENSIONS = {".py", ".vue", ".js", ".ts", ".jsx", ".tsx", ".css", ".scss"}
+
+
+def _cleanup_stale_files(src_root: Path, dst_root: Path, ignore_fn) -> None:
+    """删除目标目录中存在但源目录中已不存在的源码文件（一对一映射）。
+    手动递归遍历以跳过 ignore 目录（如 node_modules），避免进入超长路径。"""
+    if not dst_root.exists() or not src_root.exists():
+        return
+
+    dirs_to_check: list[Path] = []
+
+    def _walk(directory: Path) -> None:
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            if ignore_fn("", [entry.name]):
+                continue
+            if entry.is_dir():
+                _walk(entry)
+                dirs_to_check.append(entry)
+            elif entry.is_file() and entry.suffix in _STALE_EXTENSIONS:
+                rel = entry.relative_to(dst_root)
+                if not (src_root / rel).exists():
+                    echo(f"[editor-copy] Remove stale: {entry}")
+                    try:
+                        entry.unlink()
+                    except Exception as e:
+                        echo(f"[editor-copy] ERROR removing {entry}: {e}")
+
+    _walk(dst_root)
+
+    # 清理删除后残留的空目录（自底向上，dirs_to_check 已按深度优先顺序）
+    for dirpath in reversed(dirs_to_check):
+        try:
+            if dirpath.is_dir() and not any(dirpath.iterdir()):
+                echo(f"[editor-copy] Remove empty dir: {dirpath}")
+                dirpath.rmdir()
+        except OSError:
+            pass
+
+
 def copy_tree(src: Path, dst: Path, merge_content: bool = False) -> None:
     if not src.exists():
         echo(f"[editor-copy] Skip (not exists): {src}")
@@ -65,8 +108,6 @@ def copy_tree(src: Path, dst: Path, merge_content: bool = False) -> None:
         # Pattern matching
         if name.endswith(('.pyc', '.pyo', '.log', '.bak', '.backup', '.md')) or name.endswith('~'):
             return True
-        if '_test.py' in name or name.startswith('test_'):
-            return True
 
         return False
 
@@ -87,6 +128,8 @@ def copy_tree(src: Path, dst: Path, merge_content: bool = False) -> None:
             try:
                 if item.is_dir():
                     shutil.copytree(item, target, dirs_exist_ok=True, ignore=_ignore)
+                    # 删除目标中源已不存在的源码文件
+                    _cleanup_stale_files(item, target, _ignore)
                 else:
                     shutil.copy2(item, target)
             except Exception as e:
@@ -97,6 +140,8 @@ def copy_tree(src: Path, dst: Path, merge_content: bool = False) -> None:
         echo(f"[editor-copy] Copying: {src} -> {target}")
         try:
             shutil.copytree(src, target, dirs_exist_ok=True, ignore=_ignore)
+            # 删除目标中源已不存在的源码文件
+            _cleanup_stale_files(src, target, _ignore)
         except Exception as e:
             print(f"[editor-copy] ERROR copying {src} -> {target}: {e}")
 

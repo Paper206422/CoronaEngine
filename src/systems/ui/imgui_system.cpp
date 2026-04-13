@@ -1,6 +1,6 @@
 ﻿#include <corona/kernel/core/i_logger.h>
 #include <corona/systems/ui/imgui_system.h>
-
+#include <corona/systems/script/script_system.h>
 #include <chrono>
 #include <thread>
 
@@ -36,6 +36,20 @@ bool ImguiSystem::initialize(Kernel::ISystemContext* ctx)
 
     CFW_LOG_NOTICE("ImguiSystem: Initialized successfully (main thread mode)");
     state_ = Kernel::SystemState::running;
+
+    // 【订阅系统内部事件】使用 EventBus
+    auto* event_bus = ctx->event_bus();
+    if (event_bus) {
+        sdl_start_id_ = event_bus->subscribe<Events::ScriptFinishStartEvent>(
+            [this](const Events::ScriptFinishStartEvent& event) {
+                //SDL_MaximizeWindow(window_);
+                SDL_ShowWindow(window_);
+            });
+        CFW_LOG_DEBUG("ImguiSystem: EventBus subscriptions ready");
+    } else {
+        CFW_LOG_WARNING("ImguiSystem: No event bus available");
+    }
+
     return true;
 }
 

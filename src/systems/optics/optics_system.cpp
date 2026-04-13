@@ -12,7 +12,6 @@
 #include <filesystem>
 #include <cmath>
 #include <cstdint>
-#include <unordered_map>
 #include <vector>
 
 #include "hardware.h"
@@ -90,31 +89,30 @@ namespace Corona::Systems
             hardware_->gbufferSize.x = 1920;
             hardware_->gbufferSize.y = 1080;
 
-            hardware_->gbufferPostionImage = HardwareImage(hardware_->gbufferSize.x, hardware_->gbufferSize.y,
-                                                           ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
-            hardware_->gbufferBaseColorImage = HardwareImage(hardware_->gbufferSize.x, hardware_->gbufferSize.y,
-                                                             ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
-            hardware_->gbufferNormalImage = HardwareImage(hardware_->gbufferSize.x, hardware_->gbufferSize.y,
-                                                          ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
-            hardware_->gbufferMotionVectorImage = HardwareImage(hardware_->gbufferSize.x, hardware_->gbufferSize.y,
-                                                                ImageFormat::RG32_FLOAT, ImageUsage::StorageImage);
-            hardware_->gbufferDepthImage = HardwareImage(hardware_->gbufferSize.x, hardware_->gbufferSize.y,
-                                                         ImageFormat::D32_FLOAT, ImageUsage::DepthImage);
+            const auto w = hardware_->gbufferSize.x;
+            const auto h = hardware_->gbufferSize.y;
 
-            hardware_->gbufferObjectIDImage = HardwareImage(hardware_->gbufferSize.x, hardware_->gbufferSize.y,
-                                                            ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
-            hardware_->objectIDOutputImage = HardwareImage(hardware_->gbufferSize.x, hardware_->gbufferSize.y,
-                                                           ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
+            // --- Visibility Buffer ---
+            hardware_->visibilityImage = HardwareImage(w, h, ImageFormat::RGBA32_UINT, ImageUsage::StorageImage);
+            hardware_->depthImage = HardwareImage(w, h, ImageFormat::D32_FLOAT, ImageUsage::DepthImage);
 
+            // --- Uniform buffers ---
             hardware_->uniformBuffer =
                 HardwareBuffer(sizeof(Hardware::UniformBufferObject), BufferUsage::StorageBuffer);
-            hardware_->gbufferUniformBuffer = HardwareBuffer(sizeof(Hardware::gbufferUniformBufferObject),
-                                                             BufferUsage::StorageBuffer);
-            hardware_->computeUniformBuffer = HardwareBuffer(sizeof(Hardware::ComputeUniformBufferObject),
-                                                             BufferUsage::StorageBuffer);
+            hardware_->vpUniformBuffer = HardwareBuffer(sizeof(Hardware::VPUniformBufferObject),
+                                                        BufferUsage::StorageBuffer);
 
-            hardware_->finalOutputImage = HardwareImage(hardware_->gbufferSize.x, hardware_->gbufferSize.y,
-                                                        ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
+            // --- Instance & Material table buffers (pre-allocate reasonable capacity) ---
+            constexpr uint32_t kMaxInstances  = 4096;
+            constexpr uint32_t kMaxMaterials  = 1024;
+            hardware_->instanceInfoBuffer = HardwareBuffer(
+                kMaxInstances * static_cast<uint32_t>(sizeof(Hardware::InstanceInfo)),
+                BufferUsage::StorageBuffer);
+            hardware_->materialTableBuffer = HardwareBuffer(
+                kMaxMaterials * static_cast<uint32_t>(sizeof(Hardware::MaterialInfo)),
+                BufferUsage::StorageBuffer);
+
+            hardware_->finalOutputImage = HardwareImage(w, h, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
         }
         catch (const std::exception&)
         {
@@ -129,10 +127,14 @@ namespace Corona::Systems
     {
         try
         {
-            hardware_->rasterizerPipeline.emplace();
-            hardware_->computePipeline.emplace();
+            hardware_->visibilityPipeline.emplace();
+            hardware_->lightingPipeline.emplace();
+            hardware_->skyPipeline.emplace();
+            hardware_->tonemapPipeline.emplace();
+            hardware_->debugResolvePipeline.emplace();
             hardware_->shaderHasInit = true;
-            CFW_LOG_INFO("OpticsSystem: Typed shader pipelines created successfully");
+            CFW_LOG_INFO("OpticsSystem: VBuffer pipelines created successfully "
+                         "(visibility + lighting + sky + tonemap + debugResolve)");
         }
         catch (const std::exception& e)
         {
@@ -172,7 +174,7 @@ namespace Corona::Systems
                         return;
                     }
                     std::lock_guard<std::mutex> lock(screenshot_mutex_);
-                    pending_screenshots_.push_back({event.surface, event.file_path, event.buffer_type});
+                    pending_screenshots_.push_back({event.surface, event.file_path, event.completion_promise});
                 });
         }
 
@@ -181,7 +183,9 @@ namespace Corona::Systems
 
     void OpticsSystem::update()
     {
-        if (!hardware_->shaderHasInit || !hardware_->rasterizerPipeline || !hardware_->computePipeline)
+        if (!hardware_->shaderHasInit || !hardware_->visibilityPipeline ||
+            !hardware_->lightingPipeline || !hardware_->skyPipeline || !hardware_->tonemapPipeline ||
+            !hardware_->debugResolvePipeline)
         {
             return;
         }
@@ -198,170 +202,321 @@ namespace Corona::Systems
 
     void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index)
     {
-        // CFW_LOG_DEBUG("OpticsSystem: Rendering pipeline temporarily disabled - waiting for new Storage API");
-        auto& rasterizer = *hardware_->rasterizerPipeline;
-        auto& compute = *hardware_->computePipeline;
+        auto& visibility     = *hardware_->visibilityPipeline;
+        auto& lighting       = *hardware_->lightingPipeline;
+        auto& sky            = *hardware_->skyPipeline;
+        auto& tonemap        = *hardware_->tonemapPipeline;
 
-        // 遍历场景存储并使用 acquire_read 访问相关句柄
         for (const auto& scene : SharedDataHub::instance().scene_storage())
         {
+            if (!scene.enabled)
+                continue;
+
             for (auto cam_handle : scene.camera_handles)
             {
                 if (auto camera = SharedDataHub::instance().camera_storage().acquire_read(cam_handle))
                 {
-                        hardware_->uniformBufferObjects.eyePosition = camera->position;
-                        hardware_->uniformBufferObjects.eyeDir = camera->forward;
-                        hardware_->uniformBufferObjects.eyeViewMatrix = camera->compute_view_matrix();
-                        hardware_->uniformBufferObjects.eyeProjMatrix = camera->compute_projection_matrix();
-                        hardware_->gbufferUniformBufferObjects.viewProjMatrix = camera->compute_view_proj_matrix();
-                        hardware_->gbufferUniformBuffer.copyFromData(&hardware_->gbufferUniformBufferObjects,
-                                                                     sizeof(hardware_->gbufferUniformBufferObjects));
+                    // ================================================================
+                    // 1. Update camera uniform buffers
+                    // ================================================================
+                    hardware_->uniformBufferObjects.eyePosition = camera->position;
+                    hardware_->uniformBufferObjects.eyeDir = camera->forward;
+                    hardware_->uniformBufferObjects.eyeViewMatrix = camera->compute_view_matrix();
+                    hardware_->uniformBufferObjects.eyeProjMatrix = camera->compute_projection_matrix();
+                    hardware_->vpUniformBufferObjects.viewProjMatrix = camera->compute_view_proj_matrix();
+                    hardware_->vpUniformBuffer.copyFromData(&hardware_->vpUniformBufferObjects,
+                                                            sizeof(hardware_->vpUniformBufferObjects));
 
-                        rasterizer.gbufferPostion = hardware_->gbufferPostionImage;
-                        rasterizer.gbufferBaseColor = hardware_->gbufferBaseColorImage;
-                        rasterizer.gbufferNormal = hardware_->gbufferNormalImage;
-                        rasterizer.gbufferMotionVector = hardware_->gbufferMotionVectorImage;
-                        rasterizer.gbufferObjectID = hardware_->gbufferObjectIDImage;
-                        rasterizer.setDepthImage(hardware_->gbufferDepthImage);
+                    // ================================================================
+                    // 2. Build per-frame Instance Table & Material Table
+                    //    仅遍历本场景 actor → profile → optics，隔离多场景数据
+                    // ================================================================
+                    hardware_->instanceInfoData.clear();
+                    hardware_->materialTableData.clear();
 
-                        // 遍历所有光学设备
-                        uint32_t object_id = 1;
-                        for (const auto& optics : SharedDataHub::instance().optics_storage())
+                    // Configure visibility pipeline render targets
+                    visibility.visibilityData = hardware_->visibilityImage;
+                    visibility.setDepthImage(hardware_->depthImage);
+
+                    auto& actor_storage   = SharedDataHub::instance().actor_storage();
+                    auto& profile_storage = SharedDataHub::instance().profile_storage();
+                    auto& optics_storage  = SharedDataHub::instance().optics_storage();
+                    auto& geom_storage    = SharedDataHub::instance().geometry_storage();
+                    auto& transform_storage = SharedDataHub::instance().model_transform_storage();
+
+                    uint32_t object_id = 1;
+                    for (auto actor_handle : scene.actor_handles)
+                    {
+                        auto actor = actor_storage.acquire_read(actor_handle);
+                        if (!actor) { ++object_id; continue; }
+
+                        for (auto profile_handle : actor->profile_handles)
                         {
-                            if (auto geom = SharedDataHub::instance().geometry_storage().acquire_write(
-                                optics.geometry_handle))
+                            auto profile = profile_storage.acquire_read(profile_handle);
+                            if (!profile || profile->optics_handle == 0) continue;
+
+                            auto optics_acc = optics_storage.acquire_read(profile->optics_handle);
+                            if (!optics_acc) continue;
+                            const auto& optics = *optics_acc;
+
+                            if (!optics.visible) { ++object_id; continue; }
+                            if (auto geom = geom_storage.acquire_write(optics.geometry_handle))
                             {
-                                // 获取模型的全局变换矩阵
                                 ktm::fmat4x4 model_matrix{ktm::fmat4x4::from_eye()};
-                                if (auto transform = SharedDataHub::instance().model_transform_storage().acquire_read(
-                                    geom->transform_handle))
+                                if (auto transform = transform_storage.acquire_read(geom->transform_handle))
                                 {
                                     model_matrix = transform->compute_matrix();
                                 }
 
-                                // 每个 submesh 都需要完整设置所有 push constants
-                                // 因为 record() 会在保存后重置 tempPushConstant
-                                // 注意：节点累积变换已在加载时"烘焙"到顶点数据中
                                 for (auto& m : geom->mesh_handles)
                                 {
-                                    rasterizer.pushConsts.modelMatrix = model_matrix;
-                                    rasterizer.pushConsts.uniformBufferIndex = hardware_->gbufferUniformBuffer.
-                                        storeDescriptor();
-                                    // 检查纹理是否有效，避免对未初始化的 HardwareImage 调用 storeDescriptor()
+                                    // --- Collect material info ---
+                                    auto materialID = static_cast<uint32_t>(hardware_->materialTableData.size());
+                                    {
+                                        Hardware::MaterialInfo mat_info{};
+                                        mat_info.textureDescriptor = m.textureBuffer
+                                            ? m.textureBuffer.storeDescriptor()
+                                            : 0;
+                                        mat_info.metallic = optics.metallic;
+                                        mat_info.roughness = optics.roughness;
+                                        mat_info.subsurface = optics.subsurface;
+                                        mat_info.specular = optics.specular;
+                                        mat_info.specularTint = optics.specularTint;
+                                        mat_info.anisotropic = optics.anisotropic;
+                                        mat_info.sheen = optics.sheen;
+                                        mat_info.sheenTint = optics.sheenTint;
+                                        mat_info.clearcoat = optics.clearcoat;
+                                        mat_info.clearcoatGloss = optics.clearcoatGloss;
+                                        mat_info.padding0 = 0.0f;
+                                        mat_info.materialColor = ktm::fvec4{
+                                            m.materialColor[0], m.materialColor[1],
+                                            m.materialColor[2], m.materialColor[3]
+                                        };
+                                        hardware_->materialTableData.push_back(mat_info);
+                                    }
+
+                                    // --- Collect instance info ---
+                                    auto instanceID = static_cast<uint32_t>(hardware_->instanceInfoData.size());
+                                    {
+                                        Hardware::InstanceInfo inst{};
+                                        inst.modelMatrix = model_matrix;
+                                        inst.vertexBufferIndex = m.vertexStorageBuffer
+                                            ? m.vertexStorageBuffer.storeDescriptor()
+                                            : 0;
+                                        inst.indexBufferIndex = m.indexStorageBuffer
+                                            ? m.indexStorageBuffer.storeDescriptor()
+                                            : 0;
+                                        inst.materialID = materialID;
+                                        inst.objectID = object_id;
+                                        hardware_->instanceInfoData.push_back(inst);
+                                    }
+
+                                    // --- Record visibility draw call ---
+                                    visibility.pushConsts.modelMatrix = model_matrix;
+                                    visibility.pushConsts.uniformBufferIndex =
+                                        hardware_->vpUniformBuffer.storeDescriptor();
+                                    // VBuffer uses 1-based instanceID (0 = background sentinel after clear)
+                                    visibility.pushConsts.instanceID = instanceID + 1;
+                                    // Alpha-cutout: pass texture descriptor for discard test
                                     if (m.textureBuffer)
                                     {
-                                        rasterizer[test_frag_glsl::pushConsts::textureIndex] = m.textureBuffer.storeDescriptor();
+                                        visibility[visibility_frag_glsl::pushConsts::textureIndex] =
+                                            m.textureBuffer.storeDescriptor();
                                     }
                                     else
                                     {
-                                        rasterizer[test_frag_glsl::pushConsts::textureIndex] = static_cast<uint32_t>(0);
+                                        visibility[visibility_frag_glsl::pushConsts::textureIndex] =
+                                            static_cast<uint32_t>(0);
                                     }
-                                    // 传递材质颜色到着色器
-                                    ktm::fvec4 materialColor{
-                                        m.materialColor[0], m.materialColor[1], m.materialColor[2], m.materialColor[3]
-                                    };
-                                    rasterizer[test_frag_glsl::pushConsts::materialColor] = materialColor;
-                                    rasterizer[test_frag_glsl::pushConsts::objectID] = object_id;
-                                    rasterizer.record(m.indexBuffer, m.vertexBuffer);
+                                    visibility.record(m.indexBuffer, m.vertexBuffer);
                                 }
                             }
                             ++object_id;
                         }
+                    }
 
-                        compute.pushConsts.gbufferSize = hardware_->gbufferSize;
-                        compute.pushConsts.gbufferPostionImage = hardware_->gbufferPostionImage.storeDescriptor();
-                        compute.pushConsts.gbufferBaseColorImage = hardware_->gbufferBaseColorImage.storeDescriptor();
-                        compute.pushConsts.gbufferNormalImage = hardware_->gbufferNormalImage.storeDescriptor();
-                        compute.pushConsts.gbufferDepthImage = rasterizer.getDepthImage().storeDescriptor();
+                    // ================================================================
+                    // 3. Upload instance & material tables to GPU
+                    // ================================================================
+                    if (!hardware_->instanceInfoData.empty())
+                    {
+                        hardware_->instanceInfoBuffer.copyFromData(
+                            hardware_->instanceInfoData.data(),
+                            hardware_->instanceInfoData.size() * sizeof(Hardware::InstanceInfo));
+                    }
+                    if (!hardware_->materialTableData.empty())
+                    {
+                        hardware_->materialTableBuffer.copyFromData(
+                            hardware_->materialTableData.data(),
+                            hardware_->materialTableData.size() * sizeof(Hardware::MaterialInfo));
+                    }
 
-                        compute.pushConsts.gbufferObjectIDImage = hardware_->gbufferObjectIDImage.storeDescriptor();
-                        compute.pushConsts.objectIDOutputImage = hardware_->objectIDOutputImage.storeDescriptor();
-
-                        compute.pushConsts.finalOutputImage = hardware_->finalOutputImage.storeDescriptor();
-
-                        ktm::fvec3 sun_dir;
-                        sun_dir.x = 1.0f;
-                        sun_dir.y = 1.0f;
-                        sun_dir.z = 1.0f;
-                        std::uint32_t floor_grid_enabled = 1;
-                        if (scene.environment != 0)
+                    // ================================================================
+                    // 4. Environment parameters
+                    // ================================================================
+                    ktm::fvec3 sun_dir;
+                    sun_dir.x = 1.0f;
+                    sun_dir.y = 1.0f;
+                    sun_dir.z = 1.0f;
+                    std::uint32_t floor_grid_enabled = 1;
+                    ktm::fvec3 sun_color{1.0f, 0.949f, 0.853f};
+                    float sun_intensity = 10.0f;
+                    float sky_intensity = 20.0f;
+                    float exposure = 1.0f;
+                    if (scene.environment != 0)
+                    {
+                        if (auto env = SharedDataHub::instance().environment_storage().acquire_read(
+                            scene.environment))
                         {
-                            if (auto env = SharedDataHub::instance().environment_storage().acquire_read(
-                                scene.environment))
-                            {
-                                sun_dir = env->sun_position;
-                                floor_grid_enabled = env->floor_grid_enabled;
-                            }
+                            sun_dir = env->sun_position;
+                            floor_grid_enabled = env->floor_grid_enabled;
+                            sun_color = env->sun_color;
+                            sun_intensity = env->sun_intensity;
+                            sky_intensity = env->sky_intensity;
+                            exposure = env->exposure;
                         }
+                    }
+                    sun_dir = ktm::normalize(sun_dir);
 
-                        compute.pushConsts.sun_dir = ktm::normalize(sun_dir);
-                        compute.pushConsts.floor_grid_enabled = floor_grid_enabled;
+                    hardware_->uniformBuffer.copyFromData(&hardware_->uniformBufferObjects,
+                                                          sizeof(hardware_->uniformBufferObjects));
+                    const uint32_t uboDescriptor = hardware_->uniformBuffer.storeDescriptor();
+                    const uint32_t depthDescriptor = visibility.getDepthImage().storeDescriptor();
+                    const uint32_t finalOutputDescriptor = hardware_->finalOutputImage.storeDescriptor();
+
+                    // ================================================================
+                    // 5. Lighting pass: VBuffer decode + PBR direct illumination
+                    // ================================================================
+                    lighting.pushConsts.gbufferSize = hardware_->gbufferSize;
+                    lighting.pushConsts.visibilityImageIndex =
+                        hardware_->visibilityImage.storeDescriptor();
+                    lighting.pushConsts.depthImageIndex = depthDescriptor;
+                    lighting.pushConsts.instanceInfoBufferIndex =
+                        hardware_->instanceInfoBuffer.storeDescriptor();
+                    lighting.pushConsts.materialTableBufferIndex =
+                        hardware_->materialTableBuffer.storeDescriptor();
+                    lighting.pushConsts.vpBufferIndex =
+                        hardware_->vpUniformBuffer.storeDescriptor();
+                    lighting.pushConsts.finalOutputImage = finalOutputDescriptor;
+                    lighting.pushConsts.uniformBufferIndex = uboDescriptor;
+                    lighting.pushConsts.sun_dir = sun_dir;
+                    {
+                        ktm::fvec3 lightColor;
+                        lightColor.x = sun_color.x * sun_intensity;
+                        lightColor.y = sun_color.y * sun_intensity;
+                        lightColor.z = sun_color.z * sun_intensity;
+                        lighting.pushConsts.lightColor = lightColor;
+                    }
+                    lighting.pushConsts.ambientIntensity = sun_intensity * 0.02f;
+
+                    // ================================================================
+                    // 6. Sky pass: atmospheric scattering + floor grid
+                    // ================================================================
+                    sky.pushConsts.gbufferSize = hardware_->gbufferSize;
+                    sky.pushConsts.gbufferDepthImage = depthDescriptor;
+                    sky.pushConsts.finalOutputImage = finalOutputDescriptor;
+                    sky.pushConsts.uniformBufferIndex = uboDescriptor;
+                    sky.pushConsts.sun_dir = sun_dir;
+                    sky.pushConsts.floor_grid_enabled = floor_grid_enabled;
+                    sky.pushConsts.cameraFov = camera->fov;
+                    sky.pushConsts.sky_intensity = sky_intensity;
+
+                    // ================================================================
+                    // 7. Tonemap pass: ACES filmic HDR → LDR
+                    // ================================================================
+                    tonemap.pushConsts.gbufferSize = hardware_->gbufferSize;
+                    tonemap.pushConsts.inputImage = finalOutputDescriptor;
+                    tonemap.pushConsts.outputImage = finalOutputDescriptor;
+                    tonemap.pushConsts.exposure = exposure;
+
+                    // ================================================================
+                    // 8. GPU sync & dispatch
+                    // ================================================================
+                    if (image_handle_ != 0) {
+                        if (auto consumed_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
+                            hardware_->executor.wait(consumed_device->consumed_executor);
+                        }
+                    }
+
+                    const uint32_t dispatchX = hardware_->gbufferSize.x / 8;
+                    const uint32_t dispatchY = hardware_->gbufferSize.y / 8;
+
+                    const bool is_debug_mode = camera->output_mode != CameraOutputMode::FinalColor;
+
+                    if (is_debug_mode)
+                    {
+                        // ============================================================
+                        // Debug path: visibility + debug_resolve only (skip lighting/sky/tonemap)
+                        // ============================================================
+                        auto& debugResolve = *hardware_->debugResolvePipeline;
+
+                        debugResolve.pushConsts.gbufferSize = hardware_->gbufferSize;
+                        debugResolve.pushConsts.visibilityImageIndex =
+                            hardware_->visibilityImage.storeDescriptor();
+                        debugResolve.pushConsts.depthImageIndex = depthDescriptor;
+                        debugResolve.pushConsts.instanceInfoBufferIndex =
+                            hardware_->instanceInfoBuffer.storeDescriptor();
+                        debugResolve.pushConsts.materialTableBufferIndex =
+                            hardware_->materialTableBuffer.storeDescriptor();
+                        debugResolve.pushConsts.vpBufferIndex =
+                            hardware_->vpUniformBuffer.storeDescriptor();
+                        debugResolve.pushConsts.outputImageIndex = finalOutputDescriptor;
+
+                        // Map CameraOutputMode to debugMode uint
+                        uint32_t debugMode = 0;
+                        switch (camera->output_mode) {
+                            case CameraOutputMode::BaseColor:        debugMode = 0; break;
+                            case CameraOutputMode::Normal:           debugMode = 1; break;
+                            case CameraOutputMode::WorldPosition:    debugMode = 2; break;
+                            case CameraOutputMode::ObjectID:         debugMode = 3; break;
+                            case CameraOutputMode::VisibilityBuffer: debugMode = 4; break;
+                            default: debugMode = 0; break;
+                        }
+                        debugResolve.pushConsts.debugMode = debugMode;
+
+                        hardware_->executor << visibility(1920, 1080)
+                            << debugResolve(dispatchX, dispatchY, 1);
+                    }
+                    else
+                    {
+                        // ============================================================
+                        // Normal rendering path: full pipeline
+                        // ============================================================
+                        hardware_->executor << visibility(1920, 1080)
+                            << lighting(dispatchX, dispatchY, 1)
+                            << sky(dispatchX, dispatchY, 1)
+                            << tonemap(dispatchX, dispatchY, 1);
+                    }
+
+                    hardware_->executor << hardware_->executor.commit();
+
+                    if (image_handle_ != 0)
+                    {
+                        if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_))
                         {
-                            // 调整为黄昏颜色 (Dusk)
-                            static const ktm::fvec3 lightColor{
-                                190.0f,
-                                120.0f,
-                                60.0f
-                            };
-
-                            compute.pushConsts.lightColor = lightColor;
+                            image_device->image = hardware_->finalOutputImage;
+                            image_device->executor = hardware_->executor;
                         }
 
-                        hardware_->uniformBuffer.copyFromData(&hardware_->uniformBufferObjects,
-                                                              sizeof(hardware_->uniformBufferObjects));
-                        compute.pushConsts.uniformBufferIndex = hardware_->uniformBuffer.storeDescriptor();
-
-                        // GPU sync: wait for Display to finish consuming our image
-                        // before we overwrite it with new rendering output.
-                        if (image_handle_ != 0) {
-                            if (auto consumed_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
-                                hardware_->executor.wait(consumed_device->consumed_executor);
-                            }
-                        }
-
-                        hardware_->executor << rasterizer(1920, 1080)
-                            << compute(1920 / 8, 1080 / 8, 1)
-                            << hardware_->executor.commit();
-
-                        if (image_handle_ != 0)
+                        if (camera->surface != nullptr)
                         {
-                            if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_))
-                            {
-                                image_device->image = hardware_->finalOutputImage;
-                                image_device->executor = hardware_->executor;
-                            }
+                            process_pending_screenshots(camera->surface);
 
-                            if (camera->surface != nullptr)
+                            if (auto* event_bus = context()->event_bus())
                             {
-                                process_pending_screenshots(camera->surface);
-
-                                if (auto* event_bus = context()->event_bus())
-                                {
-                                    event_bus->publish<Events::OpticsFrameReadyEvent>({
-                                        camera->surface,
-                                        image_handle_,
-                                        frame_index,
-                                        hardware_->gbufferSize.x,
-                                        hardware_->gbufferSize.y
-                                    });
-                                }
+                                event_bus->publish<Events::OpticsFrameReadyEvent>({
+                                    camera->surface,
+                                    image_handle_,
+                                    frame_index,
+                                    hardware_->gbufferSize.x,
+                                    hardware_->gbufferSize.y
+                                });
                             }
                         }
+                    }
 
 #ifdef CORONA_ENABLE_VISION
-                        // if (hardware_->displayers_.contains(reinterpret_cast<uint64_t>(camera->surface)))
-                        // {
-                        //     renderPipeline->display(1 / 30);
-                        //     importedViewImage.copyFromBuffer(importedViewBuffer);
-                        //     hardware_->displayers_.at(reinterpret_cast<uint64_t>(camera->surface)).wait(
-                        //         hardware_->executor) << importedViewImage;
-                        // }
-#else
-                        // if (hardware_->displayers_.contains(reinterpret_cast<uint64_t>(camera->surface)))
-                        // {
-                        //     hardware_->displayers_.at(reinterpret_cast<uint64_t>(camera->surface)).wait(
-                        //         hardware_->executor) << hardware_->finalOutputImage;
-                        // }
+                    // Vision backend integration placeholder (currently disabled)
 #endif
                 }
             }
@@ -408,72 +563,61 @@ namespace Corona::Systems
         const uint32_t h = hardware_->gbufferSize.y;
         if (w == 0 || h == 0) {
             CFW_LOG_WARNING("OpticsSystem: Cannot take screenshot - zero render dimensions");
+            for (auto& req : matched) {
+                if (req.completion_promise) req.completion_promise->set_value(false);
+            }
             return;
         }
 
-        // Select source image based on buffer_type
-        // Group by buffer_type so we only readback each image once if there are multiple requests
         const uint64_t pixel_count = static_cast<uint64_t>(w) * h;
-        std::unordered_map<std::string, std::vector<PendingScreenshot*>> by_type;
-        for (auto& req : matched) {
-            by_type[req.buffer_type.empty() ? "final_color" : req.buffer_type].push_back(&req);
+        const uint64_t buffer_size = pixel_count * 8;  // RGBA16F = 4 channels * 2 bytes
+        HardwareBuffer staging_buffer(static_cast<uint32_t>(buffer_size), BufferUsage::StorageBuffer);
+        if (!staging_buffer) {
+            CFW_LOG_ERROR("OpticsSystem: Failed to create staging buffer for screenshot");
+            for (auto& req : matched) {
+                if (req.completion_promise) req.completion_promise->set_value(false);
+            }
+            return;
         }
 
-        for (auto& [buf_type, reqs] : by_type) {
-            // Select the HardwareImage for this buf_type
-            HardwareImage* src_image = &hardware_->finalOutputImage;
-            bool is_normal = false;
-            if (buf_type == "object_id") {
-                src_image = &hardware_->objectIDOutputImage;
-            } else if (buf_type == "base_color") {
-                src_image = &hardware_->gbufferBaseColorImage;
-            } else if (buf_type == "normal") {
-                src_image = &hardware_->gbufferNormalImage;
-                is_normal = true;
-            } else if (buf_type == "position") {
-                src_image = &hardware_->gbufferPostionImage;
+        hardware_->executor << hardware_->finalOutputImage.copyTo(staging_buffer)
+                            << hardware_->executor.commit();
+
+        std::vector<uint16_t> half_data(pixel_count * 4);
+        if (!staging_buffer.copyToData(half_data.data(), buffer_size)) {
+            CFW_LOG_ERROR("OpticsSystem: Failed to read screenshot data from GPU");
+            for (auto& req : matched) {
+                if (req.completion_promise) req.completion_promise->set_value(false);
             }
+            return;
+        }
 
-            const uint64_t buffer_size = pixel_count * 8;  // RGBA16F = 4 channels * 2 bytes
-            HardwareBuffer staging_buffer(static_cast<uint32_t>(buffer_size), BufferUsage::StorageBuffer);
-            if (!staging_buffer) {
-                CFW_LOG_ERROR("OpticsSystem: Failed to create staging buffer for {} screenshot", buf_type);
-                continue;
-            }
+        // Convert RGBA16F to RGBA8
+        std::vector<uint8_t> rgba8(pixel_count * 4);
+        for (uint64_t i = 0; i < pixel_count * 4; ++i) {
+            float v = half_to_float(half_data[i]);
+            v = std::fmax(0.0f, std::fmin(1.0f, v));
+            rgba8[i] = static_cast<uint8_t>(v * 255.0f + 0.5f);
+        }
 
-            hardware_->executor << src_image->copyTo(staging_buffer)
-                                << hardware_->executor.commit();
+        for (const auto& req : matched) {
+            std::filesystem::path file_path(req.file_path);
+            auto image = std::make_shared<Resource::Image>(file_path);
+            image->set_data(rgba8.data(), static_cast<int>(w), static_cast<int>(h), 4);
 
-            std::vector<uint16_t> half_data(pixel_count * 4);
-            if (!staging_buffer.copyToData(half_data.data(), buffer_size)) {
-                CFW_LOG_ERROR("OpticsSystem: Failed to read {} data from GPU", buf_type);
-                continue;
-            }
+            auto rid = Resource::IResource::generate_uid(file_path);
+            auto& manager = Resource::ResourceManager::get_instance();
+            manager.add_resource(rid, image);
 
-            // Convert RGBA16F to RGBA8 with buffer-specific normalization
-            std::vector<uint8_t> rgba8(pixel_count * 4);
-            for (uint64_t i = 0; i < pixel_count * 4; ++i) {
-                float v = half_to_float(half_data[i]);
-                if (is_normal) {
-                    v = v * 0.5f + 0.5f;  // [-1,1] -> [0,1]
+            if (manager.export_sync(rid, file_path)) {
+                CFW_LOG_INFO("OpticsSystem: Screenshot saved to {}", req.file_path);
+                if (req.completion_promise) {
+                    req.completion_promise->set_value(true);
                 }
-                v = std::fmax(0.0f, std::fmin(1.0f, v));
-                rgba8[i] = static_cast<uint8_t>(v * 255.0f + 0.5f);
-            }
-
-            for (const auto* req : reqs) {
-                std::filesystem::path file_path(req->file_path);
-                auto image = std::make_shared<Resource::Image>(file_path);
-                image->set_data(rgba8.data(), static_cast<int>(w), static_cast<int>(h), 4);
-
-                auto rid = Resource::IResource::generate_uid(file_path);
-                auto& manager = Resource::ResourceManager::get_instance();
-                manager.add_resource(rid, image);
-
-                if (manager.export_sync(rid, file_path)) {
-                    CFW_LOG_INFO("OpticsSystem: {} screenshot saved to {}", buf_type, req->file_path);
-                } else {
-                    CFW_LOG_ERROR("OpticsSystem: Failed to save {} screenshot to {}", buf_type, req->file_path);
+            } else {
+                CFW_LOG_ERROR("OpticsSystem: Failed to save screenshot to {}", req.file_path);
+                if (req.completion_promise) {
+                    req.completion_promise->set_value(false);
                 }
             }
         }
