@@ -1701,7 +1701,128 @@ void MechanicsSystem::update_physics() {
         g_prev_active_collisions.clear();
     }
 
-    // --- 阶段 6：半隐式位姿积分（用冲量后的 v,ω）+ 无穷地板 + 休眠累计 + 缓存淘汰 ---
+    // --- 阶段 5b：地板接触冲量（统一到冲量求解器，替代 Phase 6 的硬编码启发式） ---
+    {
+        constexpr float eps_floor = 1e-8f;
+        constexpr float k_floor_positional_slop = 0.004f;
+        constexpr float k_floor_positional_percent = 0.35f;
+        constexpr int k_floor_impulse_iterations = 5;
+        const ktm::fvec3 floor_normal = make_fvec3(0.0f, 1.0f, 0.0f);
+
+        // 收集地板接触
+        struct FloorContact {
+            std::uintptr_t handle;
+            float penetration;
+            ktm::fvec3 contact_point;
+            std::size_t data_index;
+        };
+        std::vector<FloorContact> floor_contacts;
+        floor_contacts.reserve(mechanics_data.size());
+
+        for (std::size_t i = 0; i < mechanics_data.size(); ++i) {
+            const auto& entry = mechanics_data[i];
+            float bottom_y = entry.min_world.y;
+            float pen = (floor_y + floor_eps) - bottom_y;
+            if (pen > 0.0f) {
+                floor_contacts.push_back({
+                    entry.handle,
+                    pen,
+                    make_fvec3(entry.center_world.x, floor_y, entry.center_world.z),
+                    i
+                });
+            }
+        }
+
+        // 地板冲量迭代（地板质量无穷大：inv_mass = 0）
+        for (int iter = 0; iter < k_floor_impulse_iterations; ++iter) {
+            for (const auto& fc : floor_contacts) {
+                std::uintptr_t h = fc.handle;
+                if (g_handle_to_sleeping[h]) continue;
+
+                auto idx_it = handle_to_index.find(h);
+                if (idx_it == handle_to_index.end()) continue;
+                const auto& body = mechanics_data[idx_it->second];
+
+                const float inv_m = 1.0f / handle_to_mass[h];
+                const float rest_use = (iter == k_floor_impulse_iterations - 1) ? floor_restitution : 0.0f;
+
+                // 接触点处的力臂
+                const ktm::fvec3 r = vec3_sub(fc.contact_point, body.center_world);
+
+                ktm::fvec3& v = g_handle_to_velocity[h];
+                ktm::fvec3& w = g_handle_to_angular_vel[h];
+
+                // 接触点速度
+                const ktm::fvec3 v_p = velocity_at_point_world(v, w, r);
+                const float v_n = ktm::dot(v_p, floor_normal);
+
+                // v_n > 0 表示远离地板（向上），无需冲量
+                if (v_n < -1e-4f) continue;
+
+                // 有效质量（地板 inv_mass = 0，仅有物体侧贡献）
+                const ktm::fvec3 rxn = ktm::cross(r, floor_normal);
+                const float ang_term = ktm::dot(rxn,
+                    world_inertia_inv_apply(body.rot_body_to_world, body.inertia_inv_body, rxn));
+                const float denom = inv_m + ang_term + eps_floor;
+                if (denom <= 1e-12f) continue;
+
+                float j = -(1.0f + rest_use) * v_n / denom;
+                j = std::max(j, 0.0f); // 地板只推不吸
+
+                // 施加法向冲量
+                v.x += floor_normal.x * j * inv_m;
+                v.y += floor_normal.y * j * inv_m;
+                v.z += floor_normal.z * j * inv_m;
+
+                const ktm::fvec3 Jn = vec3_mul(floor_normal, j);
+                const ktm::fvec3 dw_n = world_inertia_inv_apply(
+                    body.rot_body_to_world, body.inertia_inv_body, ktm::cross(r, Jn));
+                w.x += dw_n.x; w.y += dw_n.y; w.z += dw_n.z;
+
+                // 切向摩擦（与物体间碰撞使用相同的库仑锥公式）
+                const ktm::fvec3 v_p2 = velocity_at_point_world(v, w, r);
+                const float v_n2 = ktm::dot(v_p2, floor_normal);
+                const ktm::fvec3 v_t = make_fvec3(
+                    v_p2.x - floor_normal.x * v_n2,
+                    v_p2.y - floor_normal.y * v_n2,
+                    v_p2.z - floor_normal.z * v_n2);
+                const float vt_len = ktm::length(v_t);
+                if (vt_len > eps_floor) {
+                    const ktm::fvec3 tdir = make_fvec3(v_t.x / vt_len, v_t.y / vt_len, v_t.z / vt_len);
+                    const float v_slip = ktm::dot(v_p2, tdir);
+                    const ktm::fvec3 rxt = ktm::cross(r, tdir);
+                    const float ang_t = ktm::dot(rxt,
+                        world_inertia_inv_apply(body.rot_body_to_world, body.inertia_inv_body, rxt));
+                    const float denom_t = inv_m + ang_t + eps_floor;
+                    if (denom_t > 1e-12f) {
+                        const float jt_free = -v_slip / denom_t;
+                        const float jt_cap = friction_coeff * std::fabs(j);
+                        const float jt = std::max(-jt_cap, std::min(jt_cap, jt_free));
+
+                        v.x += tdir.x * jt * inv_m;
+                        v.y += tdir.y * jt * inv_m;
+                        v.z += tdir.z * jt * inv_m;
+
+                        const ktm::fvec3 Jt = vec3_mul(tdir, jt);
+                        const ktm::fvec3 dw_t = world_inertia_inv_apply(
+                            body.rot_body_to_world, body.inertia_inv_body, ktm::cross(r, Jt));
+                        w.x += dw_t.x; w.y += dw_t.y; w.z += dw_t.z;
+                    }
+                }
+
+                // 末轮位置校正
+                if (iter == k_floor_impulse_iterations - 1) {
+                    float pen_corr = std::max(0.f, fc.penetration - k_floor_positional_slop);
+                    if (pen_corr > 0.f) {
+                        auto& corr = position_correction[h];
+                        corr.y += k_floor_positional_percent * pen_corr;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 阶段 6：半隐式位姿积分（用冲量后的 v,ω）+ 休眠累计 + 缓存淘汰 ---
     for (std::size_t i = 0; i < mechanics_data.size(); ++i) {
         const auto& data = mechanics_data[i];        // 与阶段 3 同一套 per-body 缓存
         std::uintptr_t h = data.handle;
@@ -1741,28 +1862,10 @@ void MechanicsSystem::update_physics() {
             object_bottom_y += corr_it->second.y;
         }
 
-        // 水平 floor_y：穿插时整体上抬，并做法向/切向「处方」（非完整接触流形）
-        if (object_bottom_y < floor_y + floor_eps) {
-            tx_w->position.y += (floor_y + floor_eps) - object_bottom_y; // 消穿（单轴，近似静接触）
-
-            float y_vel = g_handle_to_velocity[h].y; // 向上为正
-            if (y_vel < -low_vel_threshold) {
-                g_handle_to_velocity[h].y = -y_vel * floor_restitution; // 下行且够快则反弹
-                g_handle_to_sleep_timer[h] = 0.0f; // 显著弹跳才打断休眠计时
-            } else {
-                if (std::abs(g_handle_to_velocity[h].y) < zero_vel_threshold) {
-                    g_handle_to_velocity[h].y = 0.0f; // 粘地：贴住时竖直速度清零
-                } else {
-                    g_handle_to_velocity[h].y *= 0.15f; // 弱弹簧感衰减残余弹跳
-                }
-
-                g_handle_to_velocity[h].x *= 0.8f; // 水平滑动摩擦（与对体摩擦系数独立，属地板启发式）
-                g_handle_to_velocity[h].z *= 0.8f;
-                g_handle_to_angular_vel[h].x *= 0.7f; // 滚阻：略拖慢角速度防永转
-                g_handle_to_angular_vel[h].y *= 0.7f;
-                g_handle_to_angular_vel[h].z *= 0.7f;
-                // 静接触不打断休眠计时，让休眠检测正常累积
-            }
+        // 安全网：冲量求解后仍穿透较深时做硬修正（正常情况下不应触发）
+        if (object_bottom_y < floor_y - 0.01f) {
+            tx_w->position.y += (floor_y + floor_eps) - object_bottom_y;
+            g_handle_to_velocity[h].y = std::max(g_handle_to_velocity[h].y, 0.0f);
         }
     }
 
