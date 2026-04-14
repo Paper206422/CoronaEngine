@@ -113,17 +113,18 @@ inline ktm::fquat quat_from_model_euler(const ktm::fvec3& euler) {
 }
 
 // R：旋转矩阵；euler：输出的 XYZ 欧拉（弧度）
+// KTM 使用列主序存储 R[col][row]，对 Rz·Ry·Rx 有 R[0][2] = -sin(y)
 inline void euler_xyz_from_rot_mat(const ktm::fmat3x3& R, ktm::fvec3& euler) {
 
-    const float sy = R[0][2];    // 用于 asin 的元素
+    const float sy = std::clamp(-R[0][2], -1.0f, 1.0f); // sin(y)，clamp 防 NaN
 
     const float pi = 3.1415926535f;          // π
 
-    if (sy > 0.999f) {                      // 俯仰近 +90°，万向节锁
+    if (sy > 0.9999f) {                     // 俯仰近 +90°，万向节锁
         euler.x = 0;                        // 俯仰锁定下 x 置 0
         euler.y = pi * 0.5f;                // y = +π/2
         euler.z = std::atan2(R[1][0], R[1][1]); // 用 atan2 定 z
-    } else if (sy < -0.999f) {              // 俯仰近 -90°
+    } else if (sy < -0.9999f) {             // 俯仰近 -90°
         euler.x = 0;
         euler.y = -pi * 0.5f;
         euler.z = std::atan2(R[1][0], R[1][1]);
