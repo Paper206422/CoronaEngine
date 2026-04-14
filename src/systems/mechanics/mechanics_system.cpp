@@ -889,7 +889,7 @@ void MechanicsSystem::update_physics() {
         octree_collect_pairs(octree_root, collision_pairs);
         octree_dedupe_pairs(collision_pairs);
 
-        CFW_LOG_DEBUG("Detected {} potential collision pairs", collision_pairs.size());
+        // CFW_LOG_DEBUG("Detected {} potential collision pairs", collision_pairs.size());
 
         // 碰撞对跟踪（用于回调通知 collision start/end）
         std::unordered_set<std::pair<std::uintptr_t, std::uintptr_t>, PairHash> curr_active_collisions;
