@@ -717,26 +717,30 @@ void MechanicsSystem::update_physics() {
 
     g_global_simulation_time += fixed_dt;
 
-    // --- 阶段 2：半隐式前推速度（仅非休眠体）：重力加速度 × dt，再乘线性/角速度阻尼 ---
+    // --- 阶段 2：半隐式前推速度（仅非休眠体）：先阻尼旧速度，再叠加重力加速度 ---
     for (std::uintptr_t h : mechanics_handles) { // 对存活列表逐个施力
         if (g_handle_to_sleeping[h]) continue;   // 休眠体本阶段不改速度
 
-        float damping = handle_to_damping[h];    // 线性阻尼乘子（每帧乘一次近似阻力）
+        float damping = handle_to_damping[h];    // 线性阻尼乘子（以 60Hz 为基准的每步保留系数）
         auto& av = g_handle_to_angular_vel[h];   // 可修改的角速度引用
-        // Environment.gravity 为重力加速度 g
+
+        // 1. 先对上一帧遗留的速度施加阻尼（指数衰减，与 dt 无关）
+        const float effective_damping = std::pow(damping, fixed_dt * 60.0f);
+        g_handle_to_velocity[h].x *= effective_damping;
+        g_handle_to_velocity[h].y *= effective_damping;
+        g_handle_to_velocity[h].z *= effective_damping;
+
+        // 2. 再叠加本帧重力加速度（不被阻尼衰减）
         g_handle_to_velocity[h].x += gravity.x * fixed_dt;
         g_handle_to_velocity[h].y += gravity.y * fixed_dt;
         g_handle_to_velocity[h].z += gravity.z * fixed_dt;
 
-        // 线性阻尼（近似空气阻力）
-        g_handle_to_velocity[h].x *= damping;
-        g_handle_to_velocity[h].y *= damping;
-        g_handle_to_velocity[h].z *= damping;
-        // 角速度阻尼（略强于线性，避免永转）
-        float rot_damping = std::max(damping * rot_damping_factor, 0.9f); // 保证最小阻尼
-        av.x *= rot_damping;
-        av.y *= rot_damping;
-        av.z *= rot_damping;
+        // 3. 角速度阻尼（指数衰减）
+        const float effective_rot_damping = std::pow(
+            std::max(damping * rot_damping_factor, 0.9f), fixed_dt * 60.0f);
+        av.x *= effective_rot_damping;
+        av.y *= effective_rot_damping;
+        av.z *= effective_rot_damping;
     }
 
     // --- 阶段 3：为每个 mechanics 读几何/变换 → 首遇则建四元数朝向 → 预测位姿 → 世界 AABB + 长方体对角惯量（世界系冲量用）---
