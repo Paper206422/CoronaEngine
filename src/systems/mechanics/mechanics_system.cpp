@@ -566,6 +566,15 @@ static std::unordered_map<std::uintptr_t, ktm::fquat> g_handle_orientation_quat;
 static std::unordered_map<std::uintptr_t, bool> g_handle_to_sleeping;      // true 则本帧不积分
 static std::unordered_map<std::uintptr_t, float> g_handle_to_sleep_timer;  // 低速累计时长
 
+// Warm-Starting 缓存：跨帧保存接触对的累积冲量
+struct CachedContact {
+    ktm::fvec3 normal;           // 上帧接触法线
+    float accumulated_jn;        // 累积法向冲量
+};
+static std::unordered_map<
+    std::pair<std::uintptr_t, std::uintptr_t>,
+    CachedContact, PairHash> g_warm_start_cache;
+
 // ============================================================================
 // 碰撞网格（基于最低级 LOD 的三角形碰撞检测）
 // ============================================================================
@@ -1282,6 +1291,99 @@ void MechanicsSystem::update_physics() {
         constexpr float k_positional_percent = 0.35f;   // 仅末轮按穿透拆分平移，且只推一部分，防过冲
         constexpr int k_impulse_iterations = 5;         // 轮数↑ 堆叠更稳、成本↑；典型 3~8
 
+        // Warm-Starting：每对接触的累积法向冲量（本帧跨迭代）
+        std::unordered_map<std::pair<std::uintptr_t, std::uintptr_t>, float, PairHash> contact_accumulated_jn;
+
+        // 用上帧缓存的累积冲量预推速度，加速收敛
+        constexpr float warm_factor = 0.85f;
+        for (const auto& pair : collision_pairs) {
+            auto sorted = (pair.first < pair.second) ? pair : std::make_pair(pair.second, pair.first);
+            auto cache_it = g_warm_start_cache.find(sorted);
+            if (cache_it == g_warm_start_cache.end()) continue;
+
+            const auto& cached = cache_it->second;
+            std::uintptr_t ha = pair.first;
+            std::uintptr_t hb = pair.second;
+            if (g_handle_to_sleeping[ha] && g_handle_to_sleeping[hb]) continue;
+
+            auto it_a = handle_to_index.find(ha);
+            auto it_b = handle_to_index.find(hb);
+            if (it_a == handle_to_index.end() || it_b == handle_to_index.end()) continue;
+
+            const MechanicsWorldAABB& a = mechanics_data[it_a->second];
+            const MechanicsWorldAABB& b = mechanics_data[it_b->second];
+
+            // 确认 AABB 仍重叠
+            if (!aabb_overlap(a.min_world, a.max_world, b.min_world, b.max_world)) continue;
+
+            // 计算本帧法线用于一致性检查
+            ktm::fvec3 curr_normal{};
+            float curr_pen = 0.f;
+#if CORONA_MECHANICS_USE_OBB_SAT
+            if (!sat_obb_obb(a.obb_center, a.obb_u, a.obb_v, a.obb_w, a.obb_hu, a.obb_hv, a.obb_hw,
+                             b.obb_center, b.obb_u, b.obb_v, b.obb_w, b.obb_hu, b.obb_hv, b.obb_hw,
+                             curr_normal, curr_pen))
+                continue;
+#else
+            continue; // AABB 模式暂不 warm-start（法线不稳定）
+#endif
+
+            // 法线一致性检查（余弦 > 0.9 才复用）
+            float dot_n = ktm::dot(cached.normal, curr_normal);
+            if (dot_n < 0.9f) continue;
+
+            const float j_warm = cached.accumulated_jn * warm_factor;
+            if (j_warm <= 0.f) continue;
+
+            const bool sleep_a = g_handle_to_sleeping[ha];
+            const bool sleep_b = g_handle_to_sleeping[hb];
+            const float inv_ma = sleep_a ? 0.f : 1.0f / handle_to_mass[ha];
+            const float inv_mb = sleep_b ? 0.f : 1.0f / handle_to_mass[hb];
+
+            ktm::fvec3& va = g_handle_to_velocity[ha];
+            ktm::fvec3& vb = g_handle_to_velocity[hb];
+            ktm::fvec3& wa = g_handle_to_angular_vel[ha];
+            ktm::fvec3& wb = g_handle_to_angular_vel[hb];
+
+            // 预施加法向冲量
+            va.x += cached.normal.x * j_warm * inv_ma;
+            va.y += cached.normal.y * j_warm * inv_ma;
+            va.z += cached.normal.z * j_warm * inv_ma;
+            vb.x -= cached.normal.x * j_warm * inv_mb;
+            vb.y -= cached.normal.y * j_warm * inv_mb;
+            vb.z -= cached.normal.z * j_warm * inv_mb;
+
+            // 角速度 warm-start
+#if CORONA_MECHANICS_USE_OBB_SAT
+            const ktm::fvec3 p_a_ws = obb_support_point(a.obb_center, a.obb_u, a.obb_v, a.obb_w,
+                                                        a.obb_hu, a.obb_hv, a.obb_hw, cached.normal);
+            const ktm::fvec3 p_b_ws = obb_support_point(b.obb_center, b.obb_u, b.obb_v, b.obb_w,
+                                                        b.obb_hu, b.obb_hv, b.obb_hw,
+                                                        make_fvec3(-cached.normal.x, -cached.normal.y, -cached.normal.z));
+            const ktm::fvec3 p_contact_ws = vec3_mul(vec3_add(p_a_ws, p_b_ws), 0.5f);
+            const ktm::fvec3 r_a_ws = vec3_sub(p_contact_ws, a.obb_center);
+            const ktm::fvec3 r_b_ws = vec3_sub(p_contact_ws, b.obb_center);
+#else
+            const ktm::fvec3 r_a_ws = make_fvec3(0.f, 0.f, 0.f);
+            const ktm::fvec3 r_b_ws = make_fvec3(0.f, 0.f, 0.f);
+#endif
+            const ktm::fvec3 Jn_ws = vec3_mul(cached.normal, j_warm);
+            if (!sleep_a) {
+                const ktm::fvec3 dw = world_inertia_inv_apply(
+                    a.rot_body_to_world, a.inertia_inv_body, ktm::cross(r_a_ws, Jn_ws));
+                wa.x += dw.x; wa.y += dw.y; wa.z += dw.z;
+            }
+            if (!sleep_b) {
+                const ktm::fvec3 dw = world_inertia_inv_apply(
+                    b.rot_body_to_world, b.inertia_inv_body,
+                    ktm::cross(r_b_ws, make_fvec3(-Jn_ws.x, -Jn_ws.y, -Jn_ws.z)));
+                wb.x += dw.x; wb.y += dw.y; wb.z += dw.z;
+            }
+
+            // 初始化本帧累积量为 warm-start 值
+            contact_accumulated_jn[sorted] = j_warm;
+        }
+
         for (int impulse_iter = 0; impulse_iter < k_impulse_iterations; ++impulse_iter) {
         for (const auto& pair : collision_pairs) {        // 内层：单对接触解一次（顺序依赖）
             std::uintptr_t ha = pair.first;
@@ -1443,7 +1545,13 @@ void MechanicsSystem::update_physics() {
             if (denom_n <= 1e-12f) {
                 continue; // 近奇异（例如双臂共线且惯量项异常）
             }
-            const float j = -(1.0f + rest_use) * v_n / denom_n; // 法向冲量标量；约定 J = j·n 作用于 B 的正向
+            // 增量式累积冲量：保证法向冲量非负（防止分离中的接触对产生吸力）
+            const float j_delta = -(1.0f + rest_use) * v_n / denom_n;
+            auto sorted_pair_jn = (ha < hb) ? std::make_pair(ha, hb) : std::make_pair(hb, ha);
+            float old_accumulated = contact_accumulated_jn[sorted_pair_jn]; // 默认 0
+            float new_accumulated = std::max(0.f, old_accumulated + j_delta);
+            const float j = new_accumulated - old_accumulated; // 实际本次增量
+            contact_accumulated_jn[sorted_pair_jn] = new_accumulated;
 
             va.x += normal.x * j * inv_ma;
             va.y += normal.y * j * inv_ma;
@@ -1613,6 +1721,39 @@ void MechanicsSystem::update_physics() {
         }
         } // 内层：collision_pairs；外层：impulse_iter
 
+        // 帧末写回 warm-start 缓存
+        g_warm_start_cache.clear();
+        for (const auto& [pair_key, jn] : contact_accumulated_jn) {
+            if (jn <= 0.f) continue;
+            // 取本帧实际碰撞法线（需重新计算）
+            auto it_a2 = handle_to_index.find(pair_key.first);
+            auto it_b2 = handle_to_index.find(pair_key.second);
+            if (it_a2 == handle_to_index.end() || it_b2 == handle_to_index.end()) continue;
+            const auto& a2 = mechanics_data[it_a2->second];
+            const auto& b2 = mechanics_data[it_b2->second];
+            ktm::fvec3 cache_normal{};
+            float cache_pen = 0.f;
+#if CORONA_MECHANICS_USE_OBB_SAT
+            if (!sat_obb_obb(a2.obb_center, a2.obb_u, a2.obb_v, a2.obb_w, a2.obb_hu, a2.obb_hv, a2.obb_hw,
+                             b2.obb_center, b2.obb_u, b2.obb_v, b2.obb_w, b2.obb_hu, b2.obb_hv, b2.obb_hw,
+                             cache_normal, cache_pen))
+                continue;
+#else
+            // AABB MTD 法线（简化：用中心差取主轴）
+            float dx = b2.center_world.x - a2.center_world.x;
+            float dy = b2.center_world.y - a2.center_world.y;
+            float dz = b2.center_world.z - a2.center_world.z;
+            float adx2 = std::abs(dx), ady2 = std::abs(dy), adz2 = std::abs(dz);
+            if (ady2 >= adx2 && ady2 >= adz2)
+                cache_normal = make_fvec3(0.f, dy > 0 ? 1.f : -1.f, 0.f);
+            else if (adx2 >= adz2)
+                cache_normal = make_fvec3(dx > 0 ? 1.f : -1.f, 0.f, 0.f);
+            else
+                cache_normal = make_fvec3(0.f, 0.f, dz > 0 ? 1.f : -1.f);
+#endif
+            g_warm_start_cache[pair_key] = CachedContact{cache_normal, jn};
+        }
+
         // ===== 碰撞结束检测：遍历上帧活跃但本帧消失的碰撞对，触发 end 回调 =====
         for (const auto& old_pair : g_prev_active_collisions) {
             if (curr_active_collisions.find(old_pair) != curr_active_collisions.end()) {
@@ -1699,6 +1840,7 @@ void MechanicsSystem::update_physics() {
             }
         }
         g_prev_active_collisions.clear();
+        g_warm_start_cache.clear(); // 无碰撞对时清除缓存
     }
 
     // --- 阶段 5b：地板接触冲量（统一到冲量求解器，替代 Phase 6 的硬编码启发式） ---
