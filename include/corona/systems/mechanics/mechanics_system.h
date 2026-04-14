@@ -6,6 +6,7 @@
 #include <corona/kernel/system/system_base.h>
 
 #include <memory>
+#include <chrono>
 
 namespace Corona::Systems {
 
@@ -59,6 +60,10 @@ class MechanicsSystem : public Kernel::SystemBase {
    private:
     // 力学系统私有成员
     void update_physics();
+
+    float m_time_accumulator{0.0f};
+    std::chrono::steady_clock::time_point m_last_update_time{};
+    bool m_first_update{true};
 };
 
 }  // namespace Corona::Systems
