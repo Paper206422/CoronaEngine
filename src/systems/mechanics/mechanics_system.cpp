@@ -1047,6 +1047,18 @@ void MechanicsSystem::update_physics() {
                 for (auto profile_handle : actor->profile_handles) {
                     if (auto profile = profile_storage.acquire_read(profile_handle)) {
                         if (auto h = profile->mechanics_handle) {
+                            // 读 MechanicsDevice：检查物理开关 + 质量/阻尼/恢复；读失败则用默认值
+                            if (auto m_acc = mechanics_storage.acquire_read(h)) {
+                                if (!m_acc->physics_enabled) continue;  // 物理已禁用，跳过本 mechanics
+                                handle_to_mass[h] = m_acc->mass;
+                                handle_to_damping[h] = m_acc->damping;
+                                handle_to_restitution[h] = m_acc->restitution;
+                            } else {
+                                handle_to_mass[h] = 1.0f;
+                                handle_to_damping[h] = 0.99f;
+                                handle_to_restitution[h] = 0.8f;
+                            }
+
                             mechanics_handles.push_back(h);
                             mech_to_actor[h] = actor_handle;
 
@@ -1056,17 +1068,6 @@ void MechanicsSystem::update_physics() {
                                 g_handle_to_angular_vel[h] = make_fvec3(0.0f, 0.0f, 0.0f);
                                 g_handle_to_sleeping[h] = false;
                                 g_handle_to_sleep_timer[h] = 0.0f;
-                            }
-
-                            // 读 MechanicsDevice：质量/阻尼/恢复；读失败则用默认值
-                            if (auto m_acc = mechanics_storage.acquire_read(h)) {
-                                handle_to_mass[h] = m_acc->mass;
-                                handle_to_damping[h] = m_acc->damping;
-                                handle_to_restitution[h] = m_acc->restitution;
-                            } else {
-                                handle_to_mass[h] = 1.0f;
-                                handle_to_damping[h] = 0.99f;
-                                handle_to_restitution[h] = 0.8f;
                             }
 
                             // 质量防护：避免0质量导致碰撞冲量计算异常

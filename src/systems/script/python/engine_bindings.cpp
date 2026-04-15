@@ -56,6 +56,10 @@ void BindAll(nanobind::module_& m) {
              "Set velocity damping factor")
         .def("get_damping", &Mechanics::get_damping,
              "Get velocity damping factor")
+        .def("set_physics_enabled", &Mechanics::set_physics_enabled, nb::arg("enabled"),
+             "Enable or disable physics simulation for this object")
+        .def("get_physics_enabled", &Mechanics::get_physics_enabled,
+             "Get whether physics simulation is enabled for this object")
         .def("set_collision_callback",
              // Wrap Python callable into a std::function expected by the C++ API.
              [](Mechanics& self, nb::object callback) {

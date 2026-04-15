@@ -89,6 +89,9 @@ struct MechanicsDevice {
     float restitution{0.8f};
     float damping{0.99f};
 
+    // 物理开关：false 时物理系统跳过该对象（不参与模拟，但仍保留数据）
+    bool physics_enabled{true};
+
     // 碰撞回调函数
     std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)> collision_callback;
 

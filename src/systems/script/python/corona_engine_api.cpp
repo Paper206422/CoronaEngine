@@ -1140,6 +1140,24 @@ float Corona::API::Mechanics::get_damping() const {
     return 0.99f;
 }
 
+void Corona::API::Mechanics::set_physics_enabled(bool enabled) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Mechanics::set_physics_enabled] Invalid mechanics handle");
+        return;
+    }
+    if (auto accessor = SharedDataHub::instance().mechanics_storage().acquire_write(handle_)) {
+        accessor->physics_enabled = enabled;
+    }
+}
+
+bool Corona::API::Mechanics::get_physics_enabled() const {
+    if (handle_ == 0) return true;
+    if (auto accessor = SharedDataHub::instance().mechanics_storage().try_acquire_read(handle_)) {
+        return accessor->physics_enabled;
+    }
+    return true;
+}
+
 void Corona::API::Mechanics::set_collision_callback(
     std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)> callback) {
     if (handle_ == 0) {

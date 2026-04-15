@@ -74,6 +74,9 @@ class Mechanics {
     void set_damping(float damping);
     [[nodiscard]] float get_damping() const;
 
+    void set_physics_enabled(bool enabled);
+    [[nodiscard]] bool get_physics_enabled() const;
+
     // 设置碰撞回调（参数为对方 actor 句柄、began(true=enter,false=exit)、法线、碰撞点）
     void set_collision_callback(std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)> callback);
 
