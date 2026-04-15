@@ -591,6 +591,16 @@ Corona::API::Geometry::Geometry(const std::string& model_path) {
 
             if (texture_id != Resource::InvalidTextureId) {
                 auto texture_data = Resource::ResourceManager::get_instance().acquire_read<Resource::Image>(texture_id);
+                if (!texture_data) {
+                    CFW_LOG_WARNING("[Geometry::Geometry] Mesh {} material {}: acquire_read<Image> failed for texture_id={} "
+                                    "(resource not found or type mismatch)",
+                                    mesh_idx, mesh.material_index, texture_id);
+                } else if (texture_data->get_data() == nullptr) {
+                    CFW_LOG_WARNING("[Geometry::Geometry] Mesh {} material {}: texture_id={} Image resource exists but "
+                                    "get_data() is null ({}x{}, channels={})",
+                                    mesh_idx, mesh.material_index, texture_id,
+                                    texture_data->get_width(), texture_data->get_height(), texture_data->get_channels());
+                }
                 if (texture_data && texture_data->get_data() != nullptr) {
                     const int tex_width = texture_data->get_width();
                     const int tex_height = texture_data->get_height();
@@ -688,6 +698,18 @@ Corona::API::Geometry::Geometry(const std::string& model_path) {
         // 为没有纹理的网格使用全局共享的默认 1x1 白色占位纹理
         if (!texture_created) {
             dev.textureBuffer = shared_placeholder_texture;
+            if (mesh.material_index != Resource::InvalidIndex &&
+                mesh.material_index < scene->data.materials.size()) {
+                auto tid = scene->data.materials[mesh.material_index].albedo_texture;
+                CFW_LOG_WARNING("[Geometry::Geometry] Mesh {} using placeholder texture "
+                                "(material='{}', albedo_texture_id={}, InvalidTextureId={})",
+                                mesh_idx,
+                                scene->data.materials[mesh.material_index].name,
+                                tid, Resource::InvalidTextureId);
+            } else {
+                CFW_LOG_WARNING("[Geometry::Geometry] Mesh {} using placeholder texture (no valid material index)",
+                                mesh_idx);
+            }
         }
 
         mesh_devices.emplace_back(std::move(dev));
