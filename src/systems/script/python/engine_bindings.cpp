@@ -61,35 +61,26 @@ void BindAll(nanobind::module_& m) {
         .def("get_physics_enabled", &Mechanics::get_physics_enabled,
              "Get whether physics simulation is enabled for this object")
         .def("set_collision_callback",
-             // Wrap Python callable into a std::function expected by the C++ API.
              [](Mechanics& self, nb::object callback) {
                  using CallbackType = std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)>;
 
                  if (callback.is_none()) {
-                     // Clear callback
                      self.set_collision_callback(CallbackType{});
                      return;
                  }
 
-                // Capture Python callable as a shared_ptr to nb::object with a deleter
-                // that acquires the GIL before destroying the nb::object. This ensures
-                // Py_DECREF runs with the GIL held even if the callback is cleared
-                // from another thread.
                 auto func_ptr = std::shared_ptr<nb::object>(new nb::object(callback), [](nb::object* p) {
                     try {
                         nb::gil_scoped_acquire gil;
                         delete p;
                     } catch (...) {
-                        // If GIL acquisition fails, try to delete anyway to avoid leak.
                         delete p;
                     }
                 });
 
                 CallbackType cb = [func_ptr](std::uintptr_t other, bool began, const std::array<float, 3>& normal, const std::array<float, 3>& point) mutable {
-                    // Acquire Python GIL because this callback may be invoked from another thread
                     nb::gil_scoped_acquire gil;
                     try {
-                        // Try calling new-style callback with (other, began, normal, point)
                         (*func_ptr).attr("__call__")(other, began, normal, point);
                     }  catch (const std::exception &e) {
                         CFW_LOG_ERROR("[Bindings::collision_callback] std::exception when invoking Python callback: {}", e.what());
@@ -105,12 +96,10 @@ void BindAll(nanobind::module_& m) {
                 using CallbackType = std::function<void()>;
                  
                 if (callback.is_none()) {
-                    // 清除回调
                     self.set_on_move_callback(CallbackType{});
                     return;
                 }
                  
-                // 捕获 Python 可调用对象
                 auto func_ptr = std::shared_ptr<nb::object>(new nb::object(callback), [](nb::object* p) {
                     try {
                         nb::gil_scoped_acquire gil;
@@ -121,10 +110,8 @@ void BindAll(nanobind::module_& m) {
                 });
                  
                 CallbackType cb = [func_ptr]() mutable {
-                    // 获取 Python GIL，因为回调可能从其他线程调用
                     nb::gil_scoped_acquire gil;
                     try {
-                        // 调用 Python 回调
                         (*func_ptr).attr("__call__")();
                     } catch (const std::exception& e) {
                         CFW_LOG_ERROR("[Bindings::move_callback] std::exception when invoking Python callback: {}", e.what());
@@ -337,7 +324,12 @@ void BindAll(nanobind::module_& m) {
         .def("set_enabled", &Scene::set_enabled, nb::arg("enabled"),
              "Enable or disable the scene (disabled scenes skip rendering and physics)")
         .def("is_enabled", &Scene::is_enabled,
-             "Return True if the scene is currently enabled");
+             "Return True if the scene is currently enabled")
+        // Scene simulation control
+        .def("set_simulation_enabled", &Scene::set_simulation_enabled, nb::arg("enabled"),
+             "Enable or disable physics simulation for this scene (does not affect rendering)")
+        .def("is_simulation_enabled", &Scene::is_simulation_enabled,
+             "Return True if physics simulation is enabled for this scene");
 
     // ============================================================================
     // Scene I/O utilities
@@ -377,6 +369,7 @@ void BindAll(nanobind::module_& m) {
               } else {
                   PY_LOG_INFO("{}", message.c_str());  // Default to INFO
               } }, nb::arg("level"), nb::arg("message"), "Send a log message to the engine logger with specified level");
+
 }
 
 }  // namespace EngineScripts

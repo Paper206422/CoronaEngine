@@ -344,6 +344,11 @@ class Scene {
     void set_enabled(bool enabled);
     [[nodiscard]] bool is_enabled() const;
 
+    // ========== 物理模拟开关 ==========
+    /// 启用或禁用该场景的物理模拟（不影响渲染）
+    void set_simulation_enabled(bool enabled);
+    [[nodiscard]] bool is_simulation_enabled() const;
+
    private:
     std::uintptr_t handle_{};
 

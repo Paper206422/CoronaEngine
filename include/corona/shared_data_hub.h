@@ -211,6 +211,7 @@ struct EnvironmentDevice {
 
 struct SceneDevice {
     bool enabled{true};
+    bool simulation_enabled{false};
     std::uintptr_t environment{};
     std::vector<std::uintptr_t> actor_handles;
     std::vector<std::uintptr_t> camera_handles;

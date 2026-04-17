@@ -320,6 +320,26 @@ bool Corona::API::Scene::is_enabled() const {
     return false;
 }
 
+void Corona::API::Scene::set_simulation_enabled(bool enabled) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Scene::set_simulation_enabled] Invalid scene handle");
+        return;
+    }
+    if (auto accessor = SharedDataHub::instance().scene_storage().acquire_write(handle_)) {
+        accessor->simulation_enabled = enabled;
+    } else {
+        CFW_LOG_ERROR("[Scene::set_simulation_enabled] Failed to acquire write access to scene storage");
+    }
+}
+
+bool Corona::API::Scene::is_simulation_enabled() const {
+    if (handle_ == 0) return false;
+    if (auto accessor = SharedDataHub::instance().scene_storage().try_acquire_read(handle_)) {
+        return accessor->simulation_enabled;
+    }
+    return false;
+}
+
 // ########################
 //      Environment
 // ########################
@@ -1841,4 +1861,5 @@ void set_default_surface(void* surface) {
 void* get_default_surface() {
     return g_default_surface.load(std::memory_order_relaxed);
 }
+
 }  // namespace Corona::API

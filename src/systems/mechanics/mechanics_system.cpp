@@ -1031,6 +1031,9 @@ void MechanicsSystem::update_physics() {
 
         scene_handles.push_back(reinterpret_cast<std::uintptr_t>(&scene));
 
+        if (!scene.simulation_enabled)
+            continue;
+
         // 若绑定了 environment：覆盖重力、地板参数，并钳制 fixed_dt
         if (scene.environment != 0) {
             if (auto env = environment_storage.acquire_read(scene.environment)) {
