@@ -64,6 +64,7 @@ target_link_libraries(CoronaEngine PUBLIC
         corona::system::geometry
         corona::system::display
         corona::system::kinematics
+        corona::system::scene
         corona::system::script
         corona::system::imgui
 )
