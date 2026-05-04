@@ -20,9 +20,9 @@ include(FetchContent)
 # ------------------------------------------------------------------------------
 # Core dependency declarations
 # ------------------------------------------------------------------------------
-FetchContent_Declare(CabbageHardware
-    GIT_REPOSITORY https://github.com/CoronaEngine/CabbageHardware.git
-    GIT_TAG ff504f5bca3a466480b12709430323c578815b34
+FetchContent_Declare(Horizon
+    GIT_REPOSITORY https://github.com/CoronaEngine/Horizon.git
+    GIT_TAG dade7da79a7ce3c1f20a23c2e7f51a78442ecb1c
     EXCLUDE_FROM_ALL
 )
 
@@ -124,8 +124,8 @@ message(STATUS "[3rdparty] stb module enabled")
 FetchContent_MakeAvailable(nanobind)
 message(STATUS "[3rdparty] nanobind module enabled")
 
-FetchContent_MakeAvailable(CabbageHardware)
-message(STATUS "[3rdparty] CabbageHardware module enabled")
+FetchContent_MakeAvailable(Horizon)
+message(STATUS "[3rdparty] Horizon module enabled")
 
 FetchContent_MakeAvailable(CoronaResource)
 message(STATUS "[3rdparty] CoronaResource module enabled")
@@ -174,8 +174,8 @@ if(MSVC)
 endif()
 
 if(CORONA_BUILD_HARDWARE)
-    FetchContent_MakeAvailable(CabbageHardware)
-    message(STATUS "[3rdparty] CabbageHardware module enabled")
+    FetchContent_MakeAvailable(Horizon)
+    message(STATUS "[3rdparty] Horizon module enabled")
 endif()
 
 if(CORONA_BUILD_VISION)

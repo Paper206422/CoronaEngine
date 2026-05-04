@@ -26,7 +26,7 @@ corona_add_system(script
         Python::Python
         nanobind-static
         corona::resource::manager
-        CabbageHardware
+        Horizon
 )
 
 # Add Python-specific include directories

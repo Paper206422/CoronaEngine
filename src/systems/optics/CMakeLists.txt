@@ -7,7 +7,7 @@ corona_add_system(optics
         optics_system.cpp
         hardware.h
     DEPENDENCIES 
-        CabbageHardware
+        Horizon
         corona::resource::manager
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision-all_libs>
     INCLUDE_DIRS

@@ -30,7 +30,7 @@ list(APPEND IMGUI_SYSTEM_SOURCES
 corona_add_system(imgui
     SOURCES ${IMGUI_SYSTEM_SOURCES}
     DEPENDENCIES
-        CabbageHardware
+        Horizon
         libcef_dll_wrapper
         debug "${CEF_LIBCEF_DEBUG}"
         optimized "${CEF_LIBCEF_RELEASE}"

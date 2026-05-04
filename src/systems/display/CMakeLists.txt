@@ -6,7 +6,7 @@ corona_add_system(display
     SOURCES
         display_system.cpp
     DEPENDENCIES
-        CabbageHardware
+        Horizon
 )
 
 helicon_compile_shaders(corona_display_system
