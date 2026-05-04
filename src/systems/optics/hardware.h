@@ -1,7 +1,8 @@
 ﻿#pragma once
 
-#include <corona/shader_include.h>
 #include <CabbageHardware.h>
+#include <corona/shader_include.h>
+
 #include <optional>
 #include <vector>
 
@@ -9,17 +10,19 @@
 // in SSBO struct members. Provide the missing typedef.
 using uint = uint32_t;
 
+// clang-format off
 #include GLSL(../../../assets/shaders/visibility.vert.glsl)
 #include GLSL(../../../assets/shaders/visibility.frag.glsl)
 #include GLSL(../../../assets/shaders/lighting.comp.glsl)
 #include GLSL(../../../assets/shaders/sky.comp.glsl)
 #include GLSL(../../../assets/shaders/tonemap.comp.glsl)
 #include GLSL(../../../assets/shaders/debug_resolve.comp.glsl)
+// clang-format on
 
 struct Hardware {
     // === Visibility Buffer (replaces GBuffer rasterization output) ===
-    HardwareImage visibilityImage;          // RGBA32_UINT: R=instanceID, G=primitiveID
-    HardwareImage depthImage;               // D32_FLOAT: depth (kept from GBuffer)
+    HardwareImage visibilityImage;  // RGBA32_UINT: R=instanceID, G=primitiveID
+    HardwareImage depthImage;       // D32_FLOAT: depth (kept from GBuffer)
 
     // === Final composited output ===
     HardwareImage finalOutputImage;
@@ -27,7 +30,7 @@ struct Hardware {
 
     // === Uniform buffers ===
     HardwareBuffer uniformBuffer;
-    HardwareBuffer vpUniformBuffer;         // renamed: view-projection matrix
+    HardwareBuffer vpUniformBuffer;  // renamed: view-projection matrix
 
     // === Instance & Material tables (uploaded per frame) ===
     HardwareBuffer instanceInfoBuffer;

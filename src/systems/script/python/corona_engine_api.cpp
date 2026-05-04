@@ -1,6 +1,3 @@
-#include <algorithm>
-#include <atomic>
-#include <iterator>
 #include <CabbageHardware.h>
 #include <corona/events/display_system_events.h>
 #include <corona/events/optics_system_events.h>
@@ -12,11 +9,15 @@
 #include <corona/systems/script/corona_engine_api.h>
 #include <corona/utils/path_utils.h>
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <iterator>
+
 #include "corona/resource/types/image.h"
 
-namespace
-{
-    std::atomic<void*> g_default_surface{nullptr};
+namespace {
+std::atomic<void*> g_default_surface{nullptr};
 }
 
 // ########################
@@ -230,8 +231,8 @@ void Corona::API::Scene::remove_camera(Camera* camera) {
     auto camera_it = std::find(cameras_.begin(), cameras_.end(), camera);
     const bool existed_in_vector = camera_it != cameras_.end();
     const std::size_t camera_pos = existed_in_vector
-                                         ? static_cast<std::size_t>(std::distance(cameras_.begin(), camera_it))
-                                         : 0;
+                                       ? static_cast<std::size_t>(std::distance(cameras_.begin(), camera_it))
+                                       : 0;
     const bool existed_in_index = cameras_index_.contains(camera);
 
     if (!existed_in_vector && !existed_in_index) {
@@ -315,6 +316,26 @@ bool Corona::API::Scene::is_enabled() const {
     if (handle_ == 0) return false;
     if (auto accessor = SharedDataHub::instance().scene_storage().try_acquire_read(handle_)) {
         return accessor->enabled;
+    }
+    return false;
+}
+
+void Corona::API::Scene::set_simulation_enabled(bool enabled) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Scene::set_simulation_enabled] Invalid scene handle");
+        return;
+    }
+    if (auto accessor = SharedDataHub::instance().scene_storage().acquire_write(handle_)) {
+        accessor->simulation_enabled = enabled;
+    } else {
+        CFW_LOG_ERROR("[Scene::set_simulation_enabled] Failed to acquire write access to scene storage");
+    }
+}
+
+bool Corona::API::Scene::is_simulation_enabled() const {
+    if (handle_ == 0) return false;
+    if (auto accessor = SharedDataHub::instance().scene_storage().try_acquire_read(handle_)) {
+        return accessor->simulation_enabled;
     }
     return false;
 }
@@ -590,6 +611,16 @@ Corona::API::Geometry::Geometry(const std::string& model_path) {
 
             if (texture_id != Resource::InvalidTextureId) {
                 auto texture_data = Resource::ResourceManager::get_instance().acquire_read<Resource::Image>(texture_id);
+                if (!texture_data) {
+                    CFW_LOG_WARNING("[Geometry::Geometry] Mesh {} material {}: acquire_read<Image> failed for texture_id={} "
+                                    "(resource not found or type mismatch)",
+                                    mesh_idx, mesh.material_index, texture_id);
+                } else if (texture_data->get_data() == nullptr) {
+                    CFW_LOG_WARNING("[Geometry::Geometry] Mesh {} material {}: texture_id={} Image resource exists but "
+                                    "get_data() is null ({}x{}, channels={})",
+                                    mesh_idx, mesh.material_index, texture_id,
+                                    texture_data->get_width(), texture_data->get_height(), texture_data->get_channels());
+                }
                 if (texture_data && texture_data->get_data() != nullptr) {
                     const int tex_width = texture_data->get_width();
                     const int tex_height = texture_data->get_height();
@@ -687,6 +718,18 @@ Corona::API::Geometry::Geometry(const std::string& model_path) {
         // 为没有纹理的网格使用全局共享的默认 1x1 白色占位纹理
         if (!texture_created) {
             dev.textureBuffer = shared_placeholder_texture;
+            if (mesh.material_index != Resource::InvalidIndex &&
+                mesh.material_index < scene->data.materials.size()) {
+                auto tid = scene->data.materials[mesh.material_index].albedo_texture;
+                CFW_LOG_WARNING("[Geometry::Geometry] Mesh {} using placeholder texture "
+                                "(material='{}', albedo_texture_id={}, InvalidTextureId={})",
+                                mesh_idx,
+                                scene->data.materials[mesh.material_index].name,
+                                tid, Resource::InvalidTextureId);
+            } else {
+                CFW_LOG_WARNING("[Geometry::Geometry] Mesh {} using placeholder texture (no valid material index)",
+                                mesh_idx);
+            }
         }
 
         mesh_devices.emplace_back(std::move(dev));
@@ -1139,8 +1182,26 @@ float Corona::API::Mechanics::get_damping() const {
     return 0.99f;
 }
 
+void Corona::API::Mechanics::set_physics_enabled(bool enabled) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Mechanics::set_physics_enabled] Invalid mechanics handle");
+        return;
+    }
+    if (auto accessor = SharedDataHub::instance().mechanics_storage().acquire_write(handle_)) {
+        accessor->physics_enabled = enabled;
+    }
+}
+
+bool Corona::API::Mechanics::get_physics_enabled() const {
+    if (handle_ == 0) return true;
+    if (auto accessor = SharedDataHub::instance().mechanics_storage().try_acquire_read(handle_)) {
+        return accessor->physics_enabled;
+    }
+    return true;
+}
+
 void Corona::API::Mechanics::set_collision_callback(
-    std::function<void(std::uintptr_t, bool, const std::array<float,3>&, const std::array<float,3>&)> callback) {
+    std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)> callback) {
     if (handle_ == 0) {
         CFW_LOG_WARNING("[Mechanics::set_collision_callback] Invalid mechanics handle");
         return;
@@ -1148,7 +1209,7 @@ void Corona::API::Mechanics::set_collision_callback(
 
     if (auto accessor = SharedDataHub::instance().mechanics_storage().acquire_write(handle_)) {
         // Store a callback that accepts std::array<float,3> to match nanobind-convertible types.
-        accessor->collision_callback = [callback](std::uintptr_t other, bool began, const std::array<float,3>& normal_arr, const std::array<float,3>& point_arr) {
+        accessor->collision_callback = [callback](std::uintptr_t other, bool began, const std::array<float, 3>& normal_arr, const std::array<float, 3>& point_arr) {
             if (callback) {
                 callback(other, began, normal_arr, point_arr);
             }
@@ -1603,7 +1664,6 @@ std::uintptr_t Corona::API::Camera::get_handle() const {
     return handle_;
 }
 
-
 void Corona::API::Camera::set_surface(void* surface) {
     if (handle_ == 0) {
         CFW_LOG_WARNING("[Camera::set_surface] Invalid camera handle");
@@ -1622,26 +1682,55 @@ void Corona::API::Camera::set_surface(void* surface) {
     }
 }
 
+void* Corona::API::Camera::get_surface() const {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Camera::get_surface] Invalid camera handle");
+        return nullptr;
+    }
+
+    if (auto accessor = SharedDataHub::instance().camera_storage().acquire_read(handle_)) {
+        return accessor->surface;
+    }
+
+    CFW_LOG_ERROR("[Camera::get_surface] Failed to acquire read access to camera storage");
+    return nullptr;
+}
+
 void Corona::API::Camera::save_screenshot(const std::string& path) const {
     if (handle_ == 0) {
         CFW_LOG_WARNING("[Camera::save_screenshot] Invalid camera handle");
         return;
     }
 
-    void* surface = nullptr;
-    if (auto accessor = SharedDataHub::instance().camera_storage().acquire_read(handle_)) {
-        surface = accessor->surface;
-    }
-
-    if (surface == nullptr) {
-        CFW_LOG_WARNING("[Camera::save_screenshot] Camera has no associated surface");
-        return;
-    }
-
     if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
-        event_bus->publish<Events::ScreenshotRequestEvent>({surface, path});
+        event_bus->publish<Events::ScreenshotRequestEvent>({handle_, path, nullptr});
         CFW_LOG_INFO("[Camera::save_screenshot] Screenshot request queued: {}", path);
     }
+}
+
+bool Corona::API::Camera::save_screenshot_sync(const std::string& path) const {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Camera::save_screenshot_sync] Invalid camera handle");
+        return false;
+    }
+
+    auto promise = std::make_shared<std::promise<bool>>();
+    auto future = promise->get_future();
+
+    if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
+        event_bus->publish<Events::ScreenshotRequestEvent>({handle_, path, std::move(promise)});
+        CFW_LOG_INFO("[Camera::save_screenshot_sync] Screenshot request queued (sync): {}", path);
+    } else {
+        return false;
+    }
+
+    // Block until OpticsSystem processes this screenshot
+    auto status = future.wait_for(std::chrono::seconds(10));
+    if (status == std::future_status::timeout) {
+        CFW_LOG_WARNING("[Camera::save_screenshot_sync] Timeout waiting for screenshot: {}", path);
+        return false;
+    }
+    return future.get();
 }
 
 void Corona::API::Camera::set_output_mode(const std::string& mode) {
@@ -1676,12 +1765,18 @@ std::string Corona::API::Camera::get_output_mode() const {
 
     if (auto accessor = SharedDataHub::instance().camera_storage().acquire_read(handle_)) {
         switch (accessor->output_mode) {
-            case CameraOutputMode::BaseColor:     return "base_color";
-            case CameraOutputMode::Normal:        return "normal";
-            case CameraOutputMode::WorldPosition: return "position";
-            case CameraOutputMode::ObjectID:      return "object_id";
-            case CameraOutputMode::FinalColor:    [[fallthrough]];
-            default:                              return "final_color";
+            case CameraOutputMode::BaseColor:
+                return "base_color";
+            case CameraOutputMode::Normal:
+                return "normal";
+            case CameraOutputMode::WorldPosition:
+                return "position";
+            case CameraOutputMode::ObjectID:
+                return "object_id";
+            case CameraOutputMode::FinalColor:
+                [[fallthrough]];
+            default:
+                return "final_color";
         }
     }
     return "final_color";
@@ -1695,7 +1790,7 @@ Corona::API::ImageEffects::ImageEffects()
 }
 
 Corona::API::ImageEffects::~ImageEffects() {
-    if (handle_ != 0) { 
+    if (handle_ != 0) {
         // Corona::SharedDataHub::instance().image_effects_storage().deallocate(handle_);
         handle_ = 0;
     }
@@ -1747,23 +1842,18 @@ void Corona::API::Camera::pick_actor_at_pixel(int x, int y) const {
     CFW_LOG_WARNING("[Camera::pick_actor_at_pixel] Not implemented yet");
 }
 
-namespace Corona::API
-{
-void set_default_surface(void* surface)
-{
+namespace Corona::API {
+void set_default_surface(void* surface) {
     g_default_surface.store(surface, std::memory_order_relaxed);
 
     // 句柄到达时，补写到已存在的相机，避免“先有 camera 后有 surface”的空窗。
-    for (auto& camera : SharedDataHub::instance().camera_storage())
-    {
+    for (auto& camera : SharedDataHub::instance().camera_storage()) {
         camera.surface = surface;
     }
 }
 
-void* get_default_surface()
-{
+void* get_default_surface() {
     return g_default_surface.load(std::memory_order_relaxed);
 }
-} // namespace Corona::API
 
-
+}  // namespace Corona::API

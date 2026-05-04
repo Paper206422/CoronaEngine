@@ -5,6 +5,7 @@
 
 #include <nanobind/nanobind.h>
 #include <windows.h>
+
 #include <iostream>
 
 namespace Corona::Script::Python {
@@ -34,8 +35,8 @@ auto log_python_error(const nanobind::python_error& e) -> void {
 auto wstr_to_str(const std::wstring& wstr) -> std::string {
     if (wstr.empty()) return {};
     int len = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(),
-                                   static_cast<int>(wstr.size()),
-                                   nullptr, 0, nullptr, nullptr);
+                                  static_cast<int>(wstr.size()),
+                                  nullptr, 0, nullptr, nullptr);
     if (len <= 0) return {};
     std::string out(static_cast<size_t>(len), '\0');
     WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(),
@@ -44,4 +45,4 @@ auto wstr_to_str(const std::wstring& wstr) -> std::string {
     return out;
 }
 
-} // namespace Corona::Script::Python
+}  // namespace Corona::Script::Python

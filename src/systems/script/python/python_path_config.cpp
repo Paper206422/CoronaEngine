@@ -50,4 +50,4 @@ auto site_packages_dir() -> std::string {
     return normalize(std::string(CORONA_PYTHON_MODULE_LIB_DIR) + "/site-packages");
 }
 
-}  // namespace PathCfg
+}  // namespace Corona::Script::Python::PathCfg

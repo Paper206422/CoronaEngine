@@ -75,8 +75,7 @@ void BindCef(nanobind::module_& m) {
                 return nb::str("{\"success\": false \"}");
             } }, nb::arg("tab_id"), nb::arg("js_code"));
 
-
-     // 最小化浏览器标签页
+    // 最小化浏览器标签页
     m.def("minimize_browser_tab", [](int tab_id, bool if_close) -> bool {
             try {
                 return Corona::Systems::UI::BrowserManager::instance().hide_tab(tab_id, if_close);
@@ -94,7 +93,6 @@ void BindCef(nanobind::module_& m) {
                 return false;
             } }, nb::arg("tab_id"), nb::rv_policy::take_ownership);
 
-
     m.def("set_tab_drag_regions", [](int tab_id, nb::list py_regions) {
             std::vector<Corona::Systems::UI::DragRegion> regions;
             for (auto item : py_regions) {
@@ -106,9 +104,7 @@ void BindCef(nanobind::module_& m) {
                     nb::cast<float>(dict["h"])
                 });
             }
-            Corona::Systems::UI::BrowserManager::instance().set_tab_drag_regions(tab_id, regions);
-        }, nb::arg("tab_id"), nb::arg("regions"));
-
+            Corona::Systems::UI::BrowserManager::instance().set_tab_drag_regions(tab_id, regions); }, nb::arg("tab_id"), nb::arg("regions"));
 }
 
 }  // namespace EngineScripts

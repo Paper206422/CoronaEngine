@@ -1,4 +1,9 @@
-﻿#include <corona/kernel/core/i_logger.h>
+﻿#include <corona/events/display_system_events.h>
+#include <corona/kernel/core/i_logger.h>
+#include <corona/kernel/core/kernel_context.h>
+#include <corona/kernel/event/i_event_bus.h>
+#include <corona/shared_data_hub.h>
+#include <corona/systems/script/corona_engine_api.h>
 #include <corona/systems/ui/vulkan_backend.h>
 
 #include <algorithm>
@@ -7,12 +12,6 @@
 #include <limits>
 #include <type_traits>
 #include <vector>
-
-#include <corona/events/display_system_events.h>
-#include <corona/kernel/core/kernel_context.h>
-#include <corona/kernel/event/i_event_bus.h>
-#include <corona/shared_data_hub.h>
-#include <corona/systems/script/corona_engine_api.h>
 
 namespace {
 struct ImGuiGpuVertex {
@@ -43,11 +42,11 @@ namespace Corona::Systems {
 
 // Per-secondary-viewport data stored in ImGuiViewport::RendererUserData.
 struct ViewportData {
-    HardwareDisplayer       displayer;   // per-window swapchain/presentation
-    ViewportRenderResources resources;   // per-window render target + geometry buffers
+    HardwareDisplayer displayer;                                    // per-window swapchain/presentation
+    ViewportRenderResources resources;                              // per-window render target + geometry buffers
     RasterizerPipeline<imgui_vert_glsl, imgui_frag_glsl> pipeline;  // independent pipeline instance
     bool pipeline_ready = false;
-    bool pending_show   = false;         // deferred show: wait until first frame is rendered
+    bool pending_show = false;  // deferred show: wait until first frame is rendered
 };
 
 // Deferred Platform_ShowWindow: intercept to delay OS window visibility until after the
@@ -147,11 +146,11 @@ void VulkanBackend::register_viewport_callbacks() {
     io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;
 
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-    platform_io.Renderer_CreateWindow  = renderer_create_window;
+    platform_io.Renderer_CreateWindow = renderer_create_window;
     platform_io.Renderer_DestroyWindow = renderer_destroy_window;
     platform_io.Renderer_SetWindowSize = renderer_set_window_size;
-    platform_io.Renderer_RenderWindow  = renderer_render_window;
-    platform_io.Renderer_SwapBuffers   = renderer_swap_buffers;
+    platform_io.Renderer_RenderWindow = renderer_render_window;
+    platform_io.Renderer_SwapBuffers = renderer_swap_buffers;
 
     // Intercept Platform_ShowWindow to defer OS window visibility until first frame is presented.
     s_original_platform_show_window = platform_io.Platform_ShowWindow;
@@ -250,7 +249,6 @@ bool VulkanBackend::render_draw_data(
     RasterizerPipeline<imgui_vert_glsl, imgui_frag_glsl>& pipeline,
     const HardwareImage& font_atlas,
     ImageUsage render_target_usage) {
-
     if (draw_data == nullptr) {
         return false;
     }
@@ -447,12 +445,11 @@ void VulkanBackend::present_frame() {
 
     if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
         ++frame_index_;
-        event_bus->publish<Events::UIFrameReadyEvent>({
-            surface_,
-            image_handle_,
-            frame_index_,
-            main_resources_.width,
-            main_resources_.height});
+        event_bus->publish<Events::UIFrameReadyEvent>({surface_,
+                                                       image_handle_,
+                                                       frame_index_,
+                                                       main_resources_.width,
+                                                       main_resources_.height});
     }
 
     main_resources_.frame_ready = false;
@@ -663,4 +660,3 @@ void VulkanBackend::renderer_swap_buffers(ImGuiViewport* vp, void* /*render_arg*
 }
 
 }  // namespace Corona::Systems
-

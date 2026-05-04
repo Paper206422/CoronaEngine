@@ -18,6 +18,8 @@ file(GLOB IMGUI_SYSTEM_SOURCES
     cef/browser_manager.cpp
     cef/browser_ui.cpp
     cef/cef_client.cpp
+    cef/cef_query_bridge.cpp
+    cef/cef_realtime_bridge.cpp
     cef/cef_py_bind.cpp
     sdl/sdl_utils.cpp
 )

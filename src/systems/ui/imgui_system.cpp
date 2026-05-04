@@ -1,6 +1,7 @@
 ﻿#include <corona/kernel/core/i_logger.h>
-#include <corona/systems/ui/imgui_system.h>
 #include <corona/systems/script/script_system.h>
+#include <corona/systems/ui/imgui_system.h>
+
 #include <chrono>
 #include <thread>
 
@@ -8,11 +9,9 @@
 #include "cef/cef_client.h"
 #include "imgui/imgui_ui.h"
 
-namespace Corona::Systems 
-{
+namespace Corona::Systems {
 
-bool ImguiSystem::initialize(Kernel::ISystemContext* ctx) 
-{
+bool ImguiSystem::initialize(Kernel::ISystemContext* ctx) {
     CFW_LOG_NOTICE("ImguiSystem: Initializing...");
 
     // 1. 初始化 CEF (必须在主线程)
@@ -23,8 +22,7 @@ bool ImguiSystem::initialize(Kernel::ISystemContext* ctx)
 
     // 2. 初始化 SDL 和 ImGui (必须在主线程)
     CFW_LOG_NOTICE("ImguiSystem: Initializing SDL and ImGui in main thread...");
-    if (!UI::initialize_sdl_imgui(window_, io_, vulkan_backend_)) 
-    {
+    if (!UI::initialize_sdl_imgui(window_, io_, vulkan_backend_)) {
         CFW_LOG_ERROR("SDL/ImGui initialization failed.");
         UI::shutdown_cef();
         return false;
@@ -42,7 +40,7 @@ bool ImguiSystem::initialize(Kernel::ISystemContext* ctx)
     if (event_bus) {
         sdl_start_id_ = event_bus->subscribe<Events::ScriptFinishStartEvent>(
             [this](const Events::ScriptFinishStartEvent& event) {
-                //SDL_MaximizeWindow(window_);
+                // SDL_MaximizeWindow(window_);
                 SDL_ShowWindow(window_);
             });
         CFW_LOG_DEBUG("ImguiSystem: EventBus subscriptions ready");
@@ -67,29 +65,24 @@ void ImguiSystem::stop() {
     state_ = Kernel::SystemState::stopped;
 }
 
-void ImguiSystem::update() 
-{
-    if (!running_ || !sdl_initialized_) 
-    {
+void ImguiSystem::update() {
+    if (!running_ || !sdl_initialized_) {
         return;
     }
 
     static UI::UiFrameRunner frame_runner;
-    UI::UiFrameContext context
-    {
+    UI::UiFrameContext context{
         window_,
         io_,
         vulkan_backend_.get(),
         &active_tab_id_,
         &running_,
-        &window_size_changed_
-    };
+        &window_size_changed_};
 
     frame_runner.run_frame(context);
 }
 
-void ImguiSystem::shutdown() 
-{
+void ImguiSystem::shutdown() {
     CFW_LOG_NOTICE("ImGuiSystem: Shutting down...");
     running_ = false;
 
@@ -103,8 +96,7 @@ void ImguiSystem::shutdown()
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     // 清理 SDL 和 ImGui (必须在主线程)
-    if (sdl_initialized_) 
-    {
+    if (sdl_initialized_) {
         CFW_LOG_INFO("ImGuiSystem: Shutting down SDL and ImGui...");
         UI::shutdown_sdl_imgui(window_, io_, vulkan_backend_);
         sdl_initialized_ = false;

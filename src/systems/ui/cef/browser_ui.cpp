@@ -360,7 +360,7 @@ void BrowserRenderer::render_single_tab(int tab_id,
             // 检测鼠标是否在拖拽区域内（若为空则全区域可拖拽）
             {
                 std::lock_guard<std::mutex> lock(tab->drag_mutex);
-               
+
                 for (const auto& region : tab->drag_regions) {
                     ImRect abs_region(
                         cef_origin.x + region.x,

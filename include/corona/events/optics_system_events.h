@@ -2,6 +2,8 @@
 
 #include <corona/kernel/utils/storage.h>
 
+#include <future>
+#include <memory>
 #include <string>
 
 namespace Corona {
@@ -33,11 +35,14 @@ struct OpticsToEngineDemoEvent {
 
 /**
  * @brief Screenshot request (published by Camera/Viewport API, consumed by OpticsSystem)
+ *
+ * Uses camera_handle as the matching key so that offscreen cameras (without a
+ * display surface) can still take screenshots.
  */
-struct ScreenshotRequestEvent
-{
-    void* surface = nullptr;
+struct ScreenshotRequestEvent {
+    std::uintptr_t camera_handle = 0;
     std::string file_path;
+    std::shared_ptr<std::promise<bool>> completion_promise;
 };
 
 }  // namespace Corona::Events

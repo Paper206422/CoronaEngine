@@ -30,14 +30,11 @@ struct ImguiToPythonEvent {
     float delta_time;
 };
 
-
-
 /**
  * @brief 脚本系统到引擎的跨线程事件（使用 EventStream）
  */
 struct ImguiCallPythonEvent {
     void* args;
 };
-
 
 }  // namespace Corona::Events

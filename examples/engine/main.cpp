@@ -7,7 +7,6 @@
 #include <windows.h>
 #endif
 
-
 // 全局引擎实例指针，用于信号处理
 static Corona::Engine* g_engine = nullptr;
 
@@ -64,7 +63,6 @@ void signal_handler(int signal) {
  * 4. 优雅关闭引擎
  */
 int main(int argc, char* argv[]) {
-
     CFW_LOG_NOTICE(
         "\n"
         "    +==================================================================+\n"

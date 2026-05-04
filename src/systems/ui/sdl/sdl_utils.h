@@ -98,4 +98,3 @@ class SDLEventHandler {
 };
 
 }  // namespace Corona::Systems::UI
-

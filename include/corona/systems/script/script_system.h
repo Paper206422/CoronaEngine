@@ -20,7 +20,7 @@ namespace Corona::Systems {
  * 运行在独立线程，以 60 FPS 响应输入事件。
  */
 class ScriptSystem : public Kernel::SystemBase {
-public:
+   public:
     ScriptSystem();
 
     ~ScriptSystem() override;
@@ -58,7 +58,7 @@ public:
      */
     void shutdown() override;
 
-private:
+   private:
     std::unique_ptr<Script::Python::PythonAPI> python_api_;
 
     Kernel::EventId python_start_id_ = 0;

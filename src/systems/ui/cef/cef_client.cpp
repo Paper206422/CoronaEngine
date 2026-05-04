@@ -1,136 +1,15 @@
 ﻿#include "cef_client.h"
 
-#include <corona/kernel/core/i_logger.h>
+#include <windows.h>
 
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
-#include <iostream>
-#include <windows.h>
 
 #include "browser_manager.h"
+#include "cef_bridge_helpers.h"
 
 namespace Corona::Systems::UI {
-
-// ============================================================================
-// BrowserSideJSHandler 实现
-// ============================================================================
-
-BrowserSideJSHandler::~BrowserSideJSHandler() {
-    PyGILState_STATE state = PyGILState_Ensure();
-    Py_XDECREF(pFunc_);
-    PyGILState_Release(state);
-}
-
-void BrowserSideJSHandler::initialize_python() {
-    if (!Py_IsInitialized()) {
-        Py_Initialize();
-        PyEval_SaveThread();
-    }
-
-    PyGILState_STATE state = PyGILState_Ensure();
-    PyObject* pModule = nullptr;
-
-    try {
-        PyRun_SimpleString("import sys");
-        PyRun_SimpleString("import os");
-        PyRun_SimpleString("sys.path.insert(0, os.path.join(os.getcwd(), 'CabbageEditor'))");
-
-        PyObject* pName = PyUnicode_FromString("main");
-        if (!pName) {
-            throw std::runtime_error("Failed to create module name");
-        }
-
-        pModule = PyImport_Import(pName);
-        Py_DECREF(pName);
-
-        if (!pModule) {
-            PyErr_Print();
-            PyGILState_Release(state);
-            throw std::runtime_error("Failed to import Python module 'main'");
-        }
-
-        PyObject* pClass = PyObject_GetAttrString(pModule, "editor");
-        if (!pClass) {
-            Py_DECREF(pModule);
-            PyErr_Print();
-            PyGILState_Release(state);
-            throw std::runtime_error("Failed to get 'editor' attribute from module");
-        }
-
-        if (PyCallable_Check(pClass)) {
-            pFunc_ = PyObject_GetAttrString(pClass, "deal_func_from_js");
-        }
-
-        Py_DECREF(pClass);
-        Py_DECREF(pModule);
-
-    } catch (const std::exception&) {
-        if (pModule) {
-            Py_DECREF(pModule);
-        }
-        PyErr_Print();
-        PyGILState_Release(state);
-        throw;
-    }
-
-    PyGILState_Release(state);
-}
-
-bool BrowserSideJSHandler::OnQuery(CefRefPtr<CefBrowser> browser,
-                                   CefRefPtr<CefFrame> frame,
-                                   int64_t query_id,
-                                   const CefString& request,
-                                   bool persistent,
-                                   CefRefPtr<Callback> callback) {
-    CEF_REQUIRE_UI_THREAD();
-    std::string req = request.ToString();
-    VUE_LOG_INFO("Received query: {}", req.c_str());
-
-    if (!Py_IsInitialized()) {
-        Py_Initialize();
-        PyEval_SaveThread();
-    }
-
-    PyGILState_STATE gstate = PyGILState_Ensure();
-
-    try {
-        if (!pFunc_) {
-            initialize_python();
-        }
-
-        PyObject* args = PyTuple_Pack(1, PyUnicode_FromString(req.c_str()));
-        PyObject* object = PyObject_CallObject(pFunc_, args);
-        Py_DECREF(args);
-
-        if (!object) {
-            PyErr_Print();
-            VUE_LOG_ERROR("Python function call failed for request");
-            callback->Failure(0, "Python function call failed");
-        } else {
-            if (PyUnicode_Check(object)) {
-                const char* result = PyUnicode_AsUTF8(object);
-                callback->Success(result);
-            } else {
-                if (PyObject* str_obj = PyObject_Str(object)) {
-                    const char* result = PyUnicode_AsUTF8(str_obj);
-                    callback->Success(result);
-                    Py_DECREF(str_obj);
-                }
-            }
-            Py_DECREF(object);
-        }
-
-    } catch (const std::exception& e) {
-        std::cerr << "Exception in OnQuery: " << e.what() << std::endl;
-        callback->Failure(0, e.what());
-        PyGILState_Release(gstate);
-        return false;
-    }
-
-    PyGILState_Release(gstate);
-    return true;
-}
 
 // ============================================================================
 // OffscreenRenderHandler 实现
@@ -165,7 +44,7 @@ void OffscreenRenderHandler::OnPaint(CefRefPtr<CefBrowser> browser, PaintElement
 
 bool OffscreenRenderHandler::GetScreenPoint(CefRefPtr<CefBrowser> browser, int viewX, int viewY, int& screenX, int& screenY) {
     if (!tab) return false;
-    
+
     // 将局部坐标转换成屏幕绝对坐标
     POINT mouse_pt;
     GetCursorPos(&mouse_pt);
@@ -267,11 +146,20 @@ bool OffscreenCefClient::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
                                           int line) {
     const char* levelStr = "LOG";
     switch (level) {
-        case LOGSEVERITY_DEBUG:   levelStr = "DEBUG"; break;
-        case LOGSEVERITY_INFO:    levelStr = "INFO"; break;
-        case LOGSEVERITY_WARNING: levelStr = "WARNING"; break;
-        case LOGSEVERITY_ERROR:   levelStr = "ERROR"; break;
-        default: break;
+        case LOGSEVERITY_DEBUG:
+            levelStr = "DEBUG";
+            break;
+        case LOGSEVERITY_INFO:
+            levelStr = "INFO";
+            break;
+        case LOGSEVERITY_WARNING:
+            levelStr = "WARNING";
+            break;
+        case LOGSEVERITY_ERROR:
+            levelStr = "ERROR";
+            break;
+        default:
+            break;
     }
 
     // if (!source.empty()) {
@@ -297,15 +185,16 @@ bool OffscreenCefClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
                                                   CefProcessId source_process,
                                                   CefRefPtr<CefProcessMessage> message) {
     CEF_REQUIRE_UI_THREAD();
+    if (handle_realtime_process_message(message)) {
+        return true;
+    }
     if (message->GetName() == "RendererMessage") {
         std::string msg = message->GetArgumentList()->GetString(0);
         CFW_LOG_INFO("CEF: Received message from Renderer: {}", msg);
         return true;
     }
-    if (browser_side_router_) {
-        return browser_side_router_->OnProcessMessageReceived(browser, frame, source_process, message);
-    }
-    return false;
+
+    return forward_process_message_to_router(browser_side_router_, browser, frame, source_process, message);
 }
 
 // ============================================================================
@@ -327,7 +216,6 @@ void OffscreenCefClient::OnBeforeContextMenu(CefRefPtr<CefBrowser> browser,
 
     // 添加刷新菜单项
     model->AddItem(MENU_ID_REFRESH, "刷新页面");
-
 }
 
 bool OffscreenCefClient::OnContextMenuCommand(CefRefPtr<CefBrowser> browser,
@@ -423,8 +311,7 @@ bool initialize_cef() {
         CFW_LOG_WARNING("CEF: cef_subprocess.exe not found, using main executable as subprocess");
     }
 
-    CefString(&settings.user_agent).FromASCII(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    CefString(&settings.user_agent).FromASCII("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
     settings.background_color = CefColorSetARGB(255, 255, 255, 255);
     settings.persist_session_cookies = true;
 

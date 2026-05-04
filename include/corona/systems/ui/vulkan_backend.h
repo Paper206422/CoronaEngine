@@ -1,9 +1,11 @@
 ﻿#pragma once
 
-#include <corona/shader_include.h>
 #include <CabbageHardware.h>
+#include <corona/shader_include.h>
+// clang-format off
 #include GLSL(../../../../assets/shaders/imgui.vert.glsl)
 #include GLSL(../../../../assets/shaders/imgui.frag.glsl)
+// clang-format on
 #include <SDL3/SDL.h>
 #include <imgui.h>
 
@@ -18,15 +20,15 @@ namespace Corona::Systems {
 // Used by both the main viewport and secondary (dragged-out) viewports.
 // ============================================================================
 struct ViewportRenderResources {
-    HardwareImage    render_target;
+    HardwareImage render_target;
     HardwareExecutor executor;
-    HardwareBuffer   vertex_buffer;
-    HardwareBuffer   index_buffer;
-    size_t           vertex_buffer_capacity = 0;
-    size_t           index_buffer_capacity  = 0;
-    uint32_t         width  = 0;
-    uint32_t         height = 0;
-    bool             frame_ready = false;
+    HardwareBuffer vertex_buffer;
+    HardwareBuffer index_buffer;
+    size_t vertex_buffer_capacity = 0;
+    size_t index_buffer_capacity = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    bool frame_ready = false;
 };
 
 class VulkanBackend {
@@ -68,7 +70,7 @@ class VulkanBackend {
     bool ensure_font_texture();
 
     static bool ensure_render_target(ViewportRenderResources& resources, uint32_t width, uint32_t height,
-                                      ImageUsage usage = ImageUsage::SampledImage);
+                                     ImageUsage usage = ImageUsage::SampledImage);
 
     // --- Multi-Viewport renderer callbacks (static, access shared state via s_instance_) ---
     static void renderer_create_window(ImGuiViewport* vp);

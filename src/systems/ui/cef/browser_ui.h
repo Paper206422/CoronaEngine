@@ -19,7 +19,9 @@ struct BrowserTab;
 // ============================================================================
 
 struct PendingKeyEvent {
-    enum EventType { kKeyEvent, kTextEvent, kImeComposition };
+    enum EventType { kKeyEvent,
+                     kTextEvent,
+                     kImeComposition };
 
     EventType type;
     int key_code = 0;
@@ -86,4 +88,3 @@ class BrowserRenderer {
 };
 
 }  // namespace Corona::Systems::UI
-

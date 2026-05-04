@@ -67,15 +67,17 @@ class OpticsSystem : public Kernel::SystemBase {
     bool initialize_render_pipelines();
 
     void optics_pipeline(float frame_count, uint64_t frame_index);
-    void process_pending_screenshots(void* surface);
+    void process_pending_screenshots(std::uintptr_t camera_handle, HardwareImage& render_target);
 
     std::unique_ptr<Hardware> hardware_;
     std::uintptr_t image_handle_{};
+    HardwareImage offscreen_image_;  ///< Dedicated render target for offscreen cameras (no surface)
+    uint32_t offscreen_w_{0}, offscreen_h_{0};
 
-    struct PendingScreenshot
-    {
-        void* surface = nullptr;
+    struct PendingScreenshot {
+        std::uintptr_t camera_handle = 0;
         std::string file_path;
+        std::shared_ptr<std::promise<bool>> completion_promise;
     };
     std::vector<PendingScreenshot> pending_screenshots_;
     std::mutex screenshot_mutex_;

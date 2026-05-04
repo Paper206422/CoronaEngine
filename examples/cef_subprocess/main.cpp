@@ -6,6 +6,7 @@
  */
 
 #include <cef_app.h>
+#include <include/cef_v8.h>
 #include <wrapper/cef_helpers.h>
 #include <wrapper/cef_message_router.h>
 
@@ -28,6 +29,99 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
    public:
     SubprocessRenderHandler() : renderer_side_router_(nullptr) {}
 
+    class FastCameraMoveHandler : public CefV8Handler {
+       public:
+        bool Execute(const CefString& name,
+                     CefRefPtr<CefV8Value> object,
+                     const CefV8ValueList& arguments,
+                     CefRefPtr<CefV8Value>& retval,
+                     CefString& exception) override {
+            if (name != "cameraMove") {
+                return false;
+            }
+
+            if (arguments.size() < 5) {
+                exception = "cameraMove(handle, position, forward, up, fov) requires 5 arguments";
+                retval = CefV8Value::CreateBool(false);
+                return true;
+            }
+
+            const auto handle_value = arguments[0];
+            if (!handle_value || (!handle_value->IsInt() && !handle_value->IsDouble())) {
+                exception = "cameraMove: handle must be a number";
+                retval = CefV8Value::CreateBool(false);
+                return true;
+            }
+
+            auto read_vec3 = [&](const CefRefPtr<CefV8Value>& value, CefRefPtr<CefListValue> out) -> bool {
+                if (!value || !value->IsArray() || value->GetArrayLength() != 3) {
+                    return false;
+                }
+                for (int i = 0; i < 3; ++i) {
+                    auto elem = value->GetValue(i);
+                    if (!elem || (!elem->IsInt() && !elem->IsDouble())) {
+                        return false;
+                    }
+                    if (elem->IsInt()) {
+                        out->SetInt(i, elem->GetIntValue());
+                    } else {
+                        out->SetDouble(i, elem->GetDoubleValue());
+                    }
+                }
+                return true;
+            };
+
+            auto context = CefV8Context::GetCurrentContext();
+            if (!context) {
+                retval = CefV8Value::CreateBool(false);
+                return true;
+            }
+
+            auto browser = context->GetBrowser();
+            if (!browser) {
+                retval = CefV8Value::CreateBool(false);
+                return true;
+            }
+
+            CefRefPtr<CefProcessMessage> message = CefProcessMessage::Create("CameraMoveFast");
+            CefRefPtr<CefListValue> args = message->GetArgumentList();
+            args->SetDouble(0, handle_value->GetDoubleValue());
+
+            auto pos_list = CefListValue::Create();
+            auto fwd_list = CefListValue::Create();
+            auto up_list = CefListValue::Create();
+
+            if (!read_vec3(arguments[1], pos_list) ||
+                !read_vec3(arguments[2], fwd_list) ||
+                !read_vec3(arguments[3], up_list)) {
+                exception = "cameraMove: position/forward/up must be number[3]";
+                retval = CefV8Value::CreateBool(false);
+                return true;
+            }
+
+            args->SetList(1, pos_list);
+            args->SetList(2, fwd_list);
+            args->SetList(3, up_list);
+
+            if (!arguments[4] || (!arguments[4]->IsInt() && !arguments[4]->IsDouble())) {
+                exception = "cameraMove: fov must be a number";
+                retval = CefV8Value::CreateBool(false);
+                return true;
+            }
+
+            if (arguments[4]->IsInt()) {
+                args->SetInt(4, arguments[4]->GetIntValue());
+            } else {
+                args->SetDouble(4, arguments[4]->GetDoubleValue());
+            }
+            context->GetFrame()->SendProcessMessage(PID_BROWSER, message);
+            retval = CefV8Value::CreateBool(true);
+            return true;
+        }
+
+        IMPLEMENT_REFCOUNTING(FastCameraMoveHandler);
+    };
+
     void OnContextCreated(CefRefPtr<CefBrowser> browser,
                           CefRefPtr<CefFrame> frame,
                           CefRefPtr<CefV8Context> context) override {
@@ -37,6 +131,13 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
 
         // 将 cefQuery 和 cefQueryCancel 函数注入到 window 对象中
         renderer_side_router_->OnContextCreated(browser, frame, context);
+
+        CefRefPtr<CefV8Value> global = context->GetGlobal();
+        CefRefPtr<CefV8Value> bridge = CefV8Value::CreateObject(nullptr, nullptr);
+        CefRefPtr<CefV8Handler> handler(new FastCameraMoveHandler());
+        CefRefPtr<CefV8Value> camera_move = CefV8Value::CreateFunction("cameraMove", handler);
+        bridge->SetValue("cameraMove", camera_move, V8_PROPERTY_ATTRIBUTE_NONE);
+        global->SetValue("coronaBridge", bridge, V8_PROPERTY_ATTRIBUTE_NONE);
 
         std::cout << "[Renderer] V8 context created, cefQuery injected" << std::endl;
     }
@@ -96,8 +197,3 @@ int main(int argc, char* argv[]) {
     // 这将阻塞直到子进程结束
     return CefExecuteProcess(main_args, app.get(), nullptr);
 }
-
-
-
-
-

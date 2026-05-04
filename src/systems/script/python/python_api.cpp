@@ -1,10 +1,12 @@
 ﻿#define PY_SSIZE_T_CLEAN
-#include <corona/systems/script/python_api.h>
-#include <corona/kernel/core/i_logger.h>
-#include <nanobind/stl/string.h>
-#include <corona/kernel/event/i_event_bus.h>
 #include <corona/events/imgui_system_events.h>
+#include <corona/kernel/core/i_logger.h>
 #include <corona/kernel/core/kernel_context.h>
+#include <corona/kernel/event/i_event_bus.h>
+#include <corona/systems/script/python_api.h>
+#include <corona/systems/script/python/python_error_handler.h>
+#include <corona/systems/script/python/python_path_config.h>
+#include <nanobind/stl/string.h>
 #include <windows.h>
 
 #include <iostream>
@@ -13,8 +15,6 @@
 #include <set>
 #include <unordered_map>
 
-#include "python_error_handler.cpp"
-#include "python_path_config.cpp"
 
 extern "C" PyObject* PyInit_CoronaEngine();
 
@@ -126,23 +126,22 @@ bool PythonAPI::ensureInitialized() {
     {
         nanobind::gil_scoped_acquire gil;
         try {
-            //nanobind::module_ main_mod = nanobind::module_::import_("cpp_client");
+            // nanobind::module_ main_mod = nanobind::module_::import_("cpp_client");
 
-            //nanobind::object init_func = nanobind::getattr(main_mod, "initialize");
-            //init_func();
+            // nanobind::object init_func = nanobind::getattr(main_mod, "initialize");
+            // init_func();
 
-            //nanobind::object run_attr = nanobind::getattr(main_mod, "run");
-            //nanobind::object putq_attr = nanobind::getattr(main_mod, "put_queue");
+            // nanobind::object run_attr = nanobind::getattr(main_mod, "run");
+            // nanobind::object putq_attr = nanobind::getattr(main_mod, "put_queue");
 
-            //if (!nanobind::callable::check_(run_attr)) {
-            //    CFW_LOG_ERROR("PythonAPI: 'run' attribute is not callable");
-            //    return false;
-            //}
+            // if (!nanobind::callable::check_(run_attr)) {
+            //     CFW_LOG_ERROR("PythonAPI: 'run' attribute is not callable");
+            //     return false;
+            // }
 
-            //pModule = std::move(main_mod);
-            //pFunc = std::move(run_attr);
-            //messageFunc = std::move(putq_attr);
-            
+            // pModule = std::move(main_mod);
+            // pFunc = std::move(run_attr);
+            // messageFunc = std::move(putq_attr);
 
             nanobind::module_ entrance = nanobind::module_::import_("main");
             nanobind::object editor = nanobind::getattr(entrance, "editor");
@@ -159,9 +158,9 @@ bool PythonAPI::ensureInitialized() {
             CFW_LOG_INFO("PythonAPI: Python interpreter initialized successfully");
         } catch (const nanobind::python_error& e) {
             log_python_error(e);
-            //pModule.reset();
-            //pFunc.reset();
-            //messageFunc.reset();
+            // pModule.reset();
+            // pFunc.reset();
+            // messageFunc.reset();
             pStartFunc.reset();
             pJsCallFunc.reset();
             messageFunc.reset();
@@ -203,16 +202,16 @@ bool PythonAPI::performHotReload() {
         pStartFunc = std::move(start_attr);
         pJsCallFunc = std::move(call_attr);
         messageFunc = std::move(log_attr);
-      /*  nanobind::object newFunc = nanobind::getattr(mod, "run");
-        if (!nanobind::callable::check_(newFunc)) {
-            CFW_LOG_WARNING("PythonAPI: new run attribute is not callable");
-            return false;
-        }
-        nanobind::object newMsg = nanobind::getattr(mod, "put_queue");
+        /*  nanobind::object newFunc = nanobind::getattr(mod, "run");
+          if (!nanobind::callable::check_(newFunc)) {
+              CFW_LOG_WARNING("PythonAPI: new run attribute is not callable");
+              return false;
+          }
+          nanobind::object newMsg = nanobind::getattr(mod, "put_queue");
 
-        pModule = std::move(mod);
-        pFunc = std::move(newFunc);
-        messageFunc = std::move(newMsg);*/
+          pModule = std::move(mod);
+          pFunc = std::move(newFunc);
+          messageFunc = std::move(newMsg);*/
     } catch (const nanobind::python_error& e) {
         CFW_LOG_ERROR("PythonAPI: reload(main) failed");
         log_python_error(e);
@@ -245,16 +244,16 @@ void PythonAPI::invokeEntry(bool isReload) const {
 }
 
 void PythonAPI::sendMessage(const std::string& message) const {
-    //if (!messageFunc.is_valid()) {
-    //    return;
-    //}
-    //nanobind::gil_scoped_acquire gil;
+    // if (!messageFunc.is_valid()) {
+    //     return;
+    // }
+    // nanobind::gil_scoped_acquire gil;
 
-    //try {
-    //    (void)messageFunc(message.c_str());
-    //} catch (const nanobind::python_error& e) {
-    //    log_python_error(e);
-    //}
+    // try {
+    //     (void)messageFunc(message.c_str());
+    // } catch (const nanobind::python_error& e) {
+    //     log_python_error(e);
+    // }
 }
 
 void PythonAPI::runPythonScript() {
@@ -314,7 +313,7 @@ void PythonAPI::checkReleaseScriptChange() {
 
     std::unique_lock lk(queMtx);
     const auto& mods = messageQue.front();
-    
+
     // Build module list string for logging
     std::string moduleListStr;
     bool first = true;
@@ -415,8 +414,8 @@ void PythonAPI::copyModifiedFiles(const std::filesystem::path& sourceDir,
 
                 std::string modName = destFilePath.string();
                 PythonHotfix::NormalizeModuleName(modName);
-                CFW_LOG_DEBUG("PythonAPI: copied recent file: {} -> {}, module='{}' src_mtime={}", 
-                             filePath.string(), destFilePath.string(), modName, modifyMs);
+                CFW_LOG_DEBUG("PythonAPI: copied recent file: {} -> {}, module='{}' src_mtime={}",
+                              filePath.string(), destFilePath.string(), modName, modifyMs);
             }
         } catch (const std::exception& e) {
             CFW_LOG_ERROR("PythonAPI: File copy error: {}", e.what());

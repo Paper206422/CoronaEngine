@@ -1,5 +1,4 @@
-﻿#include <ranges>
-#include <corona/events/display_system_events.h>
+﻿#include <corona/events/display_system_events.h>
 #include <corona/events/engine_events.h>
 #include <corona/kernel/core/i_logger.h>
 #include <corona/kernel/event/i_event_bus.h>
@@ -8,6 +7,7 @@
 #include <corona/systems/display/display_system.h>
 
 #include <algorithm>
+#include <ranges>
 
 namespace Corona::Systems {
 
@@ -226,7 +226,6 @@ void DisplaySystem::compose_and_present(HardwareDisplayer& displayer,
     // After commit, producer images are no longer read — displayer only reads composite_output_
     displayer.wait(compositor_executor_) << composite_output_;
 }
-
 
 void DisplaySystem::shutdown() {
     CFW_LOG_NOTICE("DisplaySystem: Shutting down...");

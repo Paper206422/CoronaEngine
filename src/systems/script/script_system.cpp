@@ -1,11 +1,10 @@
-﻿#include <corona/events/script_system_events.h>
-#include <corona/events/engine_events.h>
+﻿#include <corona/events/engine_events.h>
+#include <corona/events/script_system_events.h>
 #include <corona/kernel/core/i_logger.h>
 #include <corona/kernel/event/i_event_bus.h>
 #include <corona/kernel/event/i_event_stream.h>
-#include <corona/systems/script/script_system.h>
 #include <corona/systems/script/python_api.h>
-
+#include <corona/systems/script/script_system.h>
 #include <nanobind/nanobind.h>
 
 namespace Corona::Systems {
@@ -51,7 +50,6 @@ bool ScriptSystem::initialize(Kernel::ISystemContext* ctx) {
                 python_api_->pJsCallFunc(event.args);
             });
 
-
         CFW_LOG_DEBUG("ScriptSystem: EventBus subscriptions ready");
     } else {
         CFW_LOG_WARNING("ScriptSystem: No event bus available");
@@ -61,11 +59,9 @@ bool ScriptSystem::initialize(Kernel::ISystemContext* ctx) {
 }
 
 void ScriptSystem::update() {
-
 #ifdef CORONA_ENABLE_PYTHON_API
     python_api_->runPythonScript();
 #endif
-
 }
 
 void ScriptSystem::shutdown() {

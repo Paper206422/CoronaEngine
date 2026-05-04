@@ -7,7 +7,6 @@
 
 #include <memory>
 
-
 namespace Corona::Systems {
 
 /**
