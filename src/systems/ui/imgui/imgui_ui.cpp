@@ -37,7 +37,7 @@ bool initialize_sdl_imgui(SDL_Window*& window, ImGuiIO*& io, std::unique_ptr<Vul
         initial_height = desktop_mode->h * 0.8;
     }
 
-    window = SDL_CreateWindow("Corona Engine (CabbageHardware)", initial_width, initial_height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
+    window = SDL_CreateWindow("Corona Engine (Horizon)", initial_width, initial_height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
     if (window == nullptr) {
         CFW_LOG_ERROR("Failed to create window: {}", SDL_GetError());
         SDL_Quit();
@@ -70,7 +70,7 @@ bool initialize_sdl_imgui(SDL_Window*& window, ImGuiIO*& io, std::unique_ptr<Vul
     // TODO: 明确这是自定义 renderer，并禁用未实现的 RendererHasTextures 路径
     // 确保字体图集在首帧前已建立，避免 atlas->Builder 为 nullptr
     // 不熟看你们怎么改
-    io->BackendRendererName = "Corona.CabbageHardware";
+    io->BackendRendererName = "Corona.Horizon";
     io->BackendFlags &= ~ImGuiBackendFlags_RendererHasTextures;
 
     io->Fonts->AddFontDefault();

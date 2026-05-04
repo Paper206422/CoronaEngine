@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include <CabbageHardware.h>
+#include <Horizon.h>
 #include <corona/events/display_system_events.h>
 #include <corona/kernel/event/i_event_bus.h>
 #include <corona/kernel/event/i_event_stream.h>

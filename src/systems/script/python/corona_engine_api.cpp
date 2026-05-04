@@ -1,4 +1,4 @@
-#include <CabbageHardware.h>
+#include <Horizon.h>
 #include <corona/events/display_system_events.h>
 #include <corona/events/optics_system_events.h>
 #include <corona/kernel/core/kernel_context.h>

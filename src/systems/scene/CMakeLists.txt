@@ -7,5 +7,5 @@ corona_add_system(scene
         scene_system.cpp
         frustum.cpp
     DEPENDENCIES
-        CabbageHardware
+        Horizon
 )

@@ -25,7 +25,7 @@ enum class Containment : std::uint8_t {
  * 提取自 view_proj 矩阵（Hartmann–Gribb），适配 Vulkan NDC（z ∈ [0,1]，Y 向下）。
  *
  * 本头文件保持轻量：from_camera 的实现放在 .cpp 里，避免在此 include
- * `<corona/shared_data_hub.h>`（带来 CabbageHardware 依赖）。
+ * `<corona/shared_data_hub.h>`（带来 Horizon 依赖）。
  */
 class Frustum {
    public:

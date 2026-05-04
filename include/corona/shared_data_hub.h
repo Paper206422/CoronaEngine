@@ -7,7 +7,7 @@
 #include <memory>
 #include <vector>
 
-#include "CabbageHardware.h"
+#include "Horizon.h"
 
 // Forward declarations
 
@@ -20,7 +20,7 @@ struct MeshDevice {
     HardwareBuffer vertexBuffer;
 
     // StorageBuffer mirrors for compute shader (VBuffer resolve) access.
-    // CabbageHardware BufferUsage is non-combinable, so we keep separate copies.
+    // Horizon BufferUsage is non-combinable, so we keep separate copies.
     HardwareBuffer indexStorageBuffer;
     HardwareBuffer vertexStorageBuffer;
 
