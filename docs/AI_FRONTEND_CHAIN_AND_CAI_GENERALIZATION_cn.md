@@ -815,15 +815,17 @@ def install_cabbage_editor_extension(app: CAIApp, context: CabbageContext) -> No
 
 目标：逐步替代 import side effect。
 
-- [ ] 定义 `CAIPlugin` 协议。
-- [ ] 将 `module_settings.yaml` 转换为 plugin manifest。
-- [ ] 迁移 integrated/text/image/video/music/3d 等模块为 plugin register。
-- [ ] 装饰器注册保留兼容，但内部写入 runtime registry。
+- [x] 定义 `CAIPlugin` 协议。
+- [x] 将 `module_settings.yaml` 转换为 plugin manifest 兼容加载入口。
+- [x] 以 `LegacyModulePlugin` 兼容包装 integrated/text/image/video/music/3d 等现有模块，统一通过 `PluginManager` 注册加载。
+- [x] 装饰器注册保留兼容，并同步写入 runtime entrance registry。
 
 验收标准：
 
 - 新模块可以不依赖 import side effect 注册。
+- 现有模块仍通过旧装饰器工作，但加载编排已进入 `PluginManager`。
 - 插件启停、测试隔离更容易。
+- 当前阶段已通过 `plugins.AITool.tests.test_ai_rpc` 的 12 个标准库单元测试验证。
 
 ### 阶段 5：宿主适配原地解耦
 
@@ -883,7 +885,8 @@ def install_cabbage_editor_extension(app: CAIApp, context: CabbageContext) -> No
 - [x] 新增 `CAIRuntime`。
 - [x] runtime 挂载 config/tool/workflow/media/conversation registry 引用。
 - [x] 新增 `CAIApp.chat_stream` 兼容包装 `handle_integrated_entrance_stream`。
-- [x] 建立最小 plugin register 机制，显式 `CAIPlugin` 协议留到阶段 4。
+- [x] 建立 plugin register 机制，并在阶段 4 补齐显式 `CAIPlugin` 协议。
+- [x] 新增 `PluginManager` 和 `LegacyModulePlugin`，接管 `module_settings.yaml` 的模块加载编排。
 
 ### 7.4 CabbageEditor adapter 任务
 
@@ -1006,7 +1009,7 @@ CAI 通用库化阶段完成后，应满足：
 - [x] 可以创建多个注入式 CAIApp facade 实例。
 - [ ] 工具、工作流、媒体仓库、会话存储属于 runtime 实例。
 - [ ] CabbageEditor 能力通过 adapter 注册。
-- [ ] 旧 `get_ai_entrance()` 兼容入口仍可工作。
+- [x] 旧 `get_ai_entrance()` 兼容入口仍可工作。
 - [ ] 有最小 CLI 或脚本示例证明 CAI 可独立使用。
 
 ---
@@ -1199,6 +1202,18 @@ def handle_integrated_entrance_stream(payload):
 - AITool 的 `CAIClient` 已改为消费 `CAIApp.chat_stream()`，不再直接持有 `get_ai_entrance()`。
 
 这一版仍是兼容 facade，不是最终 runtime 隔离：底层 registry 仍来自现有全局单例，后续阶段需要把这些 registry 的创建和写入真正迁到 `CAIRuntime` 实例上。
+
+### 12.5.1 第四阶段：插件加载显式化
+
+阶段 4 已把旧的模块加载编排从 `ai_service.entrance.reimport()` 中移入 `cai.plugins.PluginManager`：
+
+- `CAIPlugin` 定义了插件对象的最小协议：`name/enabled/register(runtime)`。
+- `ModulePluginSpec` 从 `module_settings.yaml` 读取模块 manifest。
+- `LegacyModulePlugin` 按现有约定导入 `configs/settings.py`、`base.py`、`tools/loader.py`，继续触发旧装饰器注册。
+- `PluginManager.load_module_settings(...)` 统一处理 enabled/disabled、加载统计、失败统计，并写入 `runtime.metadata`。
+- `register_entrance(...)` 仍会写 legacy `ai_entrance` 静态方法，同时也写入 `CAIRuntime.entrance_handlers`。
+
+这一阶段没有要求每个旧模块立刻改成独立插件类，因此风险较低。后续可以逐个模块把 import side effect 迁移为显式 `register(runtime)`，最终让 `LegacyModulePlugin` 只作为兼容层存在。
 
 ### 12.6 不建议的简化方式
 
