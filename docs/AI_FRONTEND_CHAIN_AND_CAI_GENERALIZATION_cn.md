@@ -850,6 +850,7 @@ def install_cabbage_editor_extension(app: CAIApp, context: CabbageContext) -> No
 - adapter 被拆为 `CabbagePathsPlugin`、`CabbageAppConfigPlugin`、`CabbageEngineToolsPlugin`、`CabbageWorkflowPlugin`、`CabbageEngineModulesPlugin` 五类 CAI runtime plugin。
 - `install()` 仍保留无参兼容模式；无参时安装到默认 `CAIApp`，传入 app 时安装到指定 `CAIApp/runtime`。
 - CAI 根目录新增 package 标记，CAI 内部 `ai_config`、`ai_tools`、`ai_modules`、`ai_workflow` 等 legacy 顶层绝对导入已迁移为包内相对导入。
+- AITool 与 `cai_extensions` 作为 Editor adapter，引用 CAI 时统一使用 `CoronaArtificialIntelligence...` 包绝对导入；只有 adapter 自身内部模块仍使用相对导入。
 - `ai_service/entrance.py` 不再向 `sys.path` 写入 CAI 根目录；`PluginManager.load_module_settings()` 支持 package-relative `package_base`，用于加载 `module_settings.yaml` 中的 legacy module。
 - AITool 不再调用 `bootstrap_paths()`；创建 `CAIApp` 后直接调用 `install(_cai_app)` 注册 CabbageEditor 宿主能力。
 - `CAIRuntime` 新增 `capabilities`、`set_capability()`、`get_capability()`、`set_registry()` 和 `register_tool_loader_registrar()`，adapter 可将宿主能力挂到当前 runtime。
@@ -875,6 +876,7 @@ def install_cabbage_editor_extension(app: CAIApp, context: CabbageContext) -> No
 实施说明：
 
 - `CoronaArtificialIntelligence/pyproject.toml` 使用 setuptools 原地打包 submodule，安装包名为 `corona-artificial-intelligence`，导入包名为 `CoronaArtificialIntelligence`。
+- Editor 侧代码也按该导入名引用 CAI，即 `from CoronaArtificialIntelligence.cai import CAIApp`，从而和编辑器外使用方式保持一致。
 - optional dependencies 已按能力拆为 `langchain`、`workflow`、`media`、`cabbage`、`web`、`object-recognition` 和 `all`；其中 `cabbage` 保持为空，因为 CabbageEditor adapter 位于 submodule 外侧的 `plugins/AITool/cai_extensions`。
 - 新增 console script `cai-chat`，入口为 `CoronaArtificialIntelligence.cai.cli:main`。
 - 新增 `examples/cli_chat.py` 与 `examples/fastapi_websocket.py`，用于演示编辑器外直接调用 `CAIApp.chat_stream()`。
