@@ -22,7 +22,7 @@ include(FetchContent)
 # ------------------------------------------------------------------------------
 FetchContent_Declare(Horizon
     GIT_REPOSITORY https://github.com/CoronaEngine/Horizon.git
-    GIT_TAG 96a08385e553c09cf595a8916094d26ebaa83988
+    GIT_TAG 2a1b7f1113aaf675e9dcebbb51cf0c042ea36644
     EXCLUDE_FROM_ALL
 )
 
@@ -47,22 +47,10 @@ FetchContent_Declare(nanobind
     EXCLUDE_FROM_ALL
 )
 
-FetchContent_Declare(CoronaResource
-    GIT_REPOSITORY https://github.com/CoronaEngine/CoronaResource.git
-    GIT_TAG 21b411e0c3774582fe99c206308e63afa3f453e6
-    EXCLUDE_FROM_ALL
-)
-
 FetchContent_Declare(Vision
     GIT_REPOSITORY https://github.com/CoronaEngine/Vision.git
     GIT_TAG master
     GIT_SHALLOW TRUE
-    EXCLUDE_FROM_ALL
-)
-
-FetchContent_Declare(CoronaFramework
-    GIT_REPOSITORY https://github.com/CoronaEngine/CoronaFramework.git
-    GIT_TAG 65b0617add60e2734fa10ae3394f0f9cf03b8c52
     EXCLUDE_FROM_ALL
 )
 
@@ -127,12 +115,6 @@ message(STATUS "[3rdparty] nanobind module enabled")
 FetchContent_MakeAvailable(Horizon)
 message(STATUS "[3rdparty] Horizon module enabled")
 
-FetchContent_MakeAvailable(CoronaResource)
-message(STATUS "[3rdparty] CoronaResource module enabled")
-
-FetchContent_MakeAvailable(CoronaFramework)
-message(STATUS "[3rdparty] CoronaFramework module enabled")
-
 FetchContent_MakeAvailable(glfw)
 message(STATUS "[3rdparty] glfw module enabled")
 
@@ -166,16 +148,6 @@ if(NOT TARGET imgui)
     if(MSVC)
         # Allow imgui to inherit global runtime settings (MD/MDd)
     endif()
-endif()
-
-# 确保所有第三方库使用与项目一致的运行时配置
-if(MSVC)
-    # No manual overrides - rely on global CMAKE_MSVC_RUNTIME_LIBRARY
-endif()
-
-if(CORONA_BUILD_HARDWARE)
-    FetchContent_MakeAvailable(Horizon)
-    message(STATUS "[3rdparty] Horizon module enabled")
 endif()
 
 if(CORONA_BUILD_VISION)

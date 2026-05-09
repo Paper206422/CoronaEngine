@@ -44,6 +44,7 @@ include(CTest)
 # ------------------------------------------------------------------------------
 # Subdirectories
 # ------------------------------------------------------------------------------
+add_subdirectory(modules/corona_resource)  # Resource management module
 add_subdirectory(src)               # Core engine static library
 
 if(BUILD_CORONA_EXAMPLES)
