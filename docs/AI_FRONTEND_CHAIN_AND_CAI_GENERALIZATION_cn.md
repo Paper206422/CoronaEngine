@@ -8,25 +8,28 @@
 
 ## 1. 总览
 
-当前 AI 能力由 CabbageEditor 前端触发，通过 CEF `window.cefQuery` 进入 C++，再调用 Python 编辑器核心，最终由 AITool 插件调用内嵌的 CAI 库完成模型、Agent、工具和工作流执行。返回结果采用“前端发起请求 + Python 主动执行 JS 回调”的流式模式。
+当前 AI 能力由 CabbageEditor 前端触发，通过 CEF `window.cefQuery` 进入 C++，再调用 Python 编辑器核心，最终由 AITool 插件调用 CAI 库完成模型、Agent、工具和工作流执行。返回结果仍采用“前端发起请求 + Python 主动执行 JS 回调”的流式模式，但入口已经从早期的弱类型 AI 调用逐步收敛到 `aiClient.chatStream`、`AITool.ai_rpc` 和 `CAIApp.chat_stream`。
 
-当前链路可以概括为：
+当前推荐链路可以概括为：
 
 ```text
 Vue AITalkBar
+  -> aiClient.chatStream(request)
   -> bridge.js / window.cefQuery
   -> C++ CEF MessageRouter
   -> Python CoronaEditor.deal_func_from_js
-  -> AITool.send_message_to_ai_stream
-  -> CAI ai_entrance.handle_integrated_entrance_stream
+  -> AITool.ai_rpc(request)
+  -> AIPluginController / AIRequestService
+  -> CAIClient
+  -> CAIApp.chat_stream(request)
   -> workflow route / LangChain Agent / tools / media registry
-  -> CAI stream chunk
+  -> stream chunk / StreamEvent-compatible envelope
   -> CoronaEditor.js_call_func
   -> C++ execute_javascript
   -> Vue window.receiveAIMessageChunk
 ```
 
-当前 CAI 仍然更像“插件内的 AI 后端”，而不是独立可复用库。由于 `CoronaArtificialIntelligence` 是 Editor 的 submodule，通用库化不应移动它的物理目录；关键是保持 submodule 位置不变，在内部建立稳定 API、runtime 边界和宿主适配边界。
+CAI 已经具备独立导入、`CAIApp` facade、`CAIRuntime`、插件管理器、CabbageEditor adapter 和 `pyproject.toml` 包化入口，可以视为“初步通用化完成”。它尚未完全成为多实例隔离的通用 runtime，因为默认 registry 仍通过 `LazyRegistryRef` 指向 legacy 全局对象，部分旧模块仍依赖 import side effect 和兼容单例。由于 `CoronaArtificialIntelligence` 是 Editor 的 submodule，后续通用库化仍应保持物理目录不变，在内部继续推进 runtime scoped registry 和显式插件化。
 
 ---
 
@@ -41,7 +44,7 @@ Vue AITalkBar
 - 维护聊天消息列表、发送状态、流式状态、审核面板状态。
 - 将用户输入拆分为文本 part、slash command part、图片 part。
 - 生成并维护 `session_id`。
-- 调用 `aiService.sendMessageToAIStream(payload)` 发送消息。
+- 优先调用 `aiClient.chatStream(request)` 发送消息，旧 `aiService.sendMessageToAIStream(payload)` 保留兼容。
 - 通过全局函数 `window.receiveAIMessageChunk` 接收 Python 回调。
 
 当前请求结构大致如下：
@@ -79,7 +82,17 @@ Vue AITalkBar
 
 入口文件为 `Frontend/src/utils/bridge.js`。
 
-`Bridge.callCEF(moduleName, methodName, args)` 将请求转换为：
+`Bridge.callCEF(moduleName, methodName, args)` 将请求转换为通用 CEF RPC。AI 新入口使用：
+
+```json
+{
+  "module": "AITool",
+  "function": "ai_rpc",
+  "args": [{ "operation": "chat.stream", "request_id": "req_..." }]
+}
+```
+
+旧兼容入口仍支持：
 
 ```json
 {
@@ -100,7 +113,7 @@ window.cefQuery({
 });
 ```
 
-这个调用只代表“请求已交给 Python 侧”，不代表 AI 生成已经完成。AI 流式结果不通过 `onSuccess` 返回，而是通过后续 JS 回调进入 `receiveAIMessageChunk`。
+这个调用只代表“请求已交给 Python 侧”，不代表 AI 生成已经完成。AI 流式结果不通过 `onSuccess` 返回，而是通过后续 JS 回调进入 `receiveAIMessageChunk`。当前 `bridge.js` 同时暴露 `aiClient.chatStream`、`cancelRequest`、`getRequestStatus` 和旧 `aiService`。
 
 ### 2.3 CEF 与 C++ 桥接层
 
@@ -146,25 +159,27 @@ class AITool(PluginBase):
 
 入口为 `plugins/AITool/main.py`。
 
-AITool 当前承担以下职责：
+AITool 当前已经拆成薄入口和服务层：
 
-- 安装 `cai_extensions`，向 CAI 注入 CabbageEditor 专属路径、工具和工作流。
-- 启动独立 asyncio event loop。
-- 使用 `ThreadPoolExecutor` 在线程池中运行 CAI 的同步 generator。
-- 将 CAI chunk 转换为 JS 回调。
-- 处理图片 base64 上传、token 透传和错误响应。
+- `AITool.main`: 只保留 CEF 暴露方法、服务装配和 cleanup。
+- `AIPluginController`: 承接旧入口、新 `ai_rpc`、流式消费、错误转发和 cleanup 编排。
+- `AIRequestService`: 管理 request lifecycle、状态查询、取消请求和 task 绑定。
+- `MediaIngress`: 处理现有 base64 图片上传、token 提取和媒体入站兼容。
+- `CAIClient`: 调用 `CAIApp.chat_stream()`，并将同步 generator 桥接到 bounded stream queue。
+- `StreamDispatcher`: 识别 `data/heartbeat/done/error` 并派发 JS 回调。
+- `EventLoopRunner`: 管理 AITool 原有 asyncio loop 线程和任务提交。
 
 流式处理的核心流程：
 
 ```text
-send_message_to_ai_stream(ai_message)
-  -> ensure_loop_running()
-  -> _process_ai_message_stream(ai_message)
-  -> json.loads(ai_message)
-  -> upload image if needed
-  -> get_ai_entrance().handle_integrated_entrance_stream(payload)
-  -> for chunk in generator: queue.put(chunk)
-  -> async loop consumes queue
+ai_rpc(request) / send_message_to_ai_stream(legacy_payload)
+  -> AIPluginController
+  -> AIRequestService accepts request_id/session_id
+  -> MediaIngress preprocesses image/base64 parts
+  -> CAIClient.start_stream(payload)
+  -> CAIApp.chat_stream(payload)
+  -> bounded stream queue
+  -> StreamDispatcher.send_to_frontend(chunk)
   -> CoronaEditor.js_call_func("/AITalkBar", "receiveAIMessageChunk", [chunk])
 ```
 
@@ -229,16 +244,17 @@ def handle_integrated_entrance_stream(payload):
 
 本节链路已按当前代码核对，结论如下：
 
-- 前端发送入口确认为 `aiService.sendMessageToAIStream(payload)`，其内部调用 `Bridge.callCEF('AITool', 'send_message_to_ai_stream', [payload])`。
-- `AITalkBar.vue` 当前确实构造 `session_id`、`llm_content[].part[]` 和 `metadata`；图片 part 目前包含 `content_url`、`content_path`、`content_text` 和 `parameter`。
-- `CoronaEditor.deal_func_from_js` 当前确实按 `{module, function, args}` 反射分发，并通过 `create_success_response` / `create_error_response` 返回 CEF 请求结果。
-- AITool 当前确实在线程池中同步消费 `get_ai_entrance().handle_integrated_entrance_stream(payload)`，再通过 `CoronaEditor.js_call_func('/AITalkBar', 'receiveAIMessageChunk', [result])` 回调前端。
-- CAI integrated 入口当前确实通过 `session_concurrency` 做同一会话并发保护，并由 `handle_integrated_entrance_stream_inner` 优先路由 workflow，未命中时再走 Agent。
-- CAI 当前响应 envelope 使用 `session_id`、`error_code`、`status_info`、`llm_content`、`metadata`；`stream_done` 和 `heartbeat` 仍通过 `metadata` 表达，新 `event_type` 是迁移目标而非现状。
+- 前端已有 `aiClient.chatStream`、`cancelRequest`、`getRequestStatus`，旧 `aiService.sendMessageToAIStream(payload)` 仍保留兼容。
+- `AITalkBar.vue` 已引入 `request_id`，消息模型已按 request 归属 chunk；图片 part 仍以 `content_url`、`content_path`、`content_text` 和 `parameter` 为主，资源句柄化尚未完成。
+- `CoronaEditor.deal_func_from_js` 仍按 `{module, function, args}` 反射分发，并通过 `create_success_response` / `create_error_response` 返回 CEF 请求结果；AI 专用入口通过 `AITool.ai_rpc(request)` 收敛。
+- AITool 主类已拆薄，流式处理由 `AIPluginController`、`AIRequestService`、`MediaIngress`、`CAIClient`、`StreamDispatcher` 和 `EventLoopRunner` 承接。
+- AITool 当前通过 `CAIApp.chat_stream()` 调用 CAI，不再由 `CAIClient` 直接持有 `get_ai_entrance()`；但 `_cai_app` 仍通过 `CAIApp.from_legacy_entrance(lambda: get_ai_entrance())` 保持旧入口兼容。
+- CAI integrated 入口仍通过 `session_concurrency` 做同一会话并发保护，并由 `handle_integrated_entrance_stream_inner` 优先路由 workflow，未命中时再走 Agent。
+- CAI 响应仍兼容 legacy envelope：`session_id`、`error_code`、`status_info`、`llm_content`、`metadata`；`stream_done` 和 `heartbeat` 仍通过 `metadata` 表达，同时新入口已能识别 `data/heartbeat/done/error`。
 - workflow 执行器还会发送带 `metadata.workflow_node_boundary` 的 heartbeat，前端当前会据此结束当前流式气泡的等待态。
-- 前端除 `window.receiveAIMessageChunk` 外仍保留 `window.receiveAIMessage` 兼容旧非流式响应；主链路当前走流式 chunk。
+- 前端除 `window.receiveAIMessageChunk` 外仍保留 `window.receiveAIMessage` 兼容旧非流式响应；`window.receiveAIMessageChunk` 尚未完全降级为事件总线入口。
 - `CoronaEditor.js_call_func` 当前通过拼接 JS 字符串调用 `window.<function_name>(...)`，因此函数名仍是字符串级约定，不是类型化事件通道。
-- `request_id`、`ai_rpc`、`CAIApp`、`CAIRuntime`、runtime scoped registry、事件总线化前端接收等内容是本方案建议，当前尚未实现。
+- `CAIApp`、`CAIRuntime`、`PluginManager`、CabbageEditor adapter 和包化入口已经落地；runtime scoped registry 仍未完成，默认 runtime 仍会解析 legacy 全局 registry。
 
 ---
 
@@ -253,15 +269,13 @@ def handle_integrated_entrance_stream(payload):
 - AI 请求和普通 UI 请求混用同一套弱类型通道。
 - 错误码、异常类型、超时语义不统一。
 
-### 3.2 流式请求缺少 request_id
+### 3.2 request_id 问题已基本解决
 
-当前有 `session_id`，但没有独立的 `request_id`。这会导致：
+早期链路只有 `session_id`，没有独立 `request_id`，导致多轮请求并发时前端难以准确归属 chunk，也不利于取消、重试、恢复和日志追踪。当前阶段已经完成 `request_id` 的生成、透传和前端按 request 归属消息。
 
-- 多轮请求并发时，前端难以准确归属 chunk。
-- 只能依赖“最后一条用户消息”更新状态。
-- 取消、重试、恢复、日志追踪都缺少稳定键。
+剩余工作主要是把 `request_id` 继续用于更完整的可观测性：后端日志、错误 envelope、取消 token、workflow 节点事件和模型调用 trace 应统一输出同一个 `request_id/session_id`。
 
-### 3.3 请求返回与 AI 结果返回是两套语义
+### 3.3 请求返回与 AI 结果返回仍是两套语义
 
 `Bridge.callCEF(...send_message_to_ai_stream...)` 的成功只表示 Python 已接收请求。真正 AI 结果通过 `execute_javascript` 回调。
 
@@ -273,13 +287,11 @@ def handle_integrated_entrance_stream(payload):
 - `error`: 请求失败。
 - `cancelled`: 请求取消。
 
-当前代码没有显式区分这些阶段。
+当前新入口已经能识别 `data/heartbeat/done/error`，并支持 `request.cancel`，但协议层仍未完全统一：错误结构、取消传播和部分 legacy chunk 仍依赖 `metadata.stream_done`、`metadata.heartbeat` 等兼容字段。因此这里已经从“缺少阶段建模”变成“新旧事件模型并存”。
 
-### 3.4 AITool 职责偏重
+### 3.4 AITool 主类已拆薄
 
-AITool 同时承担宿主桥接、异步调度、图片上传、token 处理、CAI 调用、JS 回调等职责，容易让插件层变成新的“大对象”。
-
-建议拆分为：
+早期 AITool 同时承担宿主桥接、异步调度、图片上传、token 处理、CAI 调用、JS 回调等职责，容易让插件层变成新的“大对象”。当前已经拆分为：
 
 - `AIPluginController`: 暴露给 CEF 的插件 API。
 - `AIRequestService`: 处理 request lifecycle。
@@ -287,35 +299,32 @@ AITool 同时承担宿主桥接、异步调度、图片上传、token 处理、C
 - `StreamDispatcher`: 负责把 stream event 派发回前端。
 - `MediaIngress`: 负责文件/base64/path 进入媒体仓库。
 
-### 3.5 CAI 依赖全局单例和 import side effect
+因此 AITool 主类现在主要保留 CEF 暴露方法，内部处理委托给 controller/service。后续重点不再是“拆薄主类”，而是继续补齐 cancellation token、统一错误 envelope 和资源句柄式媒体入口。
 
-当前 CAI 使用：
+### 3.5 CAI 全局状态已收敛但未完全实例化
 
-- `ai_entrance.collector` 全局配置收集器。
-- `get_ai_config()` 模块级缓存。
-- `WorkflowRegistry` 全局单例。
-- tool registry、media registry、conversation store 等全局对象。
-- 通过 import 模块触发装饰器注册。
-- 修改 `sys.path` 解决内部绝对 import。
+早期 CAI 依赖 `ai_entrance.collector`、`get_ai_config()` 模块级缓存、`WorkflowRegistry` 全局单例、tool/media/conversation 等全局 registry，并通过 import 模块触发装饰器注册。这些设计已经被阶段 3-6 明显缓解：
 
-这些设计在插件原型阶段效率很高，但作为通用库会带来问题：
+- 新增 `CAIApp` 与 `CAIRuntime`，外部宿主可以通过 facade 调用 `chat_stream()`。
+- `PluginManager` 接管 `module_settings.yaml` 的加载编排，新插件可以显式注册到 runtime。
+- `CAIRuntime` 已提供 `capabilities`、`set_registry()`、`get_registry()`，允许注入 runtime scoped registry。
+- `cai_extensions` 不再在 import 或 install 时修改 `sys.path`。
+- CAI 已有 `pyproject.toml`、CLI 示例、FastAPI/WebSocket 示例和 API reference，具备编辑器外引用的基础形态。
 
-- 同一进程难以创建多个独立 AI runtime。
-- 测试隔离困难。
-- 宿主无法明确控制生命周期。
-- 外部集成者难以理解哪些 import 会产生副作用。
-- 配置热重载、插件卸载、工作流覆盖容易互相污染。
+但 CAI 还没有达到“所有运行状态都 runtime scoped”的最终形态。当前 `CAIRuntime._create_default_registries()` 仍通过 `LazyRegistryRef` 指向 legacy 全局 registry；`get_default_runtime()` / `get_default_app()` 仍作为兼容单例存在；`LegacyModulePlugin` 仍会通过导入旧模块触发装饰器注册。因此它已经从“插件内 AI 后端”演进为“可独立使用的通用库雏形”，但还不是完全隔离、可多租户并行的 runtime library。
 
-### 3.6 宿主专属逻辑仍贴近 CAI 通用核心
+### 3.6 宿主专属逻辑已进入 adapter
 
-`cai_extensions` 已经把 CabbageEditor 相关能力集中起来，这是正确方向。但目前它仍然通过安装阶段修改路径、预加载模块、注册工作流来影响 CAI 全局状态。
+`cai_extensions` 已经整理为 CabbageEditor adapter，并通过 `CabbagePathsPlugin`、`CabbageAppConfigPlugin`、`CabbageEngineToolsPlugin`、`CabbageWorkflowPlugin`、`CabbageEngineModulesPlugin` 向指定 `CAIApp/runtime` 注册宿主能力。CabbageEditor 专属路径解析、engine tools、workflow 和预加载模块不再放入 CAI 通用核心。
 
-理想状态是：
+当前边界已经接近目标状态：
 
 ```text
 CAI 通用核心不知道 CabbageEditor
 CabbageEditor adapter 持有 CAI runtime 实例并向其注册能力
 ```
+
+剩余风险主要来自 adapter 内部仍为 legacy 兼容保留了少量全局 setter，例如路径 resolver 和 app config provider 会同时写入 runtime capability 与旧全局入口。只要旧模块仍读取这些全局 provider，宿主能力就还没有完全实例隔离。
 
 ### 3.7 大文件通过 base64 过桥效率较低
 
@@ -328,23 +337,16 @@ CabbageEditor adapter 持有 CAI runtime 实例并向其注册能力
 
 应优先使用路径、文件 ID、临时资源句柄或宿主文件选择结果。
 
-### 3.8 已发现的小型实现不一致
+### 3.8 小型桥接不一致已修正
 
-`Frontend/src/utils/bridge.js` 中 `aiService.readLocalFileAsBase64` 当前写法是：
-
-```javascript
-readLocalFileAsBase64: (filePath) =>
-  Bridge.callCEF('AITool', 'read_local_file_as_base64', filePath),
-```
-
-而 `Bridge.callCEF` 期望第三个参数是数组，并且 Python 分发层会执行 `getattr(module, func_name)(*args)`。如果这里传入字符串，Python 侧可能按字符展开参数。建议改为：
+`Frontend/src/utils/bridge.js` 中 `aiService.readLocalFileAsBase64` 已按 `Bridge.callCEF` 的参数约定传入数组：
 
 ```javascript
 readLocalFileAsBase64: (filePath) =>
   Bridge.callCEF('AITool', 'read_local_file_as_base64', [filePath]),
 ```
 
-这不是通用库化的主线问题，但属于当前桥接层需要一并修正的参数形态问题。
+该问题已不再列入后续任务。当前桥接层剩余重点是把 AI 事件接收从全局函数降级为事件总线入口，并把错误、取消和资源句柄协议统一起来。
 
 ---
 
@@ -922,63 +924,44 @@ def install_cabbage_editor_extension(app: CAIApp, context: CabbageContext) -> No
 
 ---
 
-## 7. 推荐任务拆分
+## 7. 下一步任务拆分
+
+已完成的 request_id、AI RPC、AITool 拆分、CAIApp/CAIRuntime facade、CabbageEditor adapter 解耦、富文本渲染和独立发布准备不再列入活跃任务。后续只跟踪仍会影响通用化程度、协议一致性和用户体验的事项。
 
 ### 7.1 前端任务
 
-- [x] 新增 `aiClient.chatStream`、`cancelRequest`、`getRequestStatus`，保留旧 `aiService`。
-- [x] 引入 `request_id`。
-- [x] `messages` 改为 request-aware 数据结构。
-- [ ] 把 `window.receiveAIMessageChunk` 降级为事件总线入口。
-- [ ] 增加请求取消按钮和超时状态展示。
-- [ ] 媒体输入优先传 path/resource，而不是 base64。
-- [x] 将 AI 消息文本界面升级为富文本渲染，支持 Markdown、代码块、表格、链接、列表和引用。
-- [x] 为 text part 增加格式识别：兼容旧 `content_text`，新增 `metadata.format` / `part.format`，默认 `plain`，可选 `markdown`。
-- [x] 引入本地受限 Markdown parser 与输出 sanitizer，禁止未清洗内容直接 `v-html`。
-- [x] 抽出 `RichTextPart` 组件承接 text part 渲染，避免 `AITalkBar.vue` 继续膨胀。
-- [x] 流式 Markdown 渲染增加节流与失败回退，保证半截代码块、表格或列表不会导致界面闪烁或报错。
-- [x] 代码块支持语言标签、复制按钮、横向滚动和长行换行策略。
+- [ ] 将 `window.receiveAIMessageChunk` 降级为事件总线入口，组件内部按 `request_id` 订阅和解绑，避免全局函数直接驱动页面状态。
+- [ ] 增加请求取消按钮、超时状态和重试入口，让 `request.cancel` 不只停留在 API 层。
+- [ ] 媒体输入优先传 `file_path` / `resource` / `file_id`，仅在宿主无法提供资源句柄时回退到 base64。
+- [ ] 将前端错误展示改为读取统一 error envelope，区分可恢复错误、用户取消、模型限流和工具失败。
 
 ### 7.2 Python AITool 任务
 
-- [x] 新增 `ai_rpc` 统一入口。
-- [x] 新增 request lifecycle registry。
-- [x] 新增 bounded stream queue。
-- [ ] 支持 cancellation token。
-- [x] 拆分 media ingress、stream dispatcher、CAI client。
-- [ ] 统一错误 envelope。
+- [ ] 实现真实 cancellation token，从 `AIRequestService.cancel()` 传递到 `CAIClient` worker、CAI stream、workflow 和工具执行层。
+- [ ] 统一错误 envelope，将当前 `build_error_response`、异常 chunk、legacy `error_code/status_info` 收敛为 `AIError` / `StreamEvent(event_type="error")`。
+- [ ] 扩展 `MediaIngress`，支持 `file_id`、`file_path`、`file_url` 和 `data_url` 的统一解析，并限制大体积 base64 过桥。
+- [ ] 为 request lifecycle 增加更完整的状态记录和日志字段：`accepted/running/done/error/cancelled`、耗时、chunk 数量和最后错误。
 
 ### 7.3 CAI 通用核心任务
 
-- [x] 定义 `ChatRequest`、`StreamEvent`、`AIError`。
-- [x] 新增 `CAIApp` facade。
-- [x] 新增 `CAIRuntime`。
-- [x] runtime 挂载 config/tool/workflow/media/conversation registry 引用。
-- [x] 新增 `CAIApp.chat_stream` 兼容包装 `handle_integrated_entrance_stream`。
-- [x] 建立 plugin register 机制，并在阶段 4 补齐显式 `CAIPlugin` 协议。
-- [x] 新增 `PluginManager` 和 `LegacyModulePlugin`，接管 `module_settings.yaml` 的模块加载编排。
+- [ ] 把 config/tool/workflow/workflow_command/media/conversation/model registry 从默认 `LazyRegistryRef` 迁入 `CAIRuntime` 实例，旧全局 getter 只作为兼容代理。
+- [ ] 将 integrated/text/image/video/music/3d 等 legacy module 逐步改为显式 `CAIPlugin.register(runtime)`，让 `LegacyModulePlugin` 只负责过渡兼容。
+- [ ] 让 `CAIApp.chat_stream()` 输出统一 `StreamEvent` 对象或稳定 JSON envelope，减少调用方直接理解 legacy `metadata.stream_done` / `metadata.heartbeat`。
+- [ ] 将 session concurrency、conversation store、media registry 和 model pool 的生命周期绑定到 runtime，支持同进程多 runtime 隔离。
 
 ### 7.4 CabbageEditor adapter 任务
 
-- [x] 将 `cai_extensions.install()` 改造成 `install(app, context)`，并保留无参兼容入口。
-- [x] 路径 provider 改为 runtime scoped capability（legacy 全局 setter 暂保留兼容）。
-- [x] engine tools 注册到 runtime scoped tool registry。
-- [x] workflow 注册到 runtime scoped workflow registry。
-- [x] 删除 adapter import-time `sys.path` 副作用。
-- [x] 删除 legacy 绝对 import 对显式 `bootstrap_paths()` 的兼容依赖。
+- [ ] 移除路径 resolver、app config provider 等 adapter 插件对 legacy 全局 setter 的依赖，改为所有旧调用方通过 runtime capability 读取。
+- [ ] 将 CabbageEditor 专属 workflow 和 engine modules 的预加载从 import side effect 迁移为显式 plugin register。
+- [ ] 明确 adapter smoke test 的覆盖范围：无 CabbageEditor 环境只 import CAI core，有 CabbageEditor 环境才安装 `cai_extensions`。
 
 ### 7.5 测试任务
 
-- [x] 协议解析测试。
-- [x] stream done/heartbeat 测试。
-- [x] request cancel 测试。
-- [ ] session concurrency 测试。
-- [ ] media fileid resolve 测试。
-- [ ] workflow route 测试。
-- [ ] tool recoverable error 测试。
-- [x] 前端富文本渲染测试：Markdown、代码块、表格、链接 sanitizer、流式半截 Markdown 和纯文本回退。
-- [x] Cabbage adapter smoke test。
-- [x] CAI core 独立 import smoke test。
+- [ ] 增加 session concurrency 测试，覆盖同一 session 并发请求的拒绝、排队或取消策略。
+- [ ] 增加 media fileid/path resolve 测试，覆盖 `file_id`、`file_path`、`file_url`、`data_url` 和失败分支。
+- [ ] 增加 workflow route 测试，验证 slash command / workflow route 命中、heartbeat、review 和 done 语义。
+- [ ] 增加 tool recoverable error 测试，验证工具失败能进入统一 error envelope 且不破坏 stream 收尾。
+- [ ] 增加独立库 CI smoke，验证无 CabbageEditor adapter 环境下的 import、editable install、CLI 和 `CAIApp.chat_stream()` 最小调用。
 
 ---
 
@@ -1087,20 +1070,70 @@ CAI 通用库化阶段完成后，应满足：
 - [x] 旧 `get_ai_entrance()` 兼容入口仍可工作。
 - [x] 有最小 CLI 或脚本示例证明 CAI 可独立使用。
 
+### 10.1 CAI 库是否已经通用化
+
+结论：**CAI 已经具备通用库的入口、打包形态和宿主适配边界，可以被视为“初步通用化完成”；但它尚未完成 runtime 级状态隔离，因此还不能判定为完全通用的多实例 AI runtime。**
+
+已通用化的证据：
+
+- **独立导入**：`CoronaArtificialIntelligence.cai` 可以在不加载 CabbageEditor adapter 的情况下 import。
+- **稳定 facade**：`CAIApp.chat_stream()` 已成为编辑器内外统一调用入口，AITool 的 `CAIClient` 也已改为消费 `CAIApp`。
+- **runtime 对象**：`CAIRuntime` 已承载入口 handler、capabilities、registry 注入点和 plugin manager。
+- **插件边界**：`cai_extensions` 已成为 CabbageEditor adapter，宿主路径、工具和 workflow 通过 plugin 注册，而不是直接进入 CAI core。
+- **包化准备**：CAI 已有 `pyproject.toml`、optional dependencies、`cai-chat` CLI、独立脚本示例、FastAPI/WebSocket 示例和 API reference。
+- **兼容可控**：旧 `get_ai_entrance()` 与旧装饰器入口仍保留，降低了从插件后端迁移到通用库 facade 的风险。
+
+尚未完全通用化的原因：
+
+- **registry 仍未全部实例化**：默认 `CAIRuntime` 通过 `LazyRegistryRef` 解析 `get_ai_config()`、`get_tool_registry()`、`get_workflow_registry()`、`get_media_registry()`、`get_conversation_store()` 等 legacy 全局对象。
+- **默认 app/runtime 仍是单例兼容层**：`get_default_runtime()` 和 `get_default_app()` 适合兼容旧代码，但不适合作为多租户隔离边界。
+- **旧模块仍有 import side effect**：`LegacyModulePlugin` 统一编排了旧模块加载，但 integrated/text/image/video/music/3d 等模块本身还没有全部改成纯显式 `register(runtime)` 插件。
+- **宿主 adapter 仍保留 legacy 全局 setter**：路径 resolver、app config provider 等能力已写入 runtime capability，但为了兼容旧调用方仍同步写入全局 provider。
+- **协议与资源层仍有缺口**：错误 envelope、cancellation token、media fileid/path 资源句柄和 session concurrency 测试尚未全部完成。
+
+因此当前最准确的定位是：
+
+```text
+CAI = 可独立安装/引用的通用 AI 库雏形
+  + 已完成 CabbageEditor adapter 解耦
+  + 已具备 CAIApp/CAIRuntime facade
+  - 尚未完成所有状态的 runtime scoped 隔离
+```
+
+如果目标是“给外部项目单实例调用”，当前形态已经基本可用；如果目标是“同一 Python 进程内多个项目、多套配置、多套工具/工作流互不污染”，还需要继续推进 runtime scoped registries 和显式插件化。
+
 ---
 
-## 11. 推荐优先级
+## 11. 项目现状分析与下一步
 
-建议按以下顺序推进：
+### 11.1 当前判断
 
-1. **request_id 全链路透传**：收益最大，风险最低。
-2. **AI RPC Envelope**：让请求/响应语义稳定。
-3. **AITool 内部拆分**：降低插件维护成本。
-4. **CAIApp facade**：给通用库化建立稳定入口。
-5. **runtime scoped registries**：解决全局单例和测试隔离。
-6. **cai_extensions adapter**：在保留目录位置的前提下，把宿主能力从 CAI 通用核心中彻底分离。
+项目已经完成从“插件内 AI 后端”到“通用库雏形”的关键跨越：前端有 request-aware AI client，AITool 主类已拆薄，CAI 有 `CAIApp/CAIRuntime` facade，CabbageEditor 能力已进入 adapter，CAI submodule 也具备独立安装和示例入口。此时继续堆叠新功能的收益低于清理兼容层、统一协议和补测试。
 
-这条路线可以在不打断当前编辑器功能的前提下，让 CAI 逐步从插件内核演进为通用 AI runtime。
+当前主要风险集中在四类：
+
+- **运行时隔离不足**：默认 `CAIRuntime` 仍解析 legacy 全局 registry，多个 app/runtime 在同一进程内仍可能共享配置、工具、工作流、媒体和会话状态。
+- **协议双轨并存**：新入口能识别 `data/heartbeat/done/error`，但 legacy `metadata.stream_done`、`metadata.heartbeat`、`error_code/status_info` 仍参与主链路。
+- **取消与错误不可贯穿**：前端已有 `request.cancel` API，但取消信号尚未可靠传入 CAI generator、workflow、Agent streaming 和工具执行层；错误也尚未统一成可恢复/不可恢复的 envelope。
+- **媒体路径仍偏重 base64 兼容**：大文件经 CEF/Python JSON 过桥成本高，后续应以 file id/path/url/resource handle 为主。
+
+### 11.2 下一步优先级
+
+1. **runtime scoped registries**：把 config/tool/workflow/media/conversation/model 从 `LazyRegistryRef` 指向的 legacy 全局对象迁入 `CAIRuntime` 实例。这是 CAI 从“可单实例复用”走向“可多实例隔离”的核心任务。
+2. **统一 stream/error envelope**：把模型、工具、workflow、媒体解析、取消和内部异常统一成 `AIError` / `StreamEvent(event_type="error")`，同时保留 legacy 字段做过渡。
+3. **真实 cancellation token**：让前端 cancel 传递到 AITool worker、CAI workflow、Agent streaming 和工具执行层，并补齐取消后的 done/cancelled 收尾语义。
+4. **资源句柄优先的媒体入口**：优先支持 `file_id`、`file_path`、`file_url`，把 `data_url/base64` 降为兜底，并为大文件加大小限制和错误提示。
+5. **显式插件化替代 import side effect**：逐个模块提供 `CAIPlugin.register(runtime)`，让 `LegacyModulePlugin` 只负责旧模块过渡。
+6. **事件总线化前端接收**：保留 `window.receiveAIMessageChunk` 作为兼容入口，但内部只负责 dispatch，组件用订阅机制消费事件。
+7. **补齐关键测试**：优先补 session concurrency、media resolve、workflow route、tool recoverable error 和独立库 CI smoke。
+
+### 11.3 建议近期迭代顺序
+
+第一轮建议聚焦协议和可观测性：统一 error envelope、补 request lifecycle 日志、补 session concurrency 和 tool error 测试。这一轮风险较低，却能显著提升调试效率。
+
+第二轮推进 cancellation token 和媒体 resource handle。它们会跨前端、AITool、CAI 和工具层，适合在协议稳定后再动。
+
+第三轮再处理 runtime scoped registries 和显式插件化。它们是通用库化的核心，但会触碰底层全局状态，最好在测试网铺好后逐步迁移。
 
 ---
 
@@ -1108,9 +1141,9 @@ CAI 通用库化阶段完成后，应满足：
 
 可以简化，但不建议直接绕过 CEF/Python/插件体系。当前编辑器的前端运行在 CEF 中，Python 插件系统又承担页面注册、引擎能力访问和资源路径适配，因此完全砍掉这些边界会破坏现有架构。更现实的简化方向是：**保留宿主边界，压缩 AI 专属链路层数**。
 
-### 12.1 当前链路的问题
+### 12.1 早期链路的问题
 
-当前 AI 调用链路中真正显得冗长的部分是：
+早期 AI 调用链路中真正显得冗长的部分是：
 
 ```text
 前端 aiService
@@ -1127,6 +1160,8 @@ CAI 通用库化阶段完成后，应满足：
 - 通用 CEF RPC 分发：`Bridge.callCEF` 与 `CoronaEditor.deal_func_from_js`。
 - 编辑器 AI 插件桥接：`AITool.send_message_to_ai_stream`。
 - CAI 内部运行时：`ai_entrance`、integrated handler、workflow/Agent。
+
+当前阶段已经完成入口收敛：前端新增 `aiClient.chatStream(request)`，AITool 新增 `ai_rpc(request)`，内部通过 `AIPluginController`、`AIRequestService`、`CAIClient` 和 `StreamDispatcher` 分层处理，CAI 调用入口也已收敛到 `CAIApp.chat_stream()`。旧链路仍作为兼容入口存在，但不再是新代码的目标形态。
 
 简化时不需要把三层全部合并，而是让每层只保留一个明确入口。
 
@@ -1161,11 +1196,11 @@ Vue AITalkBar
 - CAI 只暴露 `CAIApp.chat_stream()`，隐藏 `ai_entrance`、import side effect 和 integrated handler。
 - stream 结束、心跳、错误、取消都变成统一事件，不再靠多个字段散落判断。
 
-### 12.3 第一阶段：只做入口收敛
+### 12.3 已完成：入口收敛
 
-第一阶段不要改 CAI 内部逻辑，只增加一层兼容 facade。
+入口收敛阶段已经落地。该阶段没有大改 CAI 内部逻辑，而是通过兼容 facade 先把前端、AITool 和 CAI 的认知入口统一起来。
 
-前端新增：
+前端已新增：
 
 ```javascript
 export const aiClient = {
@@ -1177,7 +1212,7 @@ export const aiClient = {
 };
 ```
 
-Python AITool 新增：
+Python AITool 已新增：
 
 ```python
 @classmethod
@@ -1190,7 +1225,7 @@ def ai_rpc(cls, request: dict) -> str:
     return build_rpc_error("UNKNOWN_OPERATION")
 ```
 
-CAI 侧先不大改，只包一层：
+CAI 侧已通过 facade 包装 legacy integrated 入口：
 
 ```python
 class CAIApp:
@@ -1199,7 +1234,7 @@ class CAIApp:
         yield from get_ai_entrance().handle_integrated_entrance_stream(payload)
 ```
 
-这一阶段的目标是让新链路跑起来，但底层仍复用旧 `handle_integrated_entrance_stream`。
+这一阶段的结果是新链路已经跑通，但底层仍复用旧 `handle_integrated_entrance_stream`。后续重点是逐步替换 legacy registry、legacy envelope 和 import side effect。
 
 ### 12.4 第二阶段：替换 AITool 手写流式队列
 
@@ -1212,8 +1247,8 @@ AIRequestService
   -> 管理 request_id、状态、取消、future/task
 
 CAIClient
-  -> 当前消费 get_ai_entrance().handle_integrated_entrance_stream
-  -> 后续切换到 CAIApp.chat_stream
+  -> 消费 CAIApp.chat_stream
+  -> 后续随 CAIApp 切换到 runtime scoped stream implementation
 
 StreamDispatcher
   -> 专门把 StreamEvent 发回前端
@@ -1299,13 +1334,13 @@ def handle_integrated_entrance_stream(payload):
 - **把 CAI submodule 移出 Editor**：会破坏 submodule 管理和当前运行时路径假设。
 - **一次性删除 `ai_entrance`**：现有模块依赖装饰器注册和动态加载，应先通过 `CAIApp` 兼容代理逐步替换。
 
-### 12.7 最小可落地版本
+### 12.7 已落地的最小版本
 
-最小改造可以只做四件事：
+最小改造已落地，核心包括四件事：
 
 1. 前端新增 `aiClient.chatStream(request)`，保留旧 `aiService.sendMessageToAIStream(payload)`。
-2. AITool 新增 `ai_rpc(request)`，内部暂时仍调用旧 `_process_ai_message_stream`。
+2. AITool 新增 `ai_rpc(request)`，并委托 `AIPluginController` / `AIRequestService` 管理 request lifecycle。
 3. 每个请求生成 `request_id`，并把它透传到 metadata。
-4. 前端 `receiveAIMessageChunk` 先兼容读取 `metadata.request_id`，按 request 归属消息。
+4. 前端 `receiveAIMessageChunk` 兼容读取 `metadata.request_id`，按 request 归属消息。
 
-这个版本不会动 CAI 内部，只先缩短前端和插件之间的认知链路。等稳定后，再把 `CAIApp.chat_stream()` 和 runtime scoped registry 往里推进。
+后续不再是“让新入口跑起来”，而是继续消除兼容层：把旧全局 registry 迁到 `CAIRuntime` 实例，把 legacy module import side effect 改为显式 plugin register，并让 stream event、错误和取消全部走统一协议。
