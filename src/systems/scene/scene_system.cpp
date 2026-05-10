@@ -202,10 +202,15 @@ std::vector<std::uintptr_t> SceneSystem::query_aabb(
     std::uintptr_t scene, const Spatial::AABB& box) const {
     std::shared_lock lock(impl_->mtx);
     std::vector<std::uintptr_t> out;
+
     auto it = impl_->scenes.find(scene);
-    if (it != impl_->scenes.end()) {
-        it->second.tree.query_aabb(box, out);
+    if (it == impl_->scenes.end() || it->second.tree.empty()) {
+        return out;
     }
+
+    out.reserve(it->second.tree.size() / 2);
+    it->second.tree.query_aabb(box, out);
+
     return out;
 }
 
@@ -213,10 +218,15 @@ std::vector<std::uintptr_t> SceneSystem::query_sphere(
     std::uintptr_t scene, const ktm::fvec3& center, float radius) const {
     std::shared_lock lock(impl_->mtx);
     std::vector<std::uintptr_t> out;
+
     auto it = impl_->scenes.find(scene);
-    if (it != impl_->scenes.end()) {
-        it->second.tree.query_sphere(center, radius, out);
+    if (it == impl_->scenes.end() || it->second.tree.empty()) {
+        return out;
     }
+
+    out.reserve(it->second.tree.size() / 2);
+    it->second.tree.query_sphere(center, radius, out);
+
     return out;
 }
 
@@ -224,11 +234,16 @@ std::vector<std::uintptr_t> SceneSystem::query_frustum(
     std::uintptr_t scene, const Math::Frustum& frustum) const {
     std::shared_lock lock(impl_->mtx);
     std::vector<std::uintptr_t> out;
+
     auto it = impl_->scenes.find(scene);
-    if (it != impl_->scenes.end()) {
-        it->second.tree.query_if(
-            [&](const Spatial::AABB& b) { return frustum.intersects(b); }, out);
+    if (it == impl_->scenes.end() || it->second.tree.empty()) {
+       return out;
     }
+
+    out.reserve(it->second.tree.size() / 2);
+    it->second.tree.query_if(
+        [&](const Spatial::AABB& b) { return frustum.intersects(b); }, out);
+
     return out;
 }
 
@@ -236,10 +251,16 @@ std::vector<std::pair<std::uintptr_t, std::uintptr_t>> SceneSystem::query_pairs(
     std::uintptr_t scene) const {
     std::shared_lock lock(impl_->mtx);
     std::vector<std::pair<std::uintptr_t, std::uintptr_t>> out;
+
     auto it = impl_->scenes.find(scene);
-    if (it != impl_->scenes.end()) {
-        it->second.tree.collect_pairs(out);
+    if (it == impl_->scenes.end() || it->second.tree.size() < 2) {
+        return out;
     }
+
+    std::size_t n = it->second.tree.size();
+    out.reserve(n * (n - 1) / 4); // 保守估计，实际碰撞对通常远小于最大值
+    it->second.tree.collect_pairs(out);
+
     return out;
 }
 

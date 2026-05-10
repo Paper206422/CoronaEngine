@@ -47,6 +47,7 @@ class Octree {
     explicit Octree(OctreeConfig cfg = {}) : cfg_(cfg) {}
 
     void clear() noexcept {
+        root_.reset();
         entries_.clear();
         root_bounds_ = AABB{};
     }
@@ -59,9 +60,21 @@ class Octree {
      * 当前实现：仅缓存条目；查询走暴力遍历。
      */
     void rebuild(const AABB& root, std::span<const Entry> entries) {
+        clear();
         root_bounds_ = root;
         entries_.assign(entries.begin(), entries.end());
         // TODO(M1.2): 构造真实的八叉树节点结构
+
+        if (entries.empty()) {
+            return;
+        }
+
+        root_ = std::make_unique<Node>();
+        root_->bounds = root_bounds_;
+
+        for (const Entry& e : entries_) {
+            insert_recursive(*root_,e,0);
+        }
     }
 
     [[nodiscard]] const AABB& root_bounds() const noexcept { return root_bounds_; }
@@ -73,25 +86,27 @@ class Octree {
     // ============================================================
 
     void query_aabb(const AABB& box, std::vector<TPayload>& out) const {
-        for (const Entry& e : entries_) {
-            if (e.bounds.overlaps(box)) {
-                out.push_back(e.payload);
-            }
+        if ( !root_ || !box.overlaps(root_bounds_)) {
+            return;
         }
+
+        query_aabb_recursive(*root_, box, out);
     }
 
     void query_sphere(const ktm::fvec3& center, float radius,
                       std::vector<TPayload>& out) const {
-        const float r2 = radius * radius;
-        for (const Entry& e : entries_) {
-            // AABB 到球心的最近点距离平方
-            float dx = std::max({e.bounds.min.x - center.x, 0.0f, center.x - e.bounds.max.x});
-            float dy = std::max({e.bounds.min.y - center.y, 0.0f, center.y - e.bounds.max.y});
-            float dz = std::max({e.bounds.min.z - center.z, 0.0f, center.z - e.bounds.max.z});
-            if (dx * dx + dy * dy + dz * dz <= r2) {
-                out.push_back(e.payload);
-            }
+        if (!root_) {
+            return;
         }
+
+        float dx = std::max({root_bounds_.min.x - center.x, 0.0f, center.x - root_bounds_.max.x});
+        float dy = std::max({root_bounds_.min.y - center.y, 0.0f, center.y - root_bounds_.max.y});
+        float dz = std::max({root_bounds_.min.z - center.z, 0.0f, center.z - root_bounds_.max.z});
+        if (dx * dx + dy * dy + dz * dz > radius * radius) {
+            return;
+        }
+
+        query_sphere_recursive(*root_, center, radius, out);
     }
 
     /**
@@ -99,21 +114,31 @@ class Octree {
      */
     template <typename Predicate>
     void query_if(Predicate&& pred, std::vector<TPayload>& out) const {
-        for (const Entry& e : entries_) {
-            if (pred(e.bounds)) out.push_back(e.payload);
+        if ( !root_ || !pred(root_bounds_)) {
+            return;
         }
+
+        query_if_recursive(*root_, std::forward<Predicate>(pred), out);
     }
 
     /**
      * @brief 收集所有可能碰撞的 payload 对（i<j，已 dedupe）
      */
     void collect_pairs(std::vector<std::pair<TPayload, TPayload>>& out) const {
-        for (std::size_t i = 0; i < entries_.size(); ++i) {
-            for (std::size_t j = i + 1; j < entries_.size(); ++j) {
-                if (entries_[i].bounds.overlaps(entries_[j].bounds)) {
-                    out.emplace_back(entries_[i].payload, entries_[j].payload);
-                }
-            }
+        if (!root_ || entries_.empty() < 2) {
+            return;
+        }
+
+        std::vector<std::pair<TPayload, TPayload>> candidates;
+        candidates.reserve(entries_.size()*4);
+
+        collect_pairs_recursive(*root_,candidates);
+
+        if (!candidates.empty()) {
+            std::sort(candidates.begin(), candidates.end());
+            auto last = std::unique(candidates.begin(), candidates.end());
+            candidates.erase(last, candidates.end());
+            out.swap(candidates);
         }
     }
 
@@ -127,13 +152,202 @@ class Octree {
     [[nodiscard]] Stats stats() const noexcept {
         Stats s;
         s.entries = entries_.size();
+
+        if (root_) {
+            stats_recursive(*root_,0,s);
+        }
+
         return s;
     }
 
    private:
+    //八叉树节点结构
+    struct Node {
+        AABB bounds;
+        std::vector<const Entry*> entries; //存储指向全局entries_的指针
+        std::unique_ptr<std::array<Node,8>> children;
+
+        [[nodiscard]] bool is_leaf() const noexcept {
+            return children == nullptr;
+        }
+    };
+
     OctreeConfig       cfg_;
     AABB               root_bounds_{};
     std::vector<Entry> entries_;
+    std::unique_ptr<Node> root_; //根节点
+
+    // 递归插入条目到八叉树
+    void insert_recursive(const Node& node,const Entry& entry,int depth) {
+        if (!node.bounds.overlaps(entries_.bounds)) {
+            return;
+        }
+
+        if (node.is_leaf()) {
+            bool should_split = depth < cfg_.max_depth &&
+                static_cast<int>(node.entries.size()) >= cfg_.max_objects_per_leaf;
+
+            if (!should_split) {
+                node.entries.push_back(&entry);
+                return;
+            }
+            split_node(node);
+        }
+
+        for (int i = 0 ; i < 8 ; i ++ ) {
+            insert_recursive((*node.children)[i],entry,depth+1);
+        }
+    }
+
+    // 分裂节点为8个子节点
+    void split_node(Node& node) {
+        node.children = std::make_unique<std::array<Node,8>>();
+        auto& children = *node.children;
+
+        const ktm::fvec3 center = node.bounds.center();
+        const auto& min = node.bounds.min;
+        const auto& max = node.bounds.max;
+
+        children[0].bounds.min = min;
+        children[0].bounds.max = center;
+
+        children[1].bounds.min = ktm::fvec3{center.x, min.y, min.z};
+        children[1].bounds.max = ktm::fvec3{max.x, center.y, center.z};
+
+        children[2].bounds.min = ktm::fvec3{min.x, center.y, min.z};
+        children[2].bounds.max = ktm::fvec3{center.x, max.y, center.z};
+
+        children[3].bounds.min = ktm::fvec3{center.x, center.y, min.z};
+        children[3].bounds.max = ktm::fvec3{max.x, max.y, center.z};
+
+        children[4].bounds.min = ktm::fvec3{min.x, min.y, center.z};
+        children[4].bounds.max = ktm::fvec3{center.x, center.y, max.z};
+
+        children[5].bounds.min = ktm::fvec3{center.x, min.y, center.z};
+        children[5].bounds.max = ktm::fvec3{max.x, center.y, max.z};
+
+        children[6].bounds.min = ktm::fvec3{min.x, center.y, center.z};
+        children[6].bounds.max = ktm::fvec3{center.x, max.y, max.z};
+
+        children[7].bounds.min = center;
+        children[7].bounds.max = max;
+
+        for (const Entry* e : node.entries) {
+            for (int i = 0 ; i < 8 ; i ++ ) {
+                if ( children[i].bounds.overlaps(e->bounds)) {
+                    children[i].entries.push_back(e);
+                }
+            }
+        }
+
+        node.entries.clear();
+    }
+
+    // 递归查询AABB相交的条目
+    void query_aabb_recursive(const Node& node,const AABB& box,
+                            std::vector<TPayload>& out) const {
+        if ( node.is_leaf()) {
+            for (const Entry* e : node.entries) {
+                if ( e->bounds.overlaps(box)) {
+                    out.push_back(e->payload);
+                }
+            }
+            return;
+        }
+
+        for (int i = 0 ; i < 8 ; i ++ ) {
+            const Node& child = (*node.children)[i];
+            if (box.overlaps(child.bounds)) {
+                query_aabb_recursive(child,box,out);
+            }
+        }
+    }
+
+    // 递归查询球体相交的条目
+    void query_sphere_recursive(const Node& node,const ktm::fvec3& center,float radius,
+                                std::vector<TPayload>& out) const {
+        if (node.is_leaf()) {
+            const float r2 = radius * radius;
+            for (const Entry* e : node.entries) {
+                float dx = std::max({e->bounds.min.x - center.x, 0.0f, center.x - e->bounds.max.x});
+                float dy = std::max({e->bounds.min.y - center.y, 0.0f, center.y - e->bounds.max.y});
+                float dz = std::max({e->bounds.min.z - center.z, 0.0f, center.z - e->bounds.max.z});
+                if (dx * dx + dy * dy + dz * dz <= r2 ) {
+                    out.push_back(e->payload);
+                }
+            }
+            return;
+        }
+
+        for (int i = 0 ; i < 8 ; i ++ ) {
+            const Node& child = (*node.children)[i];
+            float dx = std::max({child.bounds.min.x - center.x, 0.0f, center.x - child.bounds.max.x});
+            float dy = std::max({child.bounds.min.y - center.y, 0.0f, center.y - child.bounds.max.y});
+            float dz = std::max({child.bounds.min.z - center.z, 0.0f, center.z - child.bounds.max.z});
+            if ( dx * dx + dy * dy + dz * dz <= radius * radius ) {
+                query_sphere_recursive(child,center,radius,out);
+            }
+        }
+    }
+
+    // 递归查询满足谓词的条目
+    template <typename Predicate>
+    void query_if_recursive(const Node& node,Predicate&& pred,std::vector<TPayload>& out) const {
+        if (node.is_leaf()) {
+            for (const Entry* e : node.entries) {
+                if (pred(e->bounds)) {
+                    out.push_back(e->payload);
+                }
+            }
+            return;
+        }
+
+        for (int i = 0 ; i < 8 ; i ++ ) {
+            const Node& child = (*node.children)[i];
+            if (pred(child.bounds)) {
+                query_if_recursive(child,std::forward<Predicate>(pred),out);
+            }
+        }
+    }
+
+    // 递归收集所有可能碰撞的对
+    void collect_pairs_recursive(const Node& node,
+                            std::vector<std::pair<TPayload,TPayload>>& out) const {
+        if (node.is_leaf()) {
+            for (std::size_t i = 0 ; i < node.entries.size() ; i ++ ) {
+                for (std::size_t j = i + 1; j < node.entries.size() ; j ++ ) {
+                    const Entry* a = node.entries[i];
+                    const Entry* b = node.entries[j];
+
+                    if (a->payload < b->payload) {
+                        out.emplace_back(a->payload,b->payload);
+                    }else if ( b->payload < a->payload ) {
+                        out.emplace_back(b->payload,a->payload);
+                    }
+                }
+            }
+            return;
+        }
+
+        for (int i = 0 ; i < 8 ; i ++ ) {
+            collect_pair_recursive((*node.children)[i],out);
+        }
+    }
+
+    // 递归收集统计信息
+    void stats_recursive(const Node& node, int depth, Stats& s) const {
+        s.nodes++;
+        s.max_depth_used = std::max(s.max_depth_used,depth);
+
+        if (node.is_leaf()) {
+            s.leaves++;
+            return;
+        }
+
+        for (int i = 0 ; i < 8 ; i ++ ) {
+            stats_recursive((*node.children)[i],depth+1,s);
+        }
+    }
 };
 
 }  // namespace Corona::Spatial
