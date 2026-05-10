@@ -102,6 +102,20 @@ void DisplaySystem::update() {
         states_snapshot = surface_states_;
     }
 
+    for (auto actor_handle : scene.actor_handles) {
+        if (!g_lighting_enabled) {
+            // 禁用光照：比如强制材质环境光为全白，不计算光照
+            auto actor = actor_storage.acquire_read(actor_handle);
+            if (!actor) continue;
+            for (auto mesh_handle : actor->mesh_handles) {
+                auto mesh = geometry_storage.acquire_write(mesh_handle);
+                if (!mesh) continue;
+                mesh->lighting_enabled = false;  // 新增 bool 属性或已有属性
+            }
+        } else {
+            // 恢复原有光照逻辑
+        }
+    }
     for (auto& [surface_id, displayer] : displayers_) {
         auto it = states_snapshot.find(surface_id);
         if (it == states_snapshot.end()) {

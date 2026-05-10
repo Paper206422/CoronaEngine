@@ -36,6 +36,10 @@
 #define CORONA_MECHANICS_USE_TRIANGLE_NARROWPHASE 1
 #endif
 
+// 全局开关
+static bool g_collision_enabled = true;  // 控制碰撞检测
+static bool g_lighting_enabled = true;   // 控制光照影响
+
 namespace {
 
 // 按分量构造 fvec3（result：输出向量）
@@ -978,9 +982,34 @@ void MechanicsSystem::shutdown() {
     CFW_LOG_INFO("MechanicsSystem shutdown, all caches cleared");
 }
 
+
+}
 // 物理主循环（单帧）：搜集物体 → 积分外力(重力/阻尼) → 建世界 AABB → 粗/细碰撞改速度 → 积分位姿 → 地板 → 休眠 → 清理缓存
 void MechanicsSystem::update_physics() {
     // 如果正在关闭，不再处理新的物理更新
+    for (std::uintptr_t h : mechanics_handles) {
+        if (!g_collision_enabled) {
+            // 如果关闭碰撞检测，跳过碰撞相关逻辑
+            // 只做平移/旋转积分
+            auto& vc = g_handle_to_velocity[h];
+            auto& av = g_handle_to_angular_vel[h];
+
+            auto m_acc = mechanics_storage.acquire_read(h);
+            if (!m_acc) continue;
+            auto geom_acc = geometry_storage.acquire_read(m_acc->geometry_handle);
+            if (!geom_acc) continue;
+            auto tx_acc = transform_storage.acquire_read(geom_acc->transform_handle);
+            if (!tx_acc) continue;
+
+            Corona::ModelTransform t = *tx_acc;
+            t.position.x += vc.x * fixed_dt;
+            t.position.y += vc.y * fixed_dt;
+            t.position.z += vc.z * fixed_dt;
+            integrate_orientation_quat(g_handle_orientation_quat[h], av, fixed_dt);
+            continue;  // 跳过碰撞检测
+        }
+
+        // 原先碰撞/OBB生成逻辑...
     if (g_shutdown_requested) {
         return;
     }
