@@ -38,4 +38,35 @@ struct ActorRestoreRequestedEvent {
     std::uintptr_t actor{};
 };
 
+/**
+ * @brief 触发 Actor 的距离预加载请求事件
+ */
+struct ActorLoadRequestedEvent {
+    std::uintptr_t scene{};
+    std::uintptr_t actor{};
+};
+
+/**
+ * @brief Actor 资源加载完成事件（由资源系统发布）
+ */
+struct ActorLoadCompletedEvent {
+    std::uintptr_t scene{};
+    std::uintptr_t actor{};
+};
+
+/**
+ * @brief 触发 Actor 的距离卸载请求事件
+ */
+struct ActorUnloadRequestedEvent {
+    std::uintptr_t scene{};
+    std::uintptr_t actor{};
+};
+
+/**
+ * @brief Actor 资源卸载完成事件（由资源系统发布）
+ */
+struct ActorUnloadCompletedEvent {
+    std::uintptr_t scene{};
+    std::uintptr_t actor{};
+};
 }  // namespace Corona::Events

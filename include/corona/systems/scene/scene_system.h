@@ -13,6 +13,15 @@
 #include <vector>
 
 namespace Corona::Systems {
+/**
+ *@brief 物体加载状态枚举
+ */
+enum class ActorLoadState : uint8_t {
+    Loaded,     // 已加载，可正常渲染和物理模拟
+    Loading,    // 正在异步加载中
+    Unloading,  // 正在异步卸载中
+    Unloaded    // 已卸载，数据不在内存中
+};
 
 /**
  * @brief 单场景的可见性策略
@@ -22,6 +31,10 @@ struct SceneVisibilityConfig {
     /// 0 表示永不 evict（默认，避免在 LRU 接入前误触）。
     int  invisible_frames_to_evict = 0;
     bool collect_stats             = true;
+
+    bool enable_distance_culling  = false; // 是否启用距离卸载
+    float unload_distance         = 0.0f; // 超过此距离且不可见时触发卸载
+    float preload_distance        = 0.0f; // 进入此距离时触发预加载
 };
 
 /**
@@ -34,6 +47,12 @@ struct SceneStats {
     std::size_t octree_entries    = 0;
     double      last_rebuild_ms   = 0.0;
     double      last_query_ms     = 0.0;
+
+    //距离卸载统计
+    std::size_t actor_loaded      = 0;
+    std::size_t actor_loading     = 0;
+    std::size_t actor_unloading   = 0;
+    std::size_t actor_unloaded    = 0;
 };
 
 /**
@@ -70,6 +89,9 @@ class SceneSystem : public Kernel::SystemBase {
     // ========================================
     void set_visibility_config(std::uintptr_t scene, SceneVisibilityConfig cfg);
 
+    /// 距离卸载配置接口
+    void set_distance_config(std::uintptr_t scene, float unload_dist, float preload_dist, bool enable = true);
+
     // ========================================
     // 空间查询（线程安全；当前为空集骨架，M1.2 后填入真实结果）
     // ========================================
@@ -95,6 +117,9 @@ class SceneSystem : public Kernel::SystemBase {
     // ========================================
     [[nodiscard]] bool is_actor_offline(std::uintptr_t actor) const;
     void               mark_actor_restored(std::uintptr_t actor);
+
+    /// 加载状态查询接口
+    [[nodiscard]] ActorLoadState get_actor_load_state(std::uintptr_t actor) const;
 
     // ========================================
     // 统计
