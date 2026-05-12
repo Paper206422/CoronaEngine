@@ -4,6 +4,7 @@
 #include <corona/spatial/octree.h>
 #include <corona/systems/scene/scene_system.h>
 
+#include <algorithm>
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
@@ -56,14 +57,140 @@ bool SceneSystem::initialize(Kernel::ISystemContext* ctx) {
 }
 
 void SceneSystem::update() {
-    // M1.1 TODO:
-    //   1) 遍历 SharedDataHub::scene_storage()，对每个 scene：
-    //      - 从 actor_handles 出发，沿 ActorDevice → ProfileDevice → MechanicsDevice
-    //        读取 (min_xyz, max_xyz)，构造 Octree::Entry 列表；
-    //      - 计算 root AABB（merge + padding），调用 tree.rebuild(root, entries)；
-    //      - 写回 SceneDevice.{min_world,max_world,center_world}（迁移阶段先不动，
-    //        与 MechanicsSystem 重复计算可接受）。
-    //   2) 收集本帧所有相机的可见集并集，更新 invisible_frames，按阈值发 Evict 事件。
+    auto& hub = SharedDataHub::instance();
+    auto& scene_storage     = hub.scene_storage();
+    auto& actor_storage     = hub.actor_storage();
+    auto& profile_storage   = hub.profile_storage();
+    auto& mechanics_storage = hub.mechanics_storage();
+    auto& geometry_storage  = hub.geometry_storage();
+    auto& transform_storage = hub.model_transform_storage();
+
+    // ================================================================
+    // Phase 1：只读遍历 scene → actor → profile → mechanics → geometry → transform
+    //          将局部 (min_xyz, max_xyz) 通过 ModelTransform 变换到世界 AABB
+    //          收集为 Octree::Entry 列表
+    //
+    //          注意：此阶段只持有 Storage 的 shared_lock(读)，
+    //          避免在下阶段获取 unique_lock(写) 时发生死锁。
+    // ================================================================
+    struct SceneBuildData {
+        std::uintptr_t                                      key;
+        std::vector<Spatial::Octree<Impl::Payload>::Entry> entries;
+        std::size_t                                         actor_count = 0;
+    };
+    std::vector<SceneBuildData> build_list;
+
+    for (const auto& scene : scene_storage) {
+        if (!scene.enabled) continue;
+
+        SceneBuildData bd;
+        bd.key         = reinterpret_cast<std::uintptr_t>(&scene);
+        bd.actor_count = scene.actor_handles.size();
+        bd.entries.reserve(scene.actor_handles.size());
+
+        for (auto actor_handle : scene.actor_handles) {
+            auto actor = actor_storage.acquire_read(actor_handle);
+            if (!actor) continue;
+
+            // ActorDevice → ProfileDevice → MechanicsDevice → GeometryDevice → ModelTransform
+            // 一个 actor 可能有多个含 mechanics 的 profile，合并所有 world AABB 为一个条目
+            bool has_any_mech = false;
+            Spatial::AABB actor_world_box{};
+
+            for (auto profile_handle : actor->profile_handles) {
+                auto profile = profile_storage.acquire_read(profile_handle);
+                if (!profile || profile->mechanics_handle == 0) continue;
+
+                auto mech = mechanics_storage.acquire_read(profile->mechanics_handle);
+                if (!mech || !mech->physics_enabled) continue;
+
+                auto geom = geometry_storage.acquire_read(mech->geometry_handle);
+                if (!geom) continue;
+
+                auto tx = transform_storage.acquire_read(geom->transform_handle);
+                if (!tx) continue;
+
+                // 将局部 AABB 的 8 个角点变换到世界空间，取 min/max 包络
+                ktm::fmat4x4 M = tx->compute_matrix();
+                auto to_world = [&M](const ktm::fvec3& local) -> ktm::fvec3 {
+                    ktm::fvec4 h{local.x, local.y, local.z, 1.0f};
+                    ktm::fvec4 w = M * h;
+                    return ktm::fvec3{w.x, w.y, w.z};
+                };
+
+                const ktm::fvec3& lmin = mech->min_xyz;
+                const ktm::fvec3& lmax = mech->max_xyz;
+
+                // 局部 AABB 的 8 个角点：min/max 各分量组合 → 世界空间 → 取包络
+                ktm::fvec3 corners[8] = {
+                    {lmin.x, lmin.y, lmin.z}, {lmax.x, lmin.y, lmin.z},
+                    {lmin.x, lmax.y, lmin.z}, {lmax.x, lmax.y, lmin.z},
+                    {lmin.x, lmin.y, lmax.z}, {lmax.x, lmin.y, lmax.z},
+                    {lmin.x, lmax.y, lmax.z}, {lmax.x, lmax.y, lmax.z},
+                };
+                Spatial::AABB world_box;
+                ktm::fvec3 wp0 = to_world(corners[0]);
+                world_box.min = wp0;
+                world_box.max = wp0;
+                for (int i = 1; i < 8; ++i) {
+                    ktm::fvec3 wp = to_world(corners[i]);
+                    world_box.min.x = std::min(world_box.min.x, wp.x);
+                    world_box.min.y = std::min(world_box.min.y, wp.y);
+                    world_box.min.z = std::min(world_box.min.z, wp.z);
+                    world_box.max.x = std::max(world_box.max.x, wp.x);
+                    world_box.max.y = std::max(world_box.max.y, wp.y);
+                    world_box.max.z = std::max(world_box.max.z, wp.z);
+                }
+
+                // 合并当前 profile 的世界 AABB 到 actor 的总包围盒
+                actor_world_box = has_any_mech
+                    ? actor_world_box.merged(world_box)
+                    : world_box;
+                has_any_mech = true;
+            }
+
+            if (has_any_mech) {
+                // payload = actor_handle
+                bd.entries.push_back({actor_handle, actor_world_box});
+            }
+        }
+
+        build_list.push_back(std::move(bd));
+    }
+
+    // ================================================================
+    // Phase 2：写阶段 —— 此时所有读锁已释放，安全获取 unique_lock
+    //          合并世界 AABB 得到 root，重建八叉树，写回 SceneDevice
+    // ================================================================
+    std::unique_lock lock(impl_->mtx);
+
+    for (auto& bd : build_list) {
+        auto& state = impl_->get_or_create(bd.key);
+
+        if (bd.entries.empty()) {
+            state.tree.clear();
+            continue;
+        }
+
+        //合并所有 actor 世界 AABB 得到场景根包围盒
+        Spatial::AABB root = bd.entries[0].bounds;
+        for (std::size_t i = 1; i < bd.entries.size(); ++i) {
+            root = root.merged(bd.entries[i].bounds);
+        }
+        root = root.expanded(state.tree.config().root_padding);
+
+        state.tree.rebuild(root, bd.entries);
+
+        // 写回 SceneDevice
+        if (auto s_w = scene_storage.acquire_write(bd.key)) {
+            s_w->min_world    = root.min;
+            s_w->max_world    = root.max;
+            s_w->center_world = root.center();
+        }
+
+        state.stats.actor_total    = bd.actor_count;
+        state.stats.octree_entries = bd.entries.size();
+    }
 }
 
 void SceneSystem::shutdown() {
