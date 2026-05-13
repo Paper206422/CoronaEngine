@@ -128,8 +128,8 @@ class SceneSystem : public Kernel::SystemBase {
 
    private:
 
-    void on_load_complete(const Events::ActorLoadCompletedEvent& event);
-    void on_unload_complete(const Events::ActorUnloadCompletedEvent& event);
+    void on_load_completed(const Events::ActorLoadCompletedEvent& event);
+    void on_unload_completed(const Events::ActorUnloadCompletedEvent& event);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
