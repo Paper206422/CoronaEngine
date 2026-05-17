@@ -73,14 +73,18 @@ void SceneSystem::update() {
     }
 
     for (std::uintptr_t scene_handle : scene_handles) {
-        auto scene_read = scene_storage.try_acquire_read(scene_handle);
-        if ( !scene_read.valid() )  continue;
-        const SceneDevice& scene_dev = *scene_read;
+        std::vector<std::uintptr_t> actor_handles;
+        std::vector<std::uintptr_t> camera_handles;
+        {
+            auto scene_read = scene_storage.try_acquire_read(scene_handle);
+            if ( !scene_read.valid() )  continue;
+            actor_handles = scene_read->actor_handles;
+            camera_handles = scene_read->camera_handles;
+        }
 
-        Impl::SceneState& scene_state = impl_->get_or_create(scene_handle);
         std::vector<typename Spatial::Octree<Impl::Payload>::Entry> octree_entries;
 
-        for (std::uintptr_t actor_handle : scene_dev.actor_handles) {
+        for (std::uintptr_t actor_handle : actor_handles) {
             auto& actor_storage = hub.actor_storage();
             auto actor_read = actor_storage.try_acquire_read(actor_handle);
             if ( !actor_read ) continue;
@@ -124,10 +128,13 @@ void SceneSystem::update() {
             root_aabb.max = ktm::fvec3{1.0f, 1.0f, 1.0f};
         }
 
-        scene_state.tree.rebuild(root_aabb,octree_entries);
+        {
+            std::unique_lock lock(impl_->mtx);
+            impl_->get_or_create(scene_handle).tree.rebuild(root_aabb,octree_entries);
+        }
 
         std::unordered_set<Impl::Payload> visible_actors;
-        for (std::uintptr_t camera_handle : scene_dev.camera_handles) {
+        for (std::uintptr_t camera_handle : camera_handles) {
             auto cam_read = camera_storage.try_acquire_read(camera_handle);
             if ( !cam_read.valid() ) continue;
 
@@ -137,8 +144,9 @@ void SceneSystem::update() {
 
         {
             std::unique_lock lock(impl_->mtx);
+            Impl::SceneState& scene_state = impl_->get_or_create(scene_handle);
 
-            for (std::uintptr_t actor_handle : scene_dev.actor_handles) {
+            for (std::uintptr_t actor_handle : actor_handles) {
                 if ( visible_actors.count(actor_handle) ) {
                     scene_state.invisible_frames[actor_handle] = 0;
                 }else {
@@ -156,11 +164,11 @@ void SceneSystem::update() {
                     }
                 }
             }
-        }
 
-        scene_state.stats.actor_total = scene_dev.actor_handles.size();
-        scene_state.stats.actor_visible = visible_actors.size();
-        scene_state.stats.octree_entries = octree_entries.size();
+            scene_state.stats.actor_total = actor_handles.size();
+            scene_state.stats.actor_visible = visible_actors.size();
+            scene_state.stats.octree_entries = octree_entries.size();
+        }
 
         auto scene_write = scene_storage.try_acquire_write(scene_handle);
         if (scene_write.valid()) {
