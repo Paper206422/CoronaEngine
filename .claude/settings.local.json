@@ -7,7 +7,9 @@
       "Bash(git fetch *)",
       "Bash(git merge *)",
       "Bash(git -C \"D:\\\\coronaengine_4\\\\CoronaEngine\" submodule status)",
-      "Skill(superpowers:systematic-debugging)"
+      "Skill(superpowers:systematic-debugging)",
+      "Bash(New-Item *)",
+      "PowerShell(New-Item *)"
     ]
   }
 }

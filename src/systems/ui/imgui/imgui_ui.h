@@ -70,7 +70,7 @@ class UiFrameRunner {
     SDLEventHandler event_handler_{};
 
     EditorSettings editor_settings_{};
-    bool show_settings_panel_ = false;
+    int settings_tab_id_ = -1;
 };
 
 }  // namespace Corona::Systems::UI

@@ -249,9 +249,27 @@ void UiFrameRunner::run_frame(UiFrameContext& context) {
 
     ImGui::NewFrame();
 
-    // ESC 快捷键：切换设置面板显示（仅在无 ImGui 弹窗时响应）
+    // ESC 快捷键：打开/关闭 Vue 编辑器设置页面
     if (ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
-        show_settings_panel_ = !show_settings_panel_;
+        auto& mgr = BrowserManager::instance();
+        if (settings_tab_id_ == -1 || mgr.get_tab(settings_tab_id_) == nullptr) {
+            // 直接加载源目录中的 Vue 页面，无需复制
+            std::string abs_path = CORONA_SETTINGS_HTML_PATH;
+            std::string file_url = "file://";
+            for (char c : abs_path) {
+                if (c == '\\') file_url += '/';
+                else file_url += c;
+            }
+            settings_tab_id_ = mgr.create_tab(file_url, "", "right_top", 420, 650, false);
+            CFW_LOG_INFO("[ESC] Created settings tab: id={} url={}", settings_tab_id_, file_url);
+        } else {
+            BrowserTab* tab = mgr.get_tab(settings_tab_id_);
+            if (tab->minimized) {
+                mgr.show_tab(settings_tab_id_);
+            } else {
+                mgr.hide_tab(settings_tab_id_);
+            }
+        }
     }
 
     // 自动存档计时器累加
@@ -264,10 +282,6 @@ void UiFrameRunner::run_frame(UiFrameContext& context) {
     ImGuiID dock_space_id = layout_manager_.setup_dockspace();
 
     std::vector<int> tabs_to_close = browser_renderer_.render_browser_tabs(dock_space_id, *context.active_tab_id, url_input_active_tab_, context.io);
-
-    if (show_settings_panel_) {
-        RenderSettingsPanel(editor_settings_, &show_settings_panel_);
-    }
 
     layout_manager_.end_dockspace();
 
@@ -289,6 +303,9 @@ void UiFrameRunner::run_frame(UiFrameContext& context) {
         }
         if (tab_id == url_input_active_tab_) {
             url_input_active_tab_ = -1;
+        }
+        if (tab_id == settings_tab_id_) {
+            settings_tab_id_ = -1;
         }
     }
 
