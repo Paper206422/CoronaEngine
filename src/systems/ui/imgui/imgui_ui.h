@@ -6,6 +6,7 @@
 #include <memory>
 
 #include "cef/browser_ui.h"
+#include "editor_settings.h"
 #include "sdl/sdl_utils.h"
 
 namespace Corona::Systems {
@@ -47,6 +48,7 @@ struct UiFrameContext {
     int* active_tab_id = nullptr;
     bool* running = nullptr;
     bool* window_size_changed = nullptr;
+    float delta_time = 0.0f;
 };
 
 // ============================================================================
@@ -66,6 +68,9 @@ class UiFrameRunner {
     BrowserRenderer browser_renderer_{};
     BrowserInputHandler input_handler_{};
     SDLEventHandler event_handler_{};
+
+    EditorSettings editor_settings_{};
+    bool show_settings_panel_ = false;
 };
 
 }  // namespace Corona::Systems::UI

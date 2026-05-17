@@ -286,7 +286,7 @@ bool SDLEventHandler::should_process_in_imgui(const SDL_Event& event, int url_in
         event.type == SDL_EVENT_KEY_UP ||
         event.type == SDL_EVENT_TEXT_INPUT ||
         event.type == SDL_EVENT_TEXT_EDITING) {
-        return url_input_active_tab != -1;
+        return true;
     }
     return true;
 }

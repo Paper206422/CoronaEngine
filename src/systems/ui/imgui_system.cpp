@@ -70,6 +70,13 @@ void ImguiSystem::update() {
         return;
     }
 
+    auto now = std::chrono::high_resolution_clock::now();
+    if (has_last_update_) {
+        delta_time_ = std::chrono::duration<float>(now - last_update_time_).count();
+    }
+    has_last_update_ = true;
+    last_update_time_ = now;
+
     static UI::UiFrameRunner frame_runner;
     UI::UiFrameContext context{
         window_,
@@ -77,7 +84,8 @@ void ImguiSystem::update() {
         vulkan_backend_.get(),
         &active_tab_id_,
         &running_,
-        &window_size_changed_};
+        &window_size_changed_,
+        delta_time_};
 
     frame_runner.run_frame(context);
 }

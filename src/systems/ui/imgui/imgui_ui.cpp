@@ -216,9 +216,25 @@ void UiFrameRunner::run_frame(UiFrameContext& context) {
 
     ImGui::NewFrame();
 
+    // ESC 快捷键：切换设置面板显示（仅在无 ImGui 弹窗时响应）
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
+        show_settings_panel_ = !show_settings_panel_;
+    }
+
+    // 自动存档计时器累加
+    editor_settings_.autosave_accumulator += context.delta_time;
+    if (editor_settings_.autosave_accumulator >= editor_settings_.autosave_interval * 60.0f) {
+        editor_settings_.autosave_accumulator = 0.0f;
+        TriggerAutoSavePlaceholder();
+    }
+
     ImGuiID dock_space_id = layout_manager_.setup_dockspace();
 
     std::vector<int> tabs_to_close = browser_renderer_.render_browser_tabs(dock_space_id, *context.active_tab_id, url_input_active_tab_, context.io);
+
+    if (show_settings_panel_) {
+        RenderSettingsPanel(editor_settings_, &show_settings_panel_);
+    }
 
     layout_manager_.end_dockspace();
 

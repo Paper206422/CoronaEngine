@@ -15,6 +15,7 @@ file(GLOB IMGUI_SYSTEM_SOURCES
     vulk/vulkan_backend.cpp
     vulk/browser_manager_vulkan.cpp
     imgui/imgui_ui.cpp
+    imgui/editor_settings.cpp
     cef/browser_manager.cpp
     cef/browser_ui.cpp
     cef/cef_client.cpp
@@ -57,6 +58,7 @@ corona_add_system(imgui
 )
 
 target_compile_definitions(corona_imgui_system PUBLIC VK_NO_PROTOTYPES)
+target_compile_options(corona_imgui_system PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
 
 helicon_compile_shaders(corona_imgui_system
     OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated_shaders"
