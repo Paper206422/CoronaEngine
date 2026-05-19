@@ -18,6 +18,7 @@ Makefile
 .vscode/
 .idea/
 .vs/
+.claude/
 
 # Tool caches
 **/.cache/

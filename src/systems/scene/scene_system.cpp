@@ -123,6 +123,7 @@ void SceneSystem::update() {
         for (std::uintptr_t actor_handle : actor_handles) {
             if (added_actors.count(actor_handle)) continue;
 
+        for (std::uintptr_t actor_handle : actor_handles) {
             auto& actor_storage = hub.actor_storage();
             auto actor_read = actor_storage.try_acquire_read(actor_handle);
             if ( !actor_read ) continue;
@@ -315,7 +316,6 @@ void SceneSystem::update() {
                         }
                 }
             }
-        }
 
         {
             std::unique_lock lock(impl_->mtx);
