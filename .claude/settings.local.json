@@ -9,7 +9,8 @@
       "Bash(git -C \"D:\\\\coronaengine_4\\\\CoronaEngine\" submodule status)",
       "Skill(superpowers:systematic-debugging)",
       "Bash(New-Item *)",
-      "PowerShell(New-Item *)"
+      "PowerShell(New-Item *)",
+      "Skill(superpowers:using-superpowers)"
     ]
   }
 }
