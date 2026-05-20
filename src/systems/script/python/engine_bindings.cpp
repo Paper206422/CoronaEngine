@@ -60,6 +60,10 @@ void BindAll(nanobind::module_& m) {
              "Enable or disable physics simulation for this object")
         .def("get_physics_enabled", &Mechanics::get_physics_enabled,
              "Get whether physics simulation is enabled for this object")
+        .def("set_collision_enabled", &Mechanics::set_collision_enabled, nb::arg("enabled"),
+             "Enable or disable collision detection for this object")
+        .def("get_collision_enabled", &Mechanics::get_collision_enabled,
+             "Get whether collision detection is enabled for this object")
         .def("set_collision_callback",
              [](Mechanics& self, nb::object callback) {
                  using CallbackType = std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)>;
@@ -132,6 +136,10 @@ void BindAll(nanobind::module_& m) {
              "Set whether this model is rendered")
         .def("get_visible", &Optics::get_visible,
              "Get whether this model is rendered")
+        .def("set_lighting_enabled", &Optics::set_lighting_enabled, nb::arg("enabled"),
+             "Enable or disable lighting influence on this object")
+        .def("get_lighting_enabled", &Optics::get_lighting_enabled,
+             "Get whether lighting influence is enabled for this object")
         .def("set_metallic", &Optics::set_metallic, nb::arg("metallic"))
         .def("get_metallic", &Optics::get_metallic)
         .def("set_roughness", &Optics::set_roughness, nb::arg("roughness"))

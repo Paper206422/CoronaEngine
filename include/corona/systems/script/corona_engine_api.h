@@ -77,6 +77,10 @@ class Mechanics {
     void set_physics_enabled(bool enabled);
     [[nodiscard]] bool get_physics_enabled() const;
 
+    // 碰撞检测开关：false 时物体不参与碰撞检测（不与其他物体或地面碰撞）
+    void set_collision_enabled(bool enabled);
+    [[nodiscard]] bool get_collision_enabled() const;
+
     // 设置碰撞回调（参数为对方 actor 句柄、began(true=enter,false=exit)、法线、碰撞点）
     void set_collision_callback(std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)> callback);
 
@@ -123,6 +127,11 @@ class Optics {
     [[nodiscard]] float get_clearcoat_gloss() const;
     void set_visible(bool visible);
     [[nodiscard]] bool get_visible() const;
+
+    // 光照影响开关：false 时物体不受灯光照射影响（仍渲染但不接收光照计算）
+    void set_lighting_enabled(bool enabled);
+    [[nodiscard]] bool get_lighting_enabled() const;
+
     void set_ambient(const std::array<float, 3>& ambient);
     [[nodiscard]] std::array<float, 3> get_ambient() const;
     void set_diffuse(const std::array<float, 3>& diffuse);

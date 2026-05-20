@@ -94,7 +94,7 @@ struct Hardware {
     //   [8]      sheenTint
     //   [9]      clearcoat
     //   [10]     clearcoatGloss
-    //   [11]     padding
+    //   [11]     lightingEnabled (原 padding0，1.0=受光, 0.0=不受光)
     //   [12..15] materialColor (vec4)
     struct MaterialInfo {
         uint32_t textureDescriptor;
@@ -108,7 +108,7 @@ struct Hardware {
         float sheenTint;
         float clearcoat;
         float clearcoatGloss;
-        float padding0;
+        float lightingEnabled;  // 光照开关：1.0=接收光照, 0.0=不受光（始终使用基础颜色）
         ktm::fvec4 materialColor;
     };
     std::vector<MaterialInfo> materialTableData;

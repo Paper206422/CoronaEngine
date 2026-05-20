@@ -253,20 +253,41 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                                 auto materialID = static_cast<uint32_t>(hardware_->materialTableData.size());
                                 {
                                     Hardware::MaterialInfo mat_info{};
+
+                                    // 光照开关：bEnableLighting 为 true 时物体接收光照，false 时不接收光照
+                                    float lighting_enabled = optics.bEnableLighting ? 1.0f : 0.0f;
+
                                     mat_info.textureDescriptor = m.textureBuffer
                                                                      ? m.textureBuffer.storeDescriptor()
                                                                      : 0;
-                                    mat_info.metallic = optics.metallic;
-                                    mat_info.roughness = optics.roughness;
-                                    mat_info.subsurface = optics.subsurface;
-                                    mat_info.specular = optics.specular;
-                                    mat_info.specularTint = optics.specularTint;
-                                    mat_info.anisotropic = optics.anisotropic;
-                                    mat_info.sheen = optics.sheen;
-                                    mat_info.sheenTint = optics.sheenTint;
-                                    mat_info.clearcoat = optics.clearcoat;
-                                    mat_info.clearcoatGloss = optics.clearcoatGloss;
-                                    mat_info.padding0 = 0.0f;
+
+                                    // 当光照关闭时，将 BRDF 参数设为中性值，使物体不受方向光影响
+                                    if (optics.bEnableLighting) {
+                                        mat_info.metallic = optics.metallic;
+                                        mat_info.roughness = optics.roughness;
+                                        mat_info.subsurface = optics.subsurface;
+                                        mat_info.specular = optics.specular;
+                                        mat_info.specularTint = optics.specularTint;
+                                        mat_info.anisotropic = optics.anisotropic;
+                                        mat_info.sheen = optics.sheen;
+                                        mat_info.sheenTint = optics.sheenTint;
+                                        mat_info.clearcoat = optics.clearcoat;
+                                        mat_info.clearcoatGloss = optics.clearcoatGloss;
+                                    } else {
+                                        // 关闭光照：使用中性BRDF参数（完全漫反射，无高光，无清漆等）
+                                        mat_info.metallic = 0.0f;
+                                        mat_info.roughness = 1.0f;
+                                        mat_info.subsurface = 0.0f;
+                                        mat_info.specular = 0.0f;
+                                        mat_info.specularTint = 0.0f;
+                                        mat_info.anisotropic = 0.0f;
+                                        mat_info.sheen = 0.0f;
+                                        mat_info.sheenTint = 0.0f;
+                                        mat_info.clearcoat = 0.0f;
+                                        mat_info.clearcoatGloss = 0.0f;
+                                    }
+
+                                    mat_info.lightingEnabled = lighting_enabled;
                                     mat_info.materialColor = ktm::fvec4{
                                         m.materialColor[0], m.materialColor[1],
                                         m.materialColor[2], m.materialColor[3]};

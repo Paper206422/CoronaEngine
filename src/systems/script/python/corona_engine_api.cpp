@@ -963,6 +963,14 @@ bool Corona::API::Optics::get_visible() const {
     return true;
 }
 
+void Corona::API::Optics::set_lighting_enabled(bool enabled) {
+    if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->bEnableLighting = enabled;  // 设置光照开关
+}
+bool Corona::API::Optics::get_lighting_enabled() const {
+    if (auto r = SharedDataHub::instance().optics_storage().try_acquire_read(handle_)) return r->bEnableLighting;  // 读取光照开关状态
+    return true;
+}
+
 void Corona::API::Optics::set_metallic(float metallic) {
     if (auto w = SharedDataHub::instance().optics_storage().acquire_write(handle_)) w->metallic = metallic;
 }
@@ -1196,6 +1204,24 @@ bool Corona::API::Mechanics::get_physics_enabled() const {
     if (handle_ == 0) return true;
     if (auto accessor = SharedDataHub::instance().mechanics_storage().try_acquire_read(handle_)) {
         return accessor->physics_enabled;
+    }
+    return true;
+}
+
+void Corona::API::Mechanics::set_collision_enabled(bool enabled) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Mechanics::set_collision_enabled] Invalid mechanics handle");
+        return;
+    }
+    if (auto accessor = SharedDataHub::instance().mechanics_storage().acquire_write(handle_)) {
+        accessor->bEnableCollision = enabled;  // 设置碰撞检测开关
+    }
+}
+
+bool Corona::API::Mechanics::get_collision_enabled() const {
+    if (handle_ == 0) return true;
+    if (auto accessor = SharedDataHub::instance().mechanics_storage().try_acquire_read(handle_)) {
+        return accessor->bEnableCollision;  // 读取碰撞检测开关状态
     }
     return true;
 }

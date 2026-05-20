@@ -834,10 +834,11 @@ void MechanicsSystem::update_physics() {
     const float min_inertia = 0.0001f;                                   // 最小转动惯量，防止除零
     const float rot_damping_factor = 0.97f;                              // 基础旋转阻尼系数
 
-    // 本帧临时表：质量/阻尼/恢复系数
+    // 本帧临时表：质量/阻尼/恢复系数/碰撞开关
     std::unordered_map<std::uintptr_t, float> handle_to_mass;
     std::unordered_map<std::uintptr_t, float> handle_to_damping;
     std::unordered_map<std::uintptr_t, float> handle_to_restitution;
+    std::unordered_map<std::uintptr_t, bool> handle_to_collision_enabled;  // 碰撞检测开关缓存
     std::unordered_map<std::uintptr_t, std::uintptr_t> mech_to_actor;
 
     // --- 从 SharedDataHub 取各存储的引用（几何、变换、场景、环境等）---
@@ -892,6 +893,7 @@ void MechanicsSystem::update_physics() {
                                 handle_to_mass[h] = m_acc->mass;
                                 handle_to_damping[h] = m_acc->damping;
                                 handle_to_restitution[h] = m_acc->restitution;
+                                handle_to_collision_enabled[h] = m_acc->bEnableCollision;  // 缓存碰撞开关
                             } else {
                                 handle_to_mass[h] = 1.0f;
                                 handle_to_damping[h] = 0.99f;
@@ -1141,6 +1143,11 @@ void MechanicsSystem::update_physics() {
 
                 const MechanicsWorldAABB& a = mechanics_data[it_a->second];
                 const MechanicsWorldAABB& b = mechanics_data[it_b->second];
+
+                // 碰撞检测开关判断：任一物体关闭碰撞则跳过此对
+                if (!handle_to_collision_enabled[ha] || !handle_to_collision_enabled[hb]) {
+                    continue;
+                }
 
                 // ===== Phase 1: AABB 碰撞检测（Broadphase 确认）=====
                 if (!aabb_overlap(a.min_world, a.max_world, b.min_world, b.max_world)) {
@@ -1631,8 +1638,15 @@ void MechanicsSystem::update_physics() {
             object_bottom_y += corr_it->second.y;
         }
 
+        // 碰撞检测开关判断：若物体关闭碰撞，跳过地板碰撞处理
+        bool collision_enabled = true;
+        auto col_it = handle_to_collision_enabled.find(h);
+        if (col_it != handle_to_collision_enabled.end()) {
+            collision_enabled = col_it->second;
+        }
+
         // 水平 floor_y：穿插时整体上抬，并做法向/切向「处方」（非完整接触流形）
-        if (object_bottom_y < floor_y + floor_eps) {
+        if (collision_enabled && object_bottom_y < floor_y + floor_eps) {
             tx_w->position.y += (floor_y + floor_eps) - object_bottom_y;  // 消穿（单轴，近似静接触）
 
             float y_vel = g_handle_to_velocity[h].y;  // 向上为正
@@ -1756,6 +1770,7 @@ void MechanicsSystem::update_physics() {
     clean_cache(handle_to_mass);
     clean_cache(handle_to_damping);
     clean_cache(handle_to_restitution);
+    clean_cache(handle_to_collision_enabled);
     clean_cache(g_handle_to_last_move_callback_time);
     clean_cache(g_handle_to_last_move_callback_pos);
 }

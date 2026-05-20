@@ -92,6 +92,9 @@ struct MechanicsDevice {
     // 物理开关：false 时物理系统跳过该对象（不参与模拟，但仍保留数据）
     bool physics_enabled{true};
 
+    // 力学碰撞检测开关：false 时完全禁用该物体的碰撞检测（物体不与其他物体或地面碰撞）
+    bool bEnableCollision{true};
+
     // 碰撞回调函数
     std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)> collision_callback;
 
@@ -108,6 +111,9 @@ struct OpticsDevice {
     std::uintptr_t geometry_handle{};
 
     bool visible{true};  // 控制模型是否参与渲染
+
+    // 光照影响开关：false 时物体不受灯光照射影响（仍参与渲染但不接收光照计算）
+    bool bEnableLighting{true};
 
     // Disney Principled BRDF parameters
     float metallic{0.0f};
