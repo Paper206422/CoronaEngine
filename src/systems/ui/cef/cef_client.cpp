@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <string>
 
 #include "browser_manager.h"
 #include "cef_bridge_helpers.h"
@@ -162,11 +163,10 @@ bool OffscreenCefClient::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
             break;
     }
 
-    // if (!source.empty()) {
-    //     VUE_LOG_INFO("[{}] {}:{} - {}", levelStr, source.ToString().c_str(), line, message.ToString().c_str());
-    // } else {
-    //     VUE_LOG_INFO("[{}] {}", levelStr, message.ToString().c_str());
-    // }
+    const auto msg = message.ToString();
+    if (msg.find("ActorTransformFast") != std::string::npos || msg.find("coronaBridge") != std::string::npos) {
+        VUE_LOG_INFO("[{}] {}", levelStr, msg.c_str());
+    }
     return true;
 }
 

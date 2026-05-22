@@ -36,6 +36,66 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
                      const CefV8ValueList& arguments,
                      CefRefPtr<CefV8Value>& retval,
                      CefString& exception) override {
+            if (name == "actorTransform") {
+                if (arguments.size() < 3) {
+                    exception = "actorTransform(handle, operation, vector) requires 3 arguments";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                const auto handle_value = arguments[0];
+                if (!handle_value || (!handle_value->IsInt() && !handle_value->IsDouble())) {
+                    exception = "actorTransform: handle must be a number";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                const auto operation_value = arguments[1];
+                if (!operation_value || !operation_value->IsInt()) {
+                    exception = "actorTransform: operation must be an integer";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                const auto vector_value = arguments[2];
+                if (!vector_value || !vector_value->IsArray() || vector_value->GetArrayLength() != 3) {
+                    exception = "actorTransform: vector must be number[3]";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                auto context = CefV8Context::GetCurrentContext();
+                if (!context || !context->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                CefRefPtr<CefProcessMessage> message = CefProcessMessage::Create("ActorTransformFast");
+                CefRefPtr<CefListValue> args = message->GetArgumentList();
+                args->SetDouble(0, handle_value->GetDoubleValue());
+                args->SetInt(1, operation_value->GetIntValue());
+
+                auto vector_list = CefListValue::Create();
+                for (int i = 0; i < 3; ++i) {
+                    auto elem = vector_value->GetValue(i);
+                    if (!elem || (!elem->IsInt() && !elem->IsDouble())) {
+                        exception = "actorTransform: vector must be number[3]";
+                        retval = CefV8Value::CreateBool(false);
+                        return true;
+                    }
+                    if (elem->IsInt()) {
+                        vector_list->SetInt(i, elem->GetIntValue());
+                    } else {
+                        vector_list->SetDouble(i, elem->GetDoubleValue());
+                    }
+                }
+
+                args->SetList(2, vector_list);
+                context->GetFrame()->SendProcessMessage(PID_BROWSER, message);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
             if (name != "cameraMove") {
                 return false;
             }
@@ -136,7 +196,9 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
         CefRefPtr<CefV8Value> bridge = CefV8Value::CreateObject(nullptr, nullptr);
         CefRefPtr<CefV8Handler> handler(new FastCameraMoveHandler());
         CefRefPtr<CefV8Value> camera_move = CefV8Value::CreateFunction("cameraMove", handler);
+        CefRefPtr<CefV8Value> actor_transform = CefV8Value::CreateFunction("actorTransform", handler);
         bridge->SetValue("cameraMove", camera_move, V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("actorTransform", actor_transform, V8_PROPERTY_ATTRIBUTE_NONE);
         global->SetValue("coronaBridge", bridge, V8_PROPERTY_ATTRIBUTE_NONE);
 
         std::cout << "[Renderer] V8 context created, cefQuery injected" << std::endl;
