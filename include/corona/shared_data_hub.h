@@ -6,9 +6,8 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <filesystem>
 
-#include "../../modules/corona_resource/include/corona/resource/types/animation.h"
-#include "corona/resource/resource.h"
 #include "Horizon.h"
 
 // Forward declarations
@@ -140,8 +139,7 @@ struct ProfileDevice {
 
 struct ActorDevice {
     std::vector<std::uintptr_t> profile_handles;
-    std::filesystem::path model_path;  //Actor文件路径
-    std::uint64_t resource_id = Resource::IResource::INVALID_UID; //当前加载资源ID
+    std::filesystem::path model_path;  //Actor文件路径，同时作为Actor的唯一标识
 };
 
 enum class CameraOutputMode : uint8_t {
