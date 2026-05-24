@@ -58,7 +58,7 @@ corona_add_system(imgui
 )
 
 target_compile_definitions(corona_imgui_system PUBLIC VK_NO_PROTOTYPES)
-target_compile_options(corona_imgui_system PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/source-charset:utf-8>")
+# target_compile_options(corona_imgui_system PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/source-charset:utf-8>")
 
 # 嵌入编辑器设置页面的源文件路径（CEF 通过 file:// 直接加载）
 corona_to_backslash("${CMAKE_CURRENT_SOURCE_DIR}/vue_settings/editor_settings.html" _SETTINGS_HTML_PATH ESCAPE_FOR_CSTRING)
