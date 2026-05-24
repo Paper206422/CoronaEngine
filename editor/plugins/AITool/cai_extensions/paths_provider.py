@@ -1,6 +1,6 @@
-﻿"""CAI 路径解析器的宿主实现。
+"""CAI 路径解析器的宿主实现。
 
-转发到 ``editor/CabbageEditor/config/paths_config`` 中已有的实现，
+转发到 ``editor/config/paths_config`` 中已有的实现，
 不在此处重复编辑器/引擎逻辑。
 """
 

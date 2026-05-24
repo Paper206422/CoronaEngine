@@ -99,9 +99,9 @@ Keep only if still necessary:
 ## Repo-Specific Cleanup Targets
 
 During convergence, pay special attention to:
-- `editor/CabbageEditor/Frontend/src/components/bridge/InputEventBridge.vue`
-- `editor/CabbageEditor/Frontend/src/views/layout/MainPage.vue`
-- `editor/CabbageEditor/Frontend/src/utils/bridge.js`
+- `editor/Frontend/src/components/bridge/InputEventBridge.vue`
+- `editor/Frontend/src/views/layout/MainPage.vue`
+- `editor/Frontend/src/utils/bridge.js`
 - `src/systems/ui/cef/cef_client.cpp`
 - `examples/cef_subprocess/main.cpp`
 

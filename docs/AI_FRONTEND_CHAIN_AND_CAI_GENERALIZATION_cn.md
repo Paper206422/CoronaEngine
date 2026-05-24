@@ -594,7 +594,7 @@ CAI 内部统一转换为 media registry 的 `fileid://...`。
 
 ## 5. CAI 通用库化目标架构
 
-本方案默认 **不移动** `editor/CabbageEditor/plugins/AITool/CoronaArtificialIntelligence` 目录。CAI 继续作为 Editor 下的 submodule 存在，通用库化通过内部 API、运行时实例化和宿主适配解耦完成。
+本方案默认 **不移动** `editor/plugins/AITool/CoronaArtificialIntelligence` 目录。CAI 继续作为 Editor 下的 submodule 存在，通用库化通过内部 API、运行时实例化和宿主适配解耦完成。
 
 ### 5.1 分层目标
 
@@ -624,7 +624,7 @@ CabbageEditor cai_extensions 适配层
 长期结构建议是在 submodule 原地增加新抽象，不改变 `CoronaArtificialIntelligence` 的挂载位置：
 
 ```text
-editor/CabbageEditor/plugins/AITool/
+editor/plugins/AITool/
   main.py
   utils/
   cai_extensions/                 # CabbageEditor 专属适配层，保留在 AITool 下
@@ -910,7 +910,7 @@ def install_cabbage_editor_extension(app: CAIApp, context: CabbageContext) -> No
 
 验收标准：
 
-- 可以在 `editor/CabbageEditor/plugins/AITool/CoronaArtificialIntelligence` 目录执行 editable install 或直接以 submodule 方式被外部项目引用。
+- 可以在 `editor/plugins/AITool/CoronaArtificialIntelligence` 目录执行 editable install 或直接以 submodule 方式被外部项目引用。
 - 可以在编辑器外用 Python 脚本调用 `CAIApp.chat_stream()`。
 
 实施说明：

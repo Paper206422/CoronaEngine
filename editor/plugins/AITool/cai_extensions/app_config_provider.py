@@ -1,6 +1,6 @@
 """CAI app_config provider 的宿主实现。
 
-转发到 ``editor/CabbageEditor/config/app_config.get_app_config``。
+转发到 ``editor/config/app_config.get_app_config``。
 """
 
 from __future__ import annotations

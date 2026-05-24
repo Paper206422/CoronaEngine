@@ -30,7 +30,7 @@ function(corona_configure_corona_editor target_name)
         return()
     endif()
 
-    set(_CORONA_EDITOR_DIR "${PROJECT_SOURCE_DIR}/editor/CabbageEditor")
+    set(_CORONA_EDITOR_DIR "${PROJECT_SOURCE_DIR}/editor")
     set(_CORONA_EXISTING_DIRS)
 
     if(EXISTS "${_CORONA_EDITOR_DIR}")
@@ -59,7 +59,7 @@ function(corona_install_corona_editor target_name core_target)
     endif()
 
     set(_CORONA_PY_SCRIPT "${PROJECT_SOURCE_DIR}/misc/pytools/editor_copy_and_build.py")
-    set(_CORONA_NODE_DIR "${PROJECT_SOURCE_DIR}/editor/CabbageEditor/Env/node-v22.19.0-win-x64")
+    set(_CORONA_NODE_DIR "${PROJECT_SOURCE_DIR}/editor/Env/node-v22.19.0-win-x64")
 
     if(NOT EXISTS "${_CORONA_PY_SCRIPT}")
         message(WARNING "[Corona:Editor] Script not found: ${_CORONA_PY_SCRIPT}; skipping editor copy/build.")

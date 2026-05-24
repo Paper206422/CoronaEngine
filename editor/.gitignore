@@ -32,6 +32,13 @@ package-lock.json
 *.log
 logs/ 
 
+# Runtime/generated editor data
+Backend/**
+autosave/
+media/
+models/
+screenshots/
+
 # Environment files
 .env
 .env.*

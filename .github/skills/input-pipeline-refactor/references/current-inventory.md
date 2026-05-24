@@ -58,7 +58,7 @@ Observed path:
 - Python business handlers behind the query bridge
 
 Evidence:
-- `Bridge.callCEF` and service objects in `editor/CabbageEditor/Frontend/src/utils/bridge.js`
+- `Bridge.callCEF` and service objects in `editor/Frontend/src/utils/bridge.js`
 - `BrowserSideJSHandler::OnQuery` in `src/systems/ui/cef/cef_client.cpp`
 
 Assessment:
@@ -87,7 +87,7 @@ Observed sync path:
 - one final `sceneService.cameraMove(...)` query call after drag end
 
 Evidence:
-- `scheduleCameraUpdate`, `sendCameraUpdateFast`, and `onMouseUp` in `editor/CabbageEditor/Frontend/src/views/layout/MainPage.vue`
+- `scheduleCameraUpdate`, `sendCameraUpdateFast`, and `onMouseUp` in `editor/Frontend/src/views/layout/MainPage.vue`
 - `cameraMove` V8 injection in `examples/cef_subprocess/main.cpp`
 - `CameraMoveFast` handling in `src/systems/ui/cef/cef_client.cpp`
 
@@ -169,8 +169,8 @@ Suggested future split:
 - `src/systems/ui/sdl/sdl_utils.cpp`
 - `src/systems/ui/imgui/imgui_ui.cpp`
 - `src/systems/ui/cef/browser_ui.cpp`
-- `editor/CabbageEditor/Frontend/src/utils/bridge.js`
-- `editor/CabbageEditor/Frontend/src/views/layout/MainPage.vue`
+- `editor/Frontend/src/utils/bridge.js`
+- `editor/Frontend/src/views/layout/MainPage.vue`
 - `examples/cef_subprocess/main.cpp`
 - `src/systems/ui/cef/cef_client.cpp` as current runtime bridge host
 
@@ -178,8 +178,8 @@ Suggested future split:
 - `src/systems/ui/cef/cef_client.cpp`
 
 ### Recently Cleaned
-- `editor/CabbageEditor/Frontend/src/App.vue`
-- removed `editor/CabbageEditor/Frontend/src/components/bridge/InputEventBridge.vue`
+- `editor/Frontend/src/App.vue`
+- removed `editor/Frontend/src/components/bridge/InputEventBridge.vue`
 
 ## 7. Recommended Next Actions
 

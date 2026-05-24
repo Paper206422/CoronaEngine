@@ -40,7 +40,7 @@ endif()
 
 message(STATUS "[Python] Final chosen interpreter: ${Python_EXECUTABLE}")
 
-set(CORONA_PY_REQUIREMENTS_FILE "${PROJECT_SOURCE_DIR}/editor/CabbageEditor/requirements.txt")
+set(CORONA_PY_REQUIREMENTS_FILE "${PROJECT_SOURCE_DIR}/editor/requirements.txt")
 set(CORONA_PY_CHECK_SCRIPT "${PROJECT_SOURCE_DIR}/misc/pytools/check_pip_modules.py")
 
 # ------------------------------------------------------------------------------

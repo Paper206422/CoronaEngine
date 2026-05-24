@@ -32,7 +32,7 @@ auto engine_root() -> const std::string& {
 }
 
 auto editor_backend_rel() -> const std::string& {
-    static const std::string rel = "Editor/CabbageEditor/Backend";
+    static const std::string rel = "editor";
     return rel;
 }
 

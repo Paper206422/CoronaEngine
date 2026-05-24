@@ -1,0 +1,3 @@
+[submodule "editor/plugins/AITool/CoronaArtificialIntelligence"]
+	path = editor/plugins/AITool/CoronaArtificialIntelligence
+	url = https://github.com/CoronaEngine/CoronaArtificialIntelligence.git

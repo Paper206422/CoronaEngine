@@ -4,7 +4,7 @@ This reference lists the current CoronaEngine files involved in input routing an
 
 ## Frontend Event Sources
 
-### editor/CabbageEditor/Frontend/src/components/bridge/InputEventBridge.vue
+### editor/Frontend/src/components/bridge/InputEventBridge.vue
 Current role:
 - Captures DOM keyboard and mouse events.
 - Forwards raw payloads through `window.appService.send_message_to_main(...)`.
@@ -15,7 +15,7 @@ Target role:
 - Convert editor-wide shortcuts into semantic commands.
 - Realtime input should use V8 bridge calls instead of JSON or opaque runtime bridges.
 
-### editor/CabbageEditor/Frontend/src/views/layout/MainPage.vue
+### editor/Frontend/src/views/layout/MainPage.vue
 Current role:
 - Owns camera state in the frontend.
 - Handles keyboard movement and right-drag camera rotation.
@@ -27,7 +27,7 @@ Target role:
 - Send final synchronization through the command path after interaction ends.
 - Avoid mixing camera drag transport with unrelated editor commands.
 
-### editor/CabbageEditor/Frontend/src/utils/bridge.js
+### editor/Frontend/src/utils/bridge.js
 Current role:
 - Defines JSON `cefQuery` request helpers.
 
@@ -110,7 +110,7 @@ Target role:
 
 ## Python Command Layer
 
-### editor/CabbageEditor/CoronaCore/core/corona_editor.py
+### editor/CoronaCore/core/corona_editor.py
 Current role:
 - Dispatches JSON requests from CEF query into registered Python modules.
 
@@ -118,7 +118,7 @@ Target role:
 - Receive semantic commands and low-frequency requests.
 - Avoid receiving raw DOM or SDL device events for realtime features.
 
-### editor/CabbageEditor/plugins/
+### editor/plugins/
 Current role:
 - Hosts module entrypoints like `SceneTools`, `MainView`, and others.
 
@@ -128,7 +128,7 @@ Target role:
 
 ## Camera State and Realtime Targets
 
-### editor/CabbageEditor/CoronaCore/core/entities/camera.py
+### editor/CoronaCore/core/entities/camera.py
 Current role:
 - Python wrapper around engine camera.
 - Exposes camera handle in the current refactor branch.

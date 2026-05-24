@@ -89,9 +89,9 @@ Rules:
 Map the full chain from source event to final side effect.
 
 Typical anchors in this repo:
-- `editor/CabbageEditor/Frontend/src/components/bridge/InputEventBridge.vue`
-- `editor/CabbageEditor/Frontend/src/views/layout/MainPage.vue`
-- `editor/CabbageEditor/Frontend/src/utils/bridge.js`
+- `editor/Frontend/src/components/bridge/InputEventBridge.vue`
+- `editor/Frontend/src/views/layout/MainPage.vue`
+- `editor/Frontend/src/utils/bridge.js`
 - `examples/cef_subprocess/main.cpp`
 - `src/systems/ui/cef/cef_client.cpp`
 - `src/systems/ui/cef/browser_ui.cpp`
@@ -184,9 +184,9 @@ These files should remain the home for browser-focused keyboard, text, IME, and 
 Use these for V8 function injection and browser-process message handling.
 
 ### Editor Command Surfaces
-- `editor/CabbageEditor/Frontend/src/utils/bridge.js`
-- `editor/CabbageEditor/Frontend/src/views/**`
-- Python plugin entrypoints under `editor/CabbageEditor/plugins/`
+- `editor/Frontend/src/utils/bridge.js`
+- `editor/Frontend/src/views/**`
+- Python plugin entrypoints under `editor/plugins/`
 
 Use these for semantic commands, not raw device streams.
 

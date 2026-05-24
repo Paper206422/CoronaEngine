@@ -12,7 +12,8 @@
 ### 环境配置
 - 运行 `build.py` 将自动下载/使用本地 Node.js，并安装前端依赖并构建前端；同时检查并安装 Python 依赖（`requirements.txt`）
 - Python 层可独立运行
-	- 程序入口为 `Backend/main.py`（建议使用模块方式运行，确保导入路径正确：`python -m main.py`）
+	- 程序入口为 `main.py`（从 `editor/` 目录运行，确保导入路径正确）
+	- Blockly 生成脚本位于运行时/开发时的 `Backend/script/`
 - Web 层可独立运行
 	- 代码位于 `Frontend/`
 
