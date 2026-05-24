@@ -15,7 +15,6 @@ file(GLOB IMGUI_SYSTEM_SOURCES
     vulk/vulkan_backend.cpp
     vulk/browser_manager_vulkan.cpp
     imgui/imgui_ui.cpp
-    imgui/editor_settings.cpp
     cef/browser_manager.cpp
     cef/browser_ui.cpp
     cef/cef_client.cpp
@@ -58,12 +57,6 @@ corona_add_system(imgui
 )
 
 target_compile_definitions(corona_imgui_system PUBLIC VK_NO_PROTOTYPES)
-
-# 嵌入编辑器设置页面的源文件路径（CEF 通过 file:// 直接加载）
-corona_to_backslash("${CMAKE_CURRENT_SOURCE_DIR}/vue_settings/editor_settings.html" _SETTINGS_HTML_PATH ESCAPE_FOR_CSTRING)
-target_compile_definitions(corona_imgui_system PRIVATE
-    CORONA_SETTINGS_HTML_PATH=\"${_SETTINGS_HTML_PATH}\"
-)
 
 helicon_compile_shaders(corona_imgui_system
     OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated_shaders"

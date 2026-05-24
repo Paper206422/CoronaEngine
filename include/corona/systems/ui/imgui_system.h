@@ -8,7 +8,6 @@
 #include <corona/systems/ui/vulkan_backend.h>
 #include <imgui.h>
 
-#include <chrono>
 #include <memory>
 
 namespace Corona::Systems {
@@ -80,10 +79,6 @@ class ImguiSystem : public Kernel::ISystem {
     int active_tab_id_ = -1;
 
     Kernel::EventId sdl_start_id_ = 0;
-
-    std::chrono::time_point<std::chrono::high_resolution_clock> last_update_time_{};
-    float delta_time_ = 0.0f;
-    bool has_last_update_ = false;
 };
 
 }  // namespace Corona::Systems

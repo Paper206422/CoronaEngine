@@ -88,7 +88,6 @@ if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
     set(CMAKE_MSVC_RUNTIME_LIBRARY
         $<$<CONFIG:Debug>:MultiThreadedDebugDLL>$<$<NOT:$<CONFIG:Debug>>:MultiThreadedDLL>
     )
-    add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/execution-charset:utf-8>)
 endif()
 
 # ------------------------------------------------------------------------------
