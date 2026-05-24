@@ -1,4 +1,4 @@
-﻿"""
+"""
 全流程 Pipeline 各阶段节点
 
 每个节点完整地调用一个子工作流，并将子工作流产出的
@@ -11,14 +11,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from CoronaArtificialIntelligence.ai_workflow.progress import publish_node_entries_event
-from CoronaArtificialIntelligence.ai_workflow.state import (
+from Quasar.ai_workflow.progress import publish_node_entries_event
+from Quasar.ai_workflow.state import (
     MultiSceneWorkflowState,
     ModelRetrievalWorkflowState,
     SceneCompositionWorkflowState,
     deep_merge_dict,
 )
-from CoronaArtificialIntelligence.ai_workflow.streaming import build_node_dialogue_entry
+from Quasar.ai_workflow.streaming import build_node_dialogue_entry
 
 _logger = logging.getLogger(__name__)
 

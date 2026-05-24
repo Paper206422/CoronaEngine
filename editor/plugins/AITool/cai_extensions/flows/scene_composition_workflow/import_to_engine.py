@@ -1,4 +1,4 @@
-﻿"""
+"""
 import_to_engine 节点 — 将 scene.json 中的 actor 导入运行中的引擎。
 
 改进 (fanzemin):
@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_workflow.streaming import stream_output_node
 
 from .constants import IMPORT_MAX_WORKERS
 from .formatters import NO_OUTPUT

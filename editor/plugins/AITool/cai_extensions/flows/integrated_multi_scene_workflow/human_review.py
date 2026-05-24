@@ -1,11 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 import uuid
 from typing import Any, Dict
 
-from CoronaArtificialIntelligence.ai_workflow.state import MultiSceneWorkflowState
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_workflow.state import MultiSceneWorkflowState
+from Quasar.ai_workflow.streaming import stream_output_node
 
 from .formatters import format_human_review_parts
 from .test_cases import get_test_case

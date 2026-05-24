@@ -1,4 +1,4 @@
-﻿"""
+"""
 模型导入 / 删除工具
 
 提供将本地模型文件导入到当前场景以及从场景中删除模型的能力。
@@ -14,7 +14,7 @@ from typing import List, Optional
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from CoronaArtificialIntelligence.ai_tools.response_adapter import (
+from Quasar.ai_tools.response_adapter import (
     build_part,
     build_success_result,
     build_error_result,

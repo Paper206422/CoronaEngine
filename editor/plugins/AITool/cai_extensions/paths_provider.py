@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from CoronaArtificialIntelligence.ai_config.paths_config import PathsConfig
+from Quasar.ai_config.paths_config import PathsConfig
 
 
 class CabbageEditorPathsResolver:

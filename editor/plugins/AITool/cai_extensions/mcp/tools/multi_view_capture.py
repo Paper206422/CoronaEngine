@@ -1,4 +1,4 @@
-﻿"""场景级多视图拍摄 Agent 工具
+"""场景级多视图拍摄 Agent 工具
 
 围绕整个场景 AABB 球面生成多组相机位姿，逐个移动相机并截图。
 同时输出 transforms.json（NeRF / 3DGS 兼容格式）。
@@ -15,7 +15,7 @@ from typing import List, Optional, Tuple
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from CoronaArtificialIntelligence.ai_tools.response_adapter import (
+from Quasar.ai_tools.response_adapter import (
     build_part,
     build_success_result,
     build_error_result,
@@ -83,7 +83,7 @@ class SceneMultiViewInput(BaseModel):
 # ===========================================================================
 
 def _get_screenshot_dir() -> str:
-    from CoronaArtificialIntelligence.ai_config.paths_config import get_project_screenshots_dir
+    from Quasar.ai_config.paths_config import get_project_screenshots_dir
     return str(get_project_screenshots_dir())
 
 

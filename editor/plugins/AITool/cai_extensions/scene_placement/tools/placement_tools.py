@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import logging
@@ -12,9 +12,9 @@ import httpx
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from CoronaArtificialIntelligence.ai_config.ai_config import AIConfig  # type: ignore
-from CoronaArtificialIntelligence.ai_media_resource import get_media_registry  # type: ignore
-from CoronaArtificialIntelligence.ai_tools.response_adapter import build_part, build_success_result, build_error_result  # type: ignore
+from Quasar.ai_config.ai_config import AIConfig  # type: ignore
+from Quasar.ai_media_resource import get_media_registry  # type: ignore
+from Quasar.ai_tools.response_adapter import build_part, build_success_result, build_error_result  # type: ignore
 
 from .loader import load_scene_placement_config
 

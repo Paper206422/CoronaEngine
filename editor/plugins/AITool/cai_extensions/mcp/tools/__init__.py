@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import math
@@ -11,7 +11,7 @@ from ..configs.prompts import (
     SCENE_QUERY_PROMPTS,
     SCENE_TRANSFORM_PROMPTS,
 )
-from CoronaArtificialIntelligence.ai_tools.response_adapter import (
+from Quasar.ai_tools.response_adapter import (
     build_part,
     build_success_result,
     build_error_result,

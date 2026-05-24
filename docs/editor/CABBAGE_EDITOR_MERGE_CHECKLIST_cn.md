@@ -140,7 +140,7 @@ editor/plugins/AITool/cai_extensions/*.py 的 docstring
 这类引用不会直接阻塞构建，但会误导后续开发。统一改为 `editor/`，例如：
 
 ```text
-editor/plugins/AITool/CoronaArtificialIntelligence
+editor/plugins/AITool/Quasar
 editor/Frontend/src/utils/bridge.js
 editor/plugins/
 ```
@@ -196,13 +196,13 @@ assets/editor/Ball.obj
 当前 `editor/.gitmodules` 中 submodule 路径为：
 
 ```text
-plugins/AITool/CoronaArtificialIntelligence
+plugins/AITool/Quasar
 ```
 
 这是相对于 `editor/` 的路径。如果顶层 CoronaEngine 负责管理 submodule，需要决定：
 
 - 保留 `editor/.gitmodules`，把 `editor/` 视作带内部 submodule 的嵌入项目。
-- 或迁移到顶层 `.gitmodules`，路径改为 `editor/plugins/AITool/CoronaArtificialIntelligence`。
+- 或迁移到顶层 `.gitmodules`，路径改为 `editor/plugins/AITool/Quasar`。
 
 本轮采用第二种，同时暂时保留 `editor/.gitmodules`，用于保留 editor 归档目录的独立上下文。这样可以从 CoronaEngine 根目录执行：
 
@@ -241,7 +241,7 @@ misc/pytools/editor_copy_and_build.py 注释和参数说明
 
 只要 CMake 继续把 `editor/` 内容复制到 `<exe_dir>/CabbageEditor/`，这些运行时约定可以继续成立。改运行时目录名属于第二阶段迁移。
 
-### 2. 暂不移动 `plugins/AITool/CoronaArtificialIntelligence`
+### 2. 暂不移动 `plugins/AITool/Quasar`
 
 已有 AI 通用化文档明确建议不要移动 CAI submodule。本轮只更新它的相对源码路径说明：从 `editor/CabbageEditor/plugins/...` 更新为 `editor/plugins/...`。
 
@@ -287,7 +287,7 @@ cmake --build --preset msvc-debug
 - C++ 能 import Python `main`。
 - `CoronaEditor.open_browser()` 能找到 `CabbageEditor/Frontend/dist/index.html`。
 - 插件加载器能扫描 `CabbageEditor/plugins/*/main.py`。
-- AITool 能 import `CoronaArtificialIntelligence` 和 `cai_extensions`。
+- AITool 能 import `Quasar` 和 `cai_extensions`。
 
 ### 5. Python 侧最小导入检查
 

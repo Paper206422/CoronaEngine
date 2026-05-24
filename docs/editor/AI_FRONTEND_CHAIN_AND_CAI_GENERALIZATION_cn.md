@@ -1,7 +1,7 @@
 # 前端调用 AI 链路与 CAI 通用库化方案
 
 > **创建日期**: 2026年5月7日  
-> **适用范围**: CabbageEditor 前端、CEF/Python 桥接、AITool 插件、CoronaArtificialIntelligence（CAI）  
+> **适用范围**: CabbageEditor 前端、CEF/Python 桥接、AITool 插件、Quasar（CAI）
 > **目标**: 梳理当前从前端调用 AI 的完整链路，识别可优化点，并给出将 CAI 演进为通用 AI 库的开发方案。
 
 ---
@@ -29,7 +29,7 @@ Vue AITalkBar
   -> Vue window.receiveAIMessageChunk
 ```
 
-CAI 已经具备独立导入、`CAIApp` facade、`CAIRuntime`、插件管理器、CabbageEditor adapter 和 `pyproject.toml` 包化入口，可以视为“初步通用化完成”。它尚未完全成为多实例隔离的通用 runtime，因为默认 registry 仍通过 `LazyRegistryRef` 指向 legacy 全局对象，部分旧模块仍依赖 import side effect 和兼容单例。由于 `CoronaArtificialIntelligence` 是 Editor 的 submodule，后续通用库化仍应保持物理目录不变，在内部继续推进 runtime scoped registry 和显式插件化。
+CAI 已经具备独立导入、`CAIApp` facade、`CAIRuntime`、插件管理器、CabbageEditor adapter 和 `pyproject.toml` 包化入口，可以视为“初步通用化完成”。它尚未完全成为多实例隔离的通用 runtime，因为默认 registry 仍通过 `LazyRegistryRef` 指向 legacy 全局对象，部分旧模块仍依赖 import side effect 和兼容单例。由于 `Quasar` 是 Editor 的 submodule，后续通用库化仍应保持物理目录不变，在内部继续推进 runtime scoped registry 和显式插件化。
 
 ---
 
@@ -185,7 +185,7 @@ ai_rpc(request) / send_message_to_ai_stream(legacy_payload)
 
 ### 2.6 CAI 动态入口层
 
-入口为 `CoronaArtificialIntelligence/ai_service/entrance.py`。
+入口为 `Quasar/ai_service/entrance.py`。
 
 CAI 使用 `module_settings.yaml` 决定模块加载顺序。每个模块可能包含：
 
@@ -594,17 +594,17 @@ CAI 内部统一转换为 media registry 的 `fileid://...`。
 
 ## 5. CAI 通用库化目标架构
 
-本方案默认 **不移动** `editor/plugins/AITool/CoronaArtificialIntelligence` 目录。CAI 继续作为 Editor 下的 submodule 存在，通用库化通过内部 API、运行时实例化和宿主适配解耦完成。
+本方案默认 **不移动** `editor/plugins/AITool/Quasar` 目录。CAI 继续作为 Editor 下的 submodule 存在，通用库化通过内部 API、运行时实例化和宿主适配解耦完成。
 
 ### 5.1 分层目标
 
 建议将 CAI 在逻辑上拆成三层，而不是物理移动成多个顶层目录：
 
 ```text
-CoronaArtificialIntelligence / 通用核心逻辑层
+Quasar / 通用核心逻辑层
   通用 AI runtime：协议、配置、会话、媒体、模型、工具、Agent、Workflow。
 
-CoronaArtificialIntelligence / 外部集成逻辑层
+Quasar / 外部集成逻辑层
   可选外部集成：LangChain、LangGraph、OpenAI-compatible provider、账号池、HTTP client。
 
 CabbageEditor cai_extensions 适配层
@@ -621,7 +621,7 @@ CabbageEditor cai_extensions 适配层
 
 ### 5.2 建议目录结构
 
-长期结构建议是在 submodule 原地增加新抽象，不改变 `CoronaArtificialIntelligence` 的挂载位置：
+长期结构建议是在 submodule 原地增加新抽象，不改变 `Quasar` 的挂载位置：
 
 ```text
 editor/plugins/AITool/
@@ -633,7 +633,7 @@ editor/plugins/AITool/
     engine_tools/
     flows/
 
-  CoronaArtificialIntelligence/   # Editor submodule，物理位置不移动
+  Quasar/   # Editor submodule，物理位置不移动
     pyproject.toml                # 可选：用于 editable install / 独立测试
     cai/                          # 新增：通用 facade 与 runtime API
       __init__.py
@@ -657,7 +657,7 @@ editor/plugins/AITool/
     ai_workflow/
 ```
 
-短期只需要在现有 `CoronaArtificialIntelligence` 内引入 `CAIApp`、`CAIRuntime`、协议对象和 plugin manager。后续如果需要独立分发，也建议通过 `pyproject.toml`、submodule tag、editable install 或 wheel 打包完成，而不是改变 Editor 内的目录布局。
+短期只需要在现有 `Quasar` 内引入 `CAIApp`、`CAIRuntime`、协议对象和 plugin manager。后续如果需要独立分发，也建议通过 `pyproject.toml`、submodule tag、editable install 或 wheel 打包完成，而不是改变 Editor 内的目录布局。
 
 ### 5.3 CAIApp Facade
 
@@ -890,7 +890,7 @@ def install_cabbage_editor_extension(app: CAIApp, context: CabbageContext) -> No
 - adapter 被拆为 `CabbagePathsPlugin`、`CabbageAppConfigPlugin`、`CabbageEngineToolsPlugin`、`CabbageWorkflowPlugin`、`CabbageEngineModulesPlugin` 五类 CAI runtime plugin。
 - `install()` 仍保留无参兼容模式；无参时安装到默认 `CAIApp`，传入 app 时安装到指定 `CAIApp/runtime`。
 - CAI 根目录新增 package 标记，CAI 内部 `ai_config`、`ai_tools`、`ai_modules`、`ai_workflow` 等 legacy 顶层绝对导入已迁移为包内相对导入。
-- AITool 与 `cai_extensions` 作为 Editor adapter，引用 CAI 时统一使用 `CoronaArtificialIntelligence...` 包绝对导入；只有 adapter 自身内部模块仍使用相对导入。
+- AITool 与 `cai_extensions` 作为 Editor adapter，引用 CAI 时统一使用 `Quasar...` 包绝对导入；只有 adapter 自身内部模块仍使用相对导入。
 - `ai_service/entrance.py` 不再向 `sys.path` 写入 CAI 根目录；`PluginManager.load_module_settings()` 支持 package-relative `package_base`，用于加载 `module_settings.yaml` 中的 legacy module。
 - AITool 不再调用 `bootstrap_paths()`；创建 `CAIApp` 后直接调用 `install(_cai_app)` 注册 CabbageEditor 宿主能力。
 - `CAIRuntime` 新增 `capabilities`、`set_capability()`、`get_capability()`、`set_registry()` 和 `register_tool_loader_registrar()`，adapter 可将宿主能力挂到当前 runtime。
@@ -910,15 +910,15 @@ def install_cabbage_editor_extension(app: CAIApp, context: CabbageContext) -> No
 
 验收标准：
 
-- 可以在 `editor/plugins/AITool/CoronaArtificialIntelligence` 目录执行 editable install 或直接以 submodule 方式被外部项目引用。
+- 可以在 `editor/plugins/AITool/Quasar` 目录执行 editable install 或直接以 submodule 方式被外部项目引用。
 - 可以在编辑器外用 Python 脚本调用 `CAIApp.chat_stream()`。
 
 实施说明：
 
-- `CoronaArtificialIntelligence/pyproject.toml` 使用 setuptools 原地打包 submodule，安装包名为 `corona-artificial-intelligence`，导入包名为 `CoronaArtificialIntelligence`。
-- Editor 侧代码也按该导入名引用 CAI，即 `from CoronaArtificialIntelligence.cai import CAIApp`，从而和编辑器外使用方式保持一致。
+- `Quasar/pyproject.toml` 使用 setuptools 原地打包 submodule，安装包名为 `quasar`，导入包名为 `Quasar`。
+- Editor 侧代码也按该导入名引用 CAI，即 `from Quasar.cai import CAIApp`，从而和编辑器外使用方式保持一致。
 - optional dependencies 已按能力拆为 `langchain`、`workflow`、`media`、`cabbage`、`web`、`object-recognition` 和 `all`；其中 `cabbage` 保持为空，因为 CabbageEditor adapter 位于 submodule 外侧的 `plugins/AITool/cai_extensions`。
-- 新增 console script `cai-chat`，入口为 `CoronaArtificialIntelligence.cai.cli:main`。
+- 新增 console script `quasar-chat`，入口为 `Quasar.cai.cli:main`。
 - 新增 `examples/cli_chat.py` 与 `examples/fastapi_websocket.py`，用于演示编辑器外直接调用 `CAIApp.chat_stream()`。
 - 新增 `docs/editor/CAI_API_REFERENCE.md`，记录 `CAIApp`、`CAIRuntime`、`ChatRequest`、`StreamEvent` 与 plugin API 的入口说明。
 
@@ -969,7 +969,7 @@ def install_cabbage_editor_extension(app: CAIApp, context: CabbageContext) -> No
 
 ### 8.1 不移动 submodule 目录
 
-`CoronaArtificialIntelligence` 是 Editor 的 submodule，目录位置应保持稳定。CAI 当前依赖较多 import 路径和注册副作用，建议先加 facade/runtime，再逐步迁移内部依赖。不要通过移动目录来实现通用库化，否则容易破坏 submodule 管理、运行时路径和隐式 import。
+`Quasar` 是 Editor 的 submodule，目录位置应保持稳定。CAI 当前依赖较多 import 路径和注册副作用，建议先加 facade/runtime，再逐步迁移内部依赖。不要通过移动目录来实现通用库化，否则容易破坏 submodule 管理、运行时路径和隐式 import。
 
 ### 8.2 保留旧协议兼容层
 
@@ -1076,11 +1076,11 @@ CAI 通用库化阶段完成后，应满足：
 
 已通用化的证据：
 
-- **独立导入**：`CoronaArtificialIntelligence.cai` 可以在不加载 CabbageEditor adapter 的情况下 import。
+- **独立导入**：`Quasar.cai` 可以在不加载 CabbageEditor adapter 的情况下 import。
 - **稳定 facade**：`CAIApp.chat_stream()` 已成为编辑器内外统一调用入口，AITool 的 `CAIClient` 也已改为消费 `CAIApp`。
 - **runtime 对象**：`CAIRuntime` 已承载入口 handler、capabilities、registry 注入点和 plugin manager。
 - **插件边界**：`cai_extensions` 已成为 CabbageEditor adapter，宿主路径、工具和 workflow 通过 plugin 注册，而不是直接进入 CAI core。
-- **包化准备**：CAI 已有 `pyproject.toml`、optional dependencies、`cai-chat` CLI、独立脚本示例、FastAPI/WebSocket 示例和 API reference。
+- **包化准备**：CAI 已有 `pyproject.toml`、optional dependencies、`quasar-chat` CLI、独立脚本示例、FastAPI/WebSocket 示例和 API reference。
 - **兼容可控**：旧 `get_ai_entrance()` 与旧装饰器入口仍保留，降低了从插件后端迁移到通用库 facade 的风险。
 
 尚未完全通用化的原因：
@@ -1305,7 +1305,7 @@ def handle_integrated_entrance_stream(payload):
 
 当前已落地的阶段 3 中间形态是：
 
-- 在 `CoronaArtificialIntelligence/cai` 下新增 `CAIApp`、`CAIRuntime` 和 `protocol` 包。
+- 在 `Quasar/cai` 下新增 `CAIApp`、`CAIRuntime` 和 `protocol` 包。
 - `CAIApp.chat_stream(request)` 接受 `ChatRequest` 或 legacy dict，并内部转成旧 integrated payload。
 - `CAIRuntime` 通过 lazy registry ref 暴露 config/tool/workflow/media/conversation/model 等现有 registry。
 - `ai_service.entrance.get_ai_entrance()` 改为通过默认 `CAIRuntime` 返回 legacy entrance。

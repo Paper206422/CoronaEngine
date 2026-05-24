@@ -1,9 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from CoronaArtificialIntelligence.ai_workflow.state import MultiSceneWorkflowState
-from CoronaArtificialIntelligence.ai_workflow.streaming import FormatterFunc
+from Quasar.ai_workflow.state import MultiSceneWorkflowState
+from Quasar.ai_workflow.streaming import FormatterFunc
 
 from .helpers import to_display_url
 

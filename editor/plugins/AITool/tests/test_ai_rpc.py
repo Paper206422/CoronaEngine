@@ -74,7 +74,7 @@ def install_import_stubs():
     sys.modules["plugins.AITool.cai_extensions.register"] = cai_register_module
 
     entrance_module = types.ModuleType(
-        "CoronaArtificialIntelligence.ai_service.entrance"
+        "Quasar.ai_service.entrance"
     )
     setattr(
         entrance_module,
@@ -101,14 +101,14 @@ def install_import_stubs():
 
     setattr(entrance_module, "ai_entrance", types.SimpleNamespace(collector=FakeConfigCollector()))
     sys.modules[
-        "CoronaArtificialIntelligence.ai_service.entrance"
+        "Quasar.ai_service.entrance"
     ] = entrance_module
     sys.modules[
-        "plugins.AITool.CoronaArtificialIntelligence.ai_service.entrance"
+        "plugins.AITool.Quasar.ai_service.entrance"
     ] = entrance_module
 
     common_module = types.ModuleType(
-        "plugins.AITool.CoronaArtificialIntelligence.ai_tools.common"
+        "plugins.AITool.Quasar.ai_tools.common"
     )
 
     def build_error_response(interface_type, session_id, exc, metadata):
@@ -135,8 +135,8 @@ def install_import_stubs():
         )
 
     setattr(common_module, "build_error_response", build_error_response)
-    sys.modules["CoronaArtificialIntelligence.ai_tools.common"] = common_module
-    sys.modules["plugins.AITool.CoronaArtificialIntelligence.ai_tools.common"] = common_module
+    sys.modules["Quasar.ai_tools.common"] = common_module
+    sys.modules["plugins.AITool.Quasar.ai_tools.common"] = common_module
 
     image_utils_module = types.ModuleType("plugins.AITool.utils.image_utils")
     setattr(image_utils_module, "base64_to_image_file", lambda value: value)
@@ -317,7 +317,7 @@ class AIToolRpcTests(unittest.TestCase):
         self.assertIn("boom", result["status_info"])
 
     def test_cai_app_chat_stream_wraps_legacy_entrance(self):
-        from CoronaArtificialIntelligence.cai import CAIApp
+        from Quasar.cai import CAIApp
 
         def legacy_stream(payload):
             yield json.dumps(
@@ -348,7 +348,7 @@ class AIToolRpcTests(unittest.TestCase):
         self.assertEqual(result["metadata"]["request_id"], "req-cai")
 
     def test_cai_runtime_accepts_runtime_scoped_registries(self):
-        from CoronaArtificialIntelligence.cai import CAIRuntime
+        from Quasar.cai import CAIRuntime
 
         tool_registry = object()
         runtime = CAIRuntime(
@@ -376,7 +376,7 @@ class AIToolRpcTests(unittest.TestCase):
             self.assertEqual(len(fake_loop.calls), 1)
 
     def test_plugin_manager_loads_module_settings_manifest(self):
-        from CoronaArtificialIntelligence.cai import CAIRuntime
+        from Quasar.cai import CAIRuntime
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -414,7 +414,7 @@ class AIToolRpcTests(unittest.TestCase):
         self.assertEqual(summary["failed"], [])
 
     def test_runtime_entrance_registry_overrides_legacy_entrance(self):
-        from CoronaArtificialIntelligence.cai import CAIRuntime
+        from Quasar.cai import CAIRuntime
 
         runtime = CAIRuntime(
             ai_entrance_provider=lambda: types.SimpleNamespace(
@@ -440,7 +440,7 @@ class AIToolRpcTests(unittest.TestCase):
             root = Path(temp_dir)
             context = CabbageContext(
                 aitool_dir=root / "AITool",
-                cai_dir=root / "AITool" / "CoronaArtificialIntelligence",
+                cai_dir=root / "AITool" / "Quasar",
             )
             context.cai_dir.mkdir(parents=True)
             app = FakeApp()
@@ -469,7 +469,7 @@ class AIToolRpcTests(unittest.TestCase):
             root = Path(temp_dir)
             context = module.CabbageContext(
                 aitool_dir=root / "AITool",
-                cai_dir=root / "AITool" / "CoronaArtificialIntelligence",
+                cai_dir=root / "AITool" / "Quasar",
             )
             context.aitool_dir.mkdir(parents=True)
             context.cai_dir.mkdir(parents=True)
@@ -479,7 +479,7 @@ class AIToolRpcTests(unittest.TestCase):
 
     def test_cabbage_adapter_registers_runtime_scoped_capabilities(self):
         sys.modules.pop("plugins.AITool.cai_extensions.register", None)
-        from CoronaArtificialIntelligence.cai import CAIRuntime
+        from Quasar.cai import CAIRuntime
         from plugins.AITool.cai_extensions.register import (
             CabbageAppConfigPlugin,
             CabbageContext,
@@ -499,7 +499,7 @@ class AIToolRpcTests(unittest.TestCase):
         self.assertEqual(len(runtime.get_capability("tool_loader_registrars")), 1)
 
     def test_cai_core_imports_without_cabbage_adapter(self):
-        module_name = "CoronaArtificialIntelligence.cai"
+        module_name = "Quasar.cai"
         removed_modules = {
             name: sys.modules.pop(name)
             for name in list(sys.modules)
@@ -518,20 +518,20 @@ class AIToolRpcTests(unittest.TestCase):
             sys.modules.update(removed_modules)
 
     def test_cai_pyproject_declares_standalone_metadata(self):
-        cai_root = PROJECT_ROOT / "plugins" / "AITool" / "CoronaArtificialIntelligence"
+        cai_root = PROJECT_ROOT / "plugins" / "AITool" / "Quasar"
         data = tomllib.loads((cai_root / "pyproject.toml").read_text(encoding="utf-8"))
 
-        self.assertEqual(data["project"]["name"], "corona-artificial-intelligence")
+        self.assertEqual(data["project"]["name"], "quasar")
         self.assertEqual(
-            data["project"]["scripts"]["cai-chat"],
-            "CoronaArtificialIntelligence.cai.cli:main",
+            data["project"]["scripts"]["quasar-chat"],
+            "Quasar.cai.cli:main",
         )
         optional = data["project"]["optional-dependencies"]
         self.assertTrue({"langchain", "workflow", "media", "cabbage"}.issubset(optional))
 
     def test_cai_package_imports_from_submodule_parent(self):
         aitool_dir = AITOOL_ROOT
-        module_prefix = "CoronaArtificialIntelligence"
+        module_prefix = "Quasar"
         removed_modules = {
             name: sys.modules.pop(name)
             for name in list(sys.modules)
@@ -542,7 +542,7 @@ class AIToolRpcTests(unittest.TestCase):
             sys.path.insert(0, str(aitool_dir))
             inserted = True
         try:
-            module = importlib.import_module("CoronaArtificialIntelligence.cai")
+            module = importlib.import_module("Quasar.cai")
             self.assertTrue(hasattr(module, "CAIApp"))
             self.assertTrue(hasattr(module, "ChatRequest"))
         finally:

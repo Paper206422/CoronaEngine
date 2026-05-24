@@ -1,4 +1,4 @@
-﻿def load_ai_setting():
+def load_ai_setting():
     """
     从同目录下的 ai_setting.yaml 文件中读取配置，
     并动态覆盖到 ai_config 中
@@ -6,8 +6,8 @@
     try:
         import importlib
 
-        from CoronaArtificialIntelligence.ai_service.entrance import get_ai_entrance
-        from CoronaArtificialIntelligence.ai_agent.executor import reset_cached_agent
+        from Quasar.ai_service.entrance import get_ai_entrance
+        from Quasar.ai_agent.executor import reset_cached_agent
 
         get_ai_entrance()
 

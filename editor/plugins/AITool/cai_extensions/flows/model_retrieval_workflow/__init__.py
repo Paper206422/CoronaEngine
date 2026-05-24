@@ -1,4 +1,4 @@
-﻿"""
+"""
 第二步工作流：模型检索与 3D 生成（LangGraph DAG）
 
 接收第一步（多场景室内设计工作流）的输出状态，对每个物体：
@@ -21,8 +21,8 @@ from typing import Dict, TYPE_CHECKING
 
 from langgraph.graph import END, START, StateGraph
 
-from CoronaArtificialIntelligence.ai_workflow.executor import register_workflow_checkpoints
-from CoronaArtificialIntelligence.ai_workflow.state import ModelRetrievalWorkflowState
+from Quasar.ai_workflow.executor import register_workflow_checkpoints
+from Quasar.ai_workflow.state import ModelRetrievalWorkflowState
 
 from .constants import MODEL_RETRIEVAL_FUNCTION_ID
 from .dispatch import dispatch_node

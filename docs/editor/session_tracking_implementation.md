@@ -5,7 +5,7 @@
 
 ## 已完成的工作
 
-### 1. 服务层扩展 (Backend/CoronaArtificialIntelligence/service/common.py)
+### 1. 服务层扩展 (Backend/Quasar/service/common.py)
 - ✅ 添加数据结构定义：
   - StepRetryInfo: 步骤重试信息
   - StepInfo: 步骤执行信息
@@ -37,7 +37,7 @@
   - GET /api/ai/session/<session_id>/output - 获取输出结果
   - GET /api/ai/session/<session_id>/snapshot - 获取完整快照
 
-### 3. 工作流集成辅助 (Backend/CoronaArtificialIntelligence/service/workflow_helper.py)
+### 3. 工作流集成辅助 (Backend/Quasar/service/workflow_helper.py)
 - ✅ 提供便捷的上下文管理器：
   - tracked_workflow / tracked_workflow_async: 工作流追踪
   - tracked_step / tracked_step_async: 步骤追踪
@@ -48,7 +48,7 @@
 - ✅ 提供便捷函数：
   - track_output(): 记录输出
 
-### 4. 集成示例 (Backend/CoronaArtificialIntelligence/service/workflow_integration_example.py)
+### 4. 集成示例 (Backend/Quasar/service/workflow_integration_example.py)
 - ✅ 示例1: 使用上下文管理器的简单工作流
 - ✅ 示例2: 手动控制的灵活工作流
 - ✅ 示例3: 对话流式输出集成
@@ -77,7 +77,7 @@
 
 ### 快速开始（推荐）
 ```python
-from Backend.CoronaArtificialIntelligence.service.workflow_helper import (
+from Backend.Quasar.service.workflow_helper import (
     tracked_workflow_async,
     tracked_step_async,
 )
@@ -114,8 +114,8 @@ curl http://localhost:5000/api/ai/session/user-123/output
 
 ### 1. 优先集成的工作流
 - InnerAgentWorkflow/workflow_executor.py
-- Backend/CoronaArtificialIntelligence/service/image.py
-- Backend/CoronaArtificialIntelligence/service/video.py
+- Backend/Quasar/service/image.py
+- Backend/Quasar/service/video.py
 
 ### 2. 集成步骤
 1. 在工作流启动时调用 init_session()
@@ -132,17 +132,17 @@ curl http://localhost:5000/api/ai/session/user-123/output
 
 运行集成示例测试：
 ```bash
-python Backend/CoronaArtificialIntelligence/service/workflow_integration_example.py
+python Backend/Quasar/service/workflow_integration_example.py
 ```
 
 ## 文件清单
 
 新增文件：
-- Backend/CoronaArtificialIntelligence/service/workflow_helper.py
-- Backend/CoronaArtificialIntelligence/service/workflow_integration_example.py
+- Backend/Quasar/service/workflow_helper.py
+- Backend/Quasar/service/workflow_integration_example.py
 
 修改文件：
-- Backend/CoronaArtificialIntelligence/service/common.py
+- Backend/Quasar/service/common.py
 - Backend/network_service/routes/session.py
 
 所有更改已完成，代码无语法错误，可以开始在实际工作流中集成使用。

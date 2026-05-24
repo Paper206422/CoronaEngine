@@ -1,4 +1,4 @@
-﻿"""capture_screenshots 节点 — 模型导入后对场景进行多角度拍摄，为 review 准备截图。"""
+"""capture_screenshots 节点 — 模型导入后对场景进行多角度拍摄，为 review 准备截图。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_workflow.streaming import stream_output_node
 
 from .formatters import NO_OUTPUT
 from .helpers import get_tool

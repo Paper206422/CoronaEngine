@@ -1,4 +1,4 @@
-﻿import warnings
+import warnings
 from langchain_core._api.deprecation import LangChainPendingDeprecationWarning
 
 warnings.filterwarnings("ignore", category=LangChainPendingDeprecationWarning)
@@ -18,9 +18,9 @@ if str(_AITOOL_DIR) not in sys.path:
 
 from .cai_extensions.register import install as _install_cai_extensions
 
-from CoronaArtificialIntelligence.ai_service.entrance import get_ai_entrance
-from CoronaArtificialIntelligence.ai_tools.common import build_error_response
-from CoronaArtificialIntelligence.cai import CAIApp
+from Quasar.ai_service.entrance import get_ai_entrance
+from Quasar.ai_tools.common import build_error_response
+from Quasar.cai import CAIApp
 
 from .utils.image_utils import base64_to_image_file, upload_file_to_server
 from .services.ai_plugin_controller import AIPluginController
@@ -61,7 +61,7 @@ class AITool(PluginBase):
 
         def ai_caller(prompt: str) -> str | None:
             try:
-                from CoronaArtificialIntelligence.cai.protocol.request import ChatRequest
+                from Quasar.cai.protocol.request import ChatRequest
 
                 # The hint service already embeds system instructions in the prompt,
                 # so we just send it as a simple user message.

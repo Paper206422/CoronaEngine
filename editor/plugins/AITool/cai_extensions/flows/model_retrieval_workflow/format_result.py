@@ -1,10 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 from typing import Any, Dict
 
-from CoronaArtificialIntelligence.ai_workflow.state import ModelRetrievalWorkflowState
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_workflow.state import ModelRetrievalWorkflowState
+from Quasar.ai_workflow.streaming import stream_output_node
 
 from .formatters import format_result_checkpoint_parts
 

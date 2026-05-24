@@ -1,11 +1,11 @@
-﻿import os
+import os
 import logging
 import time
 from typing import Any, Dict, List
 
-from CoronaArtificialIntelligence.ai_models.base_pool import MediaCategory, OmniRequest, get_pool_registry
+from Quasar.ai_models.base_pool import MediaCategory, OmniRequest, get_pool_registry
 
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_workflow.streaming import stream_output_node
 from .formatters import NO_OUTPUT
 from .test_cases import get_test_case
 

@@ -1,12 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import concurrent.futures
 import logging
 import time
 from typing import Any, Dict, List
 
-from CoronaArtificialIntelligence.ai_workflow.state import ModelRetrievalWorkflowState
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_workflow.state import ModelRetrievalWorkflowState
+from Quasar.ai_workflow.streaming import stream_output_node
 
 from .constants import SEARCH_MAX_WORKERS
 from .formatters import NO_OUTPUT, publish_node_progress

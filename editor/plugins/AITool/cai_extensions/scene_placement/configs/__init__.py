@@ -1,9 +1,9 @@
-﻿"""scene_placement 默认配置（参考 three_d_generate 的 register_setting 风格）"""
+"""scene_placement 默认配置（参考 three_d_generate 的 register_setting 风格）"""
 from __future__ import annotations
 
 from typing import Any, Dict
 
-from CoronaArtificialIntelligence.ai_service.entrance import ai_entrance
+from Quasar.ai_service.entrance import ai_entrance
 
 
 @ai_entrance.collector.register_setting("scene_placement")

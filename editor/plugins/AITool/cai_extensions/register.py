@@ -1,4 +1,4 @@
-﻿"""CabbageEditor adapter for CAI.
+"""CabbageEditor adapter for CAI.
 
 This module keeps the physical ``cai_extensions`` location stable while exposing
 host capabilities as CAI runtime plugins. The old ``install()`` entry remains
@@ -27,7 +27,7 @@ class CabbageContext:
         aitool_dir = Path(__file__).resolve().parents[1]
         return cls(
             aitool_dir=aitool_dir,
-            cai_dir=aitool_dir / "CoronaArtificialIntelligence",
+            cai_dir=aitool_dir / "Quasar",
         )
 
 
@@ -43,7 +43,7 @@ class CabbagePathsPlugin:
         self.context = context
 
     def register(self, runtime) -> dict:
-        from CoronaArtificialIntelligence.ai_config.paths_config import set_paths_resolver
+        from Quasar.ai_config.paths_config import set_paths_resolver
 
         from .paths_provider import CabbageEditorPathsResolver
 
@@ -63,7 +63,7 @@ class CabbageAppConfigPlugin:
         self.context = context
 
     def register(self, runtime) -> dict:
-        from CoronaArtificialIntelligence.ai_tools.warmup import set_app_config_provider
+        from Quasar.ai_tools.warmup import set_app_config_provider
 
         from .app_config_provider import get_app_config_for_cai
 
@@ -216,7 +216,7 @@ def install(app=None, context: CabbageContext | None = None) -> None:
     """Install CabbageEditor host capabilities into a CAI app/runtime."""
     context = bootstrap_paths(context)
     if app is None:
-        from CoronaArtificialIntelligence.cai import get_default_app
+        from Quasar.cai import get_default_app
 
         app = get_default_app()
 

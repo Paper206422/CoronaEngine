@@ -1,11 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List
 
-from CoronaArtificialIntelligence.ai_tools.context import reset_current_session, set_current_session
-from CoronaArtificialIntelligence.ai_workflow.state import ModelRetrievalWorkflowState
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_tools.context import reset_current_session, set_current_session
+from Quasar.ai_workflow.state import ModelRetrievalWorkflowState
+from Quasar.ai_workflow.streaming import stream_output_node
 
 from .formatters import NO_OUTPUT
 from .helpers import normalize_object_id

@@ -1,11 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List
 
-from CoronaArtificialIntelligence.ai_workflow.progress import publish_node_entries_event
-from CoronaArtificialIntelligence.ai_workflow.state import ModelRetrievalWorkflowState
-from CoronaArtificialIntelligence.ai_workflow.streaming import FormatterFunc, build_node_dialogue_entry
+from Quasar.ai_workflow.progress import publish_node_entries_event
+from Quasar.ai_workflow.state import ModelRetrievalWorkflowState
+from Quasar.ai_workflow.streaming import FormatterFunc, build_node_dialogue_entry
 
 from .helpers import find_sibling_preview_image
 

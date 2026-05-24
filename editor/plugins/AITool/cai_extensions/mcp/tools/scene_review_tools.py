@@ -1,4 +1,4 @@
-﻿"""场景合理性审查工具
+"""场景合理性审查工具
 
 在完成多视图拍摄（scene_multi_view_capture）后，将拍摄结果送入多模态大模型
 进行场景合理性分析，从四个维度给出结构化评审报告：
@@ -20,7 +20,7 @@ from typing import List
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from CoronaArtificialIntelligence.ai_tools.response_adapter import (
+from Quasar.ai_tools.response_adapter import (
     build_part,
     build_success_result,
     build_error_result,
@@ -106,7 +106,7 @@ def _build_scene_rationality_review_tool() -> StructuredTool:
         max_images: int = _MAX_IMAGES_DEFAULT,
     ) -> str:
         try:
-            from CoronaArtificialIntelligence.ai_models.base_pool import MediaCategory, OmniRequest, get_pool_registry
+            from Quasar.ai_models.base_pool import MediaCategory, OmniRequest, get_pool_registry
 
             # --- 收集截图 ---
             png_files = _collect_png_files(output_dir, max_images)

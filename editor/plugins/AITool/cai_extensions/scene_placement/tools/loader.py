@@ -1,10 +1,10 @@
-﻿"""scene_placement 配置加载器（参考 three_d_generate 的 register_loader 风格）"""
+"""scene_placement 配置加载器（参考 three_d_generate 的 register_loader 风格）"""
 from __future__ import annotations
 
 from typing import Any, Mapping
 
-from CoronaArtificialIntelligence.ai_service.entrance import ai_entrance
-from CoronaArtificialIntelligence.ai_tools.helpers import _as_bool, _as_float  # type: ignore
+from Quasar.ai_service.entrance import ai_entrance
+from Quasar.ai_tools.helpers import _as_bool, _as_float  # type: ignore
 
 from ..configs.dataclasses import ScenePlacementConfig
 

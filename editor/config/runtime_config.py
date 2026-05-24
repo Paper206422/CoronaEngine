@@ -13,7 +13,7 @@ class RuntimeConfig:
     debug_mode: bool = False
     InnerAgentWorkFlow: bool = False
     InnerAgentRepoUrl: str = "https://github.com/CoronaEngine/InnerAgentWorkflow.git"
-    InnerAgentTargetDir: str = "./Backend/CoronaArtificialIntelligence/agent/inner_workflow"
+    InnerAgentTargetDir: str = "./Backend/Quasar/agent/inner_workflow"
 
     @classmethod
     def get_defaults(cls) -> Dict[str, Any]:

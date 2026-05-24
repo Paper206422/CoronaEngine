@@ -1,4 +1,4 @@
-﻿"""
+"""
 全流程一键 Pipeline 工作流（LangGraph DAG）
 
 将三个独立子工作流串联为单次调用：
@@ -21,8 +21,8 @@ from typing import Dict, TYPE_CHECKING
 
 from langgraph.graph import END, START, StateGraph
 
-from CoronaArtificialIntelligence.ai_workflow.executor import register_workflow_checkpoints
-from CoronaArtificialIntelligence.ai_workflow.state import WorkflowState
+from Quasar.ai_workflow.executor import register_workflow_checkpoints
+from Quasar.ai_workflow.state import WorkflowState
 
 from .constants import FULL_PIPELINE_FUNCTION_ID
 from .nodes import (

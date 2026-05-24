@@ -1,11 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from CoronaArtificialIntelligence.ai_config.ai_config import get_ai_config
-from CoronaArtificialIntelligence.ai_tools.registry import get_tool_registry
+from Quasar.ai_config.ai_config import get_ai_config
+from Quasar.ai_tools.registry import get_tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -15,14 +15,14 @@ def get_tool(name: str) -> Any:
     registry = get_tool_registry()
     tools = registry.list_tools()
     if not tools:
-        from CoronaArtificialIntelligence.ai_tools.load_tools import load_tools
+        from Quasar.ai_tools.load_tools import load_tools
 
         load_tools(get_ai_config())
         tools = registry.list_tools()
     tool = {t.name: t for t in tools}.get(name)
     # 工具已注册但目标工具缺失（可能由模块导入失败导致注册中断），强制重新发现
     if tool is None and tools:
-        from CoronaArtificialIntelligence.ai_tools.load_tools import load_tools
+        from Quasar.ai_tools.load_tools import load_tools
 
         load_tools(get_ai_config())
         registry.discover(get_ai_config(), force=True)

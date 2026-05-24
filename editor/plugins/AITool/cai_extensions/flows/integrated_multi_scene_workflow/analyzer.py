@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import logging
@@ -6,8 +6,8 @@ from typing import Any, Dict, List
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from CoronaArtificialIntelligence.ai_workflow.state import MultiSceneWorkflowState
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_workflow.state import MultiSceneWorkflowState
+from Quasar.ai_workflow.streaming import stream_output_node
 
 from .constants import (
     ANALYZER_MULTIMODAL_SUFFIX,

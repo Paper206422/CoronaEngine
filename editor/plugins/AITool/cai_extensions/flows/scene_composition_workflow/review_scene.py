@@ -1,4 +1,4 @@
-﻿"""review_scene 节点 — 调用 VLM 场景合理性审查工具。"""
+"""review_scene 节点 — 调用 VLM 场景合理性审查工具。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict
 
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_workflow.streaming import stream_output_node
 
 from .formatters import NO_OUTPUT
 from .helpers import get_tool, parse_review_result
@@ -34,7 +34,7 @@ def _classify_review_decision(review_result: Dict[str, Any]) -> str:
 
     issues_text = "\n".join(f"- {issue}" for issue in issues[:10])
     try:
-        from CoronaArtificialIntelligence.ai_models.base_pool.registry import get_chat_model
+        from Quasar.ai_models.base_pool.registry import get_chat_model
         from langchain_core.messages import HumanMessage, SystemMessage
 
         llm = get_chat_model(temperature=0, request_timeout=15.0)

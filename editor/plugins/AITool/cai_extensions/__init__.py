@@ -1,7 +1,7 @@
 """CabbageEditor 侧的 CAI 扩展入口包。
 
 包含编辑器/引擎相关的能力实现，启动时通过 :func:`register.install` 注入到
-CoronaArtificialIntelligence（一个通用 AI 库）中。
+Quasar（一个通用 AI 库）中。
 
 子模块：
 - ``paths_provider``：实现 CAI 路径解析器，转发到 ``editor/config/paths_config``。

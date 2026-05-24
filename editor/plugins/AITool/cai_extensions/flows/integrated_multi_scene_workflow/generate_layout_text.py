@@ -1,10 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List
 
-from CoronaArtificialIntelligence.ai_workflow.state import MultiSceneWorkflowState
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_workflow.state import MultiSceneWorkflowState
+from Quasar.ai_workflow.streaming import stream_output_node
 
 from .formatters import NO_OUTPUT
 from .test_cases import get_test_case

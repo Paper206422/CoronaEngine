@@ -1,11 +1,11 @@
-﻿import base64
+import base64
 import mimetypes
 import os
 
 import requests
 import logging
 
-from CoronaArtificialIntelligence.ai_service.entrance import ai_entrance
+from Quasar.ai_service.entrance import ai_entrance
 
 
 def base64_to_image_file(base64_string: str, output_path: str = None) -> str:

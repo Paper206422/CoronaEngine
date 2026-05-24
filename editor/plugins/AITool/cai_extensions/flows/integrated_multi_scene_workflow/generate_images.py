@@ -1,14 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import concurrent.futures
 import logging
 import threading
 from typing import Any, Dict
 
-from CoronaArtificialIntelligence.ai_workflow.progress import publish_node_entries_event
-from CoronaArtificialIntelligence.ai_workflow.state import MultiSceneWorkflowState
-from CoronaArtificialIntelligence.ai_workflow.streaming import build_node_dialogue_entry, stream_output_node
-from CoronaArtificialIntelligence.ai_tools.context import reset_current_session, set_current_session
+from Quasar.ai_workflow.progress import publish_node_entries_event
+from Quasar.ai_workflow.state import MultiSceneWorkflowState
+from Quasar.ai_workflow.streaming import build_node_dialogue_entry, stream_output_node
+from Quasar.ai_tools.context import reset_current_session, set_current_session
 
 from .constants import IMAGE_MAX_WORKERS
 from .formatters import NO_OUTPUT, format_generate_image_progress_parts

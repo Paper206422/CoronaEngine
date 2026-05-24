@@ -1,11 +1,11 @@
-﻿"""output_result 节点 — 汇总结果写入 global_assets 并输出最终摘要。"""
+"""output_result 节点 — 汇总结果写入 global_assets 并输出最终摘要。"""
 
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict
 
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_workflow.streaming import stream_output_node
 
 from .formatters import format_composition_result_parts
 

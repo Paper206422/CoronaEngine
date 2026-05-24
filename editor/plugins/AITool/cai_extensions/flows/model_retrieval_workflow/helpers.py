@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import logging
@@ -10,10 +10,10 @@ from typing import Any, Dict, List
 
 import numpy as np
 
-from CoronaArtificialIntelligence.ai_config.ai_config import get_ai_config
-from CoronaArtificialIntelligence.ai_tools.registry import get_tool_registry
-from CoronaArtificialIntelligence.ai_tools.response_adapter import FILEID_SCHEME
-from CoronaArtificialIntelligence.ai_config.paths_config import _get_active_project_path
+from Quasar.ai_config.ai_config import get_ai_config
+from Quasar.ai_tools.registry import get_tool_registry
+from Quasar.ai_tools.response_adapter import FILEID_SCHEME
+from Quasar.ai_config.paths_config import _get_active_project_path
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def _resolve_preview_part_url(part: Dict[str, Any]) -> str:
         file_id = raw_url[len(FILEID_SCHEME):].strip()
         if file_id:
             try:
-                from CoronaArtificialIntelligence.ai_media_resource import get_media_registry
+                from Quasar.ai_media_resource import get_media_registry
                 resolved = str(get_media_registry().resolve(file_id) or "").strip()
                 if resolved:
                     return resolved
@@ -70,7 +70,7 @@ def get_tool(name: str) -> Any:
     registry = get_tool_registry()
     tools = registry.list_tools()
     if not tools:
-        from CoronaArtificialIntelligence.ai_tools.load_tools import load_tools
+        from Quasar.ai_tools.load_tools import load_tools
 
         load_tools(get_ai_config())
         tools = registry.list_tools()
@@ -90,7 +90,7 @@ def get_store_tool():
 
 def get_3d_generate_tool():
     """获取 3D 模型生成工具。优先混元3D（需启用），回退 Rodin。"""
-    from CoronaArtificialIntelligence.ai_config.ai_config import get_ai_config
+    from Quasar.ai_config.ai_config import get_ai_config
     config = get_ai_config()
     hunyuan_cfg = getattr(config, 'hunyuan3d', None)
     if hunyuan_cfg is not None and getattr(hunyuan_cfg, 'enable', False):
@@ -404,7 +404,7 @@ def wait_for_pending_mesh(
     if not wait_object_id:
         return False
 
-    from CoronaArtificialIntelligence.ai_modules.three_d_generate.tools.model_tools import wait_for_mesh_ready
+    from Quasar.ai_modules.three_d_generate.tools.model_tools import wait_for_mesh_ready
 
     reason_suffix = f"（{wait_reason}）" if wait_reason else ""
     logger.info(

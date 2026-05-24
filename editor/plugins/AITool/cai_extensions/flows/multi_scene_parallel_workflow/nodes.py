@@ -11,12 +11,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List
 
-from CoronaArtificialIntelligence.ai_workflow.progress import publish_node_entries_event
-from CoronaArtificialIntelligence.ai_workflow.state import (
+from Quasar.ai_workflow.progress import publish_node_entries_event
+from Quasar.ai_workflow.state import (
     WorkflowState,
     deep_merge_dict,
 )
-from CoronaArtificialIntelligence.ai_workflow.streaming import build_node_dialogue_entry, stream_output_node
+from Quasar.ai_workflow.streaming import build_node_dialogue_entry, stream_output_node
 
 from .constants import (
     CHECKPOINT_SCHEMA,
@@ -57,12 +57,12 @@ DECOMPOSE_SYSTEM_PROMPT = """你是场景拆解专家。将用户的高层空间
 def decompose_node(state: WorkflowState) -> Dict[str, Any]:
     """用 LLM 将用户的高层需求拆解为子场景列表。"""
     # 确保用户配置已生效（兜底：warmup 可能用默认配置跑过）
-    from CoronaArtificialIntelligence.ai_config.ai_config import reload_ai_config
-    from CoronaArtificialIntelligence.ai_tools.registry import get_tool_registry
+    from Quasar.ai_config.ai_config import reload_ai_config
+    from Quasar.ai_tools.registry import get_tool_registry
     reload_ai_config()
     get_tool_registry().reset_discovery()
-    from CoronaArtificialIntelligence.ai_tools.load_tools import load_tools
-    from CoronaArtificialIntelligence.ai_config.ai_config import get_ai_config
+    from Quasar.ai_tools.load_tools import load_tools
+    from Quasar.ai_config.ai_config import get_ai_config
     _cfg = get_ai_config()
     load_tools(_cfg)
     logger.info("[parallel] tools reloaded: hunyuan3d.enable=%s", getattr(_cfg.hunyuan3d, 'enable', 'N/A'))
@@ -72,11 +72,11 @@ def decompose_node(state: WorkflowState) -> Dict[str, Any]:
     logger.info("[parallel] decompose: user_input='%s'", user_input[:100])
 
     try:
-        from CoronaArtificialIntelligence.ai_modules.text_generate.tools.client_openai import (
+        from Quasar.ai_modules.text_generate.tools.client_openai import (
             build_openai_chat,
         )
-        from CoronaArtificialIntelligence.ai_config.ai_config import get_ai_config
-        from CoronaArtificialIntelligence.ai_modules.providers.configs.dataclasses import (
+        from Quasar.ai_config.ai_config import get_ai_config
+        from Quasar.ai_modules.providers.configs.dataclasses import (
             ProviderConfig,
         )
 

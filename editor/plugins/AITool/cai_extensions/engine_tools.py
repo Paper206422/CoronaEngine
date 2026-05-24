@@ -1,4 +1,4 @@
-﻿"""把迁出的引擎相关工具 loader 注册回 CAI 的 ``ToolRegistry``。
+"""把迁出的引擎相关工具 loader 注册回 CAI 的 ``ToolRegistry``。
 
 通过 :func:`ai_tools.load_tools.register_extra_builtin_registrar` 注入。
 """
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 
-from CoronaArtificialIntelligence.ai_tools.registry import (
+from Quasar.ai_tools.registry import (
     DependencyType,
     ToolCategory,
     ToolDependency,

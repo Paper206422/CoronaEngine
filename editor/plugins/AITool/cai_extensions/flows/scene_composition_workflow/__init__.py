@@ -1,4 +1,4 @@
-﻿"""
+"""
 第三步工作流：场景组合（LangGraph DAG）
 
 接收第二步（模型检索与 3D 生成工作流）的输出状态，执行：
@@ -31,8 +31,8 @@ from typing import Dict, TYPE_CHECKING
 
 from langgraph.graph import END, START, StateGraph
 
-from CoronaArtificialIntelligence.ai_workflow.executor import register_workflow_checkpoints
-from CoronaArtificialIntelligence.ai_workflow.state import SceneCompositionWorkflowState
+from Quasar.ai_workflow.executor import register_workflow_checkpoints
+from Quasar.ai_workflow.state import SceneCompositionWorkflowState
 
 from .capture_screenshots import capture_screenshots_node
 from .collect_models import collect_models_node

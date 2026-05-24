@@ -1,11 +1,11 @@
-﻿"""collect_models 节点 — 从 global_assets 提取模型检索结果，构建放置列表。"""
+"""collect_models 节点 — 从 global_assets 提取模型检索结果，构建放置列表。"""
 
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List
 
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_workflow.streaming import stream_output_node
 from ..model_retrieval_workflow.helpers import resolve_model_file
 
 from .formatters import NO_OUTPUT

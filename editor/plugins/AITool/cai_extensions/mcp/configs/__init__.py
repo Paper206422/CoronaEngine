@@ -1,4 +1,4 @@
-﻿"""
+"""
 场景操作工具提示词配置
 
 包含：
@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from CoronaArtificialIntelligence.ai_config.prompts import ToolPromptConfig, SceneToolPrompts
+from Quasar.ai_config.prompts import ToolPromptConfig, SceneToolPrompts
 
 # ===========================================================================
 # 场景查询工具提示词

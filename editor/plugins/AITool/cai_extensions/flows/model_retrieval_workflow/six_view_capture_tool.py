@@ -1,4 +1,4 @@
-﻿import math
+import math
 import os
 import logging
 import tempfile
@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from CoronaCore.core.managers import scene_manager
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_workflow.streaming import stream_output_node
 from .temp_capture_storage import (
     build_temp_capture_root,
     cleanup_temp_capture_dir,

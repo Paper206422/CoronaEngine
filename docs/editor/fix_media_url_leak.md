@@ -43,16 +43,16 @@ for part, file_id in zip(uploaded_media_parts, file_ids):
 
 ## 修改文件
 
-1. **Backend/CoronaArtificialIntelligence/agent/interface.py**
+1. **Backend/Quasar/agent/interface.py**
    - 移除废弃导入
    - 修改媒体收集逻辑：保持原始 part 不变
    - 创建 clean_part 副本用于构造 ToolMessage
 
-2. **Backend/CoronaArtificialIntelligence/service/integrated.py**
+2. **Backend/Quasar/service/integrated.py**
    - 移除废弃导入
    - 应用相同的 clean_part 创建逻辑
 
-3. **Backend/CoronaArtificialIntelligence/agent/protocol.py**
+3. **Backend/Quasar/agent/protocol.py**
    - 移除 `USE_ARTIFICIAL_TOOL_FOR_MEDIA` 常量定义
    - 更新 `__all__` 导出列表
 

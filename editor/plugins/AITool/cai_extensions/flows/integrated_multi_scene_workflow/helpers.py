@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import logging
@@ -7,10 +7,10 @@ import time
 from pathlib import Path
 from typing import Any, List
 
-from CoronaArtificialIntelligence.ai_config.ai_config import get_ai_config
-from CoronaArtificialIntelligence.ai_models.base_pool import MediaCategory, OmniRequest, get_chat_model, get_pool_registry
-from CoronaArtificialIntelligence.ai_tools.registry import get_tool_registry
-from CoronaArtificialIntelligence.ai_tools.response_adapter import FILEID_SCHEME
+from Quasar.ai_config.ai_config import get_ai_config
+from Quasar.ai_models.base_pool import MediaCategory, OmniRequest, get_chat_model, get_pool_registry
+from Quasar.ai_tools.registry import get_tool_registry
+from Quasar.ai_tools.response_adapter import FILEID_SCHEME
 
 from .constants import VLM_ANALYSIS_PROMPT
 
@@ -21,7 +21,7 @@ def get_generate_image_tool():
     """惰性加载图片生成工具。"""
     registry = get_tool_registry()
     if not registry.list_tools():
-        from CoronaArtificialIntelligence.ai_tools.load_tools import load_tools
+        from Quasar.ai_tools.load_tools import load_tools
 
         load_tools(get_ai_config())
     return {t.name: t for t in registry.list_tools()}.get("generate_image")
@@ -52,7 +52,7 @@ def extract_image_url(raw_result: Any) -> str:
         return ""
 
     if extracted.startswith(FILEID_SCHEME):
-        from CoronaArtificialIntelligence.ai_media_resource import get_media_registry
+        from Quasar.ai_media_resource import get_media_registry
 
         file_id = extracted[len(FILEID_SCHEME):]
         try:

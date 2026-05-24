@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import math
@@ -10,7 +10,7 @@ from typing import List, Literal, Optional, Tuple, TYPE_CHECKING
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from CoronaArtificialIntelligence.ai_tools.response_adapter import (
+from Quasar.ai_tools.response_adapter import (
     build_part,
     build_success_result,
     build_error_result,
@@ -366,7 +366,7 @@ def _build_camera_list_tool(scene_manager) -> StructuredTool:
 
 def _get_screenshot_dir():
     """获取截图输出基础目录"""
-    from CoronaArtificialIntelligence.ai_config.paths_config import get_project_screenshots_dir
+    from Quasar.ai_config.paths_config import get_project_screenshots_dir
 
     return str(get_project_screenshots_dir())
 

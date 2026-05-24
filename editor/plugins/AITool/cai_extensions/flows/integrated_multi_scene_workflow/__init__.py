@@ -1,4 +1,4 @@
-﻿"""
+"""
 第一步工作流：多物体场景设计（LangGraph DAG）
 
 将原单节点耦合流程拆分为 5 个独立节点的 DAG：
@@ -16,8 +16,8 @@ from typing import Dict, TYPE_CHECKING
 
 from langgraph.graph import END, START, StateGraph
 
-from CoronaArtificialIntelligence.ai_workflow.executor import register_workflow_checkpoints
-from CoronaArtificialIntelligence.ai_workflow.state import MultiSceneWorkflowState
+from Quasar.ai_workflow.executor import register_workflow_checkpoints
+from Quasar.ai_workflow.state import MultiSceneWorkflowState
 
 from .aggregate import aggregate_result_node
 from .analyzer import analyzer_node

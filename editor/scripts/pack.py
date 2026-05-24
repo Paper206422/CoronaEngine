@@ -56,7 +56,7 @@ EXCLUDE_DIRS = {
     "Backend_backup",
     "Backend_legacy",
     # 测试报告
-    "Backend/CoronaArtificialIntelligence/experiments/service_tests/reports",
+    "Backend/Quasar/experiments/service_tests/reports",
 }
 
 # 排除的文件模式（fnmatch 模式）

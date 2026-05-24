@@ -1,8 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from CoronaArtificialIntelligence.ai_workflow.streaming import FormatterFunc
+from Quasar.ai_workflow.streaming import FormatterFunc
 
 NO_OUTPUT: FormatterFunc = lambda _data, _state: []
 

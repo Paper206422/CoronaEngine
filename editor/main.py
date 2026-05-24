@@ -47,7 +47,7 @@ editor.module_list["CoronaEditor"] = CoronaEditor
 
 def run():
     try:
-        from plugins.AITool.CoronaArtificialIntelligence.ai_tools.warmup import (
+        from plugins.AITool.Quasar.ai_tools.warmup import (
             warmup_all,
         )
         from plugins.AITool.utils.load_local_ai_setting import load_ai_setting

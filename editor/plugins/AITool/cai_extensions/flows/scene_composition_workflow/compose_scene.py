@@ -1,4 +1,4 @@
-﻿"""compose_scene 节点 — 调用 LLM 进行智能布局，再生成 scene.json。"""
+"""compose_scene 节点 — 调用 LLM 进行智能布局，再生成 scene.json。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 
-from CoronaArtificialIntelligence.ai_workflow.streaming import stream_output_node
+from Quasar.ai_workflow.streaming import stream_output_node
 
 from .formatters import NO_OUTPUT
 from .helpers import get_tool, parse_placement_result
@@ -96,7 +96,7 @@ def _call_llm_for_layout(
 
     def _do_llm_call():
         """在后台线程中完成 get_chat_model + invoke，避免任何阻塞传到主线程。"""
-        from CoronaArtificialIntelligence.ai_models.base_pool.registry import get_chat_model
+        from Quasar.ai_models.base_pool.registry import get_chat_model
         from langchain_core.messages import HumanMessage, SystemMessage
 
         logger.info("compose_scene: [worker] 正在获取 LLM 客户端...")

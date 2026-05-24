@@ -4,8 +4,8 @@ from typing import Dict, Any, List
 
 
 try:
-    from CoronaArtificialIntelligence.ai_service.entrance import ai_entrance
-    from CoronaArtificialIntelligence.ai_config.ai_config import reload_ai_config
+    from Quasar.ai_service.entrance import ai_entrance
+    from Quasar.ai_config.ai_config import reload_ai_config
 
     @ai_entrance.collector.register_setting("chat")
     def CHAT_SETTINGS() -> Dict[str, Any]:
@@ -63,9 +63,9 @@ try:
     reload_ai_config()
 
     # 强制工具注册表重新发现（用户配置可能在 warmup 之后加载）
-    from CoronaArtificialIntelligence.ai_tools.registry import get_tool_registry
+    from Quasar.ai_tools.registry import get_tool_registry
     get_tool_registry().reset_discovery()
-    from CoronaArtificialIntelligence.ai_agent.executor import reset_cached_agent
+    from Quasar.ai_agent.executor import reset_cached_agent
     reset_cached_agent()
 
 except ImportError as e:
