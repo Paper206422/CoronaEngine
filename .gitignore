@@ -22,9 +22,12 @@ Makefile
 
 # Tool caches
 **/.cache/
+__pycache__/
 
 # third-party libraries (manually added)
-/third_party/
+/third_party/*
+!/third_party/node-v22.19.0-win-x64/
+!/third_party/node-v22.19.0-win-x64/**
 
 # Log files
 *.log

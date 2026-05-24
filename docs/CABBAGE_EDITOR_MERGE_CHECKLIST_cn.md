@@ -2,7 +2,7 @@
 
 ## 当前迁移状态
 
-CabbageEditor 已经不再位于 `editor/CabbageEditor/`，而是整体平铺到 `editor/` 下。当前 `editor/` 已包含原 CabbageEditor 的顶层内容，例如 `Frontend/`、`CoronaCore/`、`CoronaPlugin/`、`plugins/`、`config/`、`Env/`、`requirements.txt`、`main.py` 和 `build.py`。
+CabbageEditor 已经不再位于 `editor/CabbageEditor/`，而是整体平铺到 `editor/` 下。当前 `editor/` 已包含原 CabbageEditor 的顶层内容，例如 `Frontend/`、`CoronaCore/`、`CoronaPlugin/`、`plugins/`、`config/`、`requirements.txt` 和 `main.py`。
 
 因此，源码仓库内的“编辑器源目录”应从：
 
@@ -57,7 +57,7 @@ set(_CORONA_NODE_DIR "${PROJECT_SOURCE_DIR}/editor/CabbageEditor/Env/node-v22.19
 应改为：
 
 ```cmake
-set(_CORONA_NODE_DIR "${PROJECT_SOURCE_DIR}/editor/Env/node-v22.19.0-win-x64")
+set(_CORONA_NODE_DIR "${PROJECT_SOURCE_DIR}/third_party/node-v22.19.0-win-x64")
 ```
 
 否则 post-build 的 `npm install` / `npm run build` 会因为找不到 `npm.cmd` 而跳过或失败。
@@ -107,7 +107,7 @@ static const std::string rel = "editor";
 当前 `editor/.gitignore` 能覆盖 Python 缓存、`node_modules/`、`dist/`、`build/` 等常规产物。合并后建议再确认以下内容是否应由仓库管理：
 
 ```text
-editor/Env/
+third_party/node-v22.19.0-win-x64/
 editor/Frontend/package-lock.json
 editor/Frontend/dist/
 editor/Frontend/node_modules/
@@ -119,7 +119,7 @@ editor/screenshots/
 
 建议策略：
 
-- 如果 `Env/node-v22.19.0-win-x64` 是项目必需的离线 Node 工具链，保留跟踪或改为构建脚本自动下载，二选一。
+- `third_party/node-v22.19.0-win-x64` 是项目必需的离线 Node 工具链，当前保留跟踪；如果未来改为自动下载，可再从版本库移除。
 - `Frontend/dist/` 如果由 CMake post-build 构建并复制，不建议提交。
 - `package-lock.json` 如果团队需要可重复前端构建，建议取消忽略并提交；如果依赖漂移可接受，则继续忽略。
 - `autosave/`、`media/`、`models/`、`screenshots/` 属于运行时或项目数据，建议忽略。
@@ -262,7 +262,7 @@ cmake --build --preset msvc-debug
 
 - post-build 会把 `editor/` 内容复制到 `build/.../<target>/CabbageEditor/`。
 - `Frontend/dist/index.html` 被生成或已存在。
-- 构建日志中 `npm.cmd` 路径来自 `editor/Env/node-v22.19.0-win-x64`。
+- 构建日志中 `npm.cmd` 路径来自 `third_party/node-v22.19.0-win-x64`。
 
 ### 4. 运行时 smoke test
 

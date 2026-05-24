@@ -420,7 +420,6 @@ const initBlockly = async () => {
   await initBlocklyAndGenerators();
 
   const { WORKSPACE_CONFIG } = await import('@/blockly/configs/workspaceConfig.js');
-  const { useStore } = await import('../store/store.js');
   const store = useStore();
   sharedStore = store;
 

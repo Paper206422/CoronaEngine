@@ -88,7 +88,7 @@ def copy_tree(src: Path, dst: Path, merge_content: bool = False) -> None:
             # Version control
             ".git", ".gitignore", ".gitattributes",
             # Build and deployment
-            "build.py", "Dockerfile", "docker-compose.yml",
+            "Dockerfile", "docker-compose.yml",
             # Documentation
             "README.md", "docs",
             # Dependencies manifests (dev-only lock files)
