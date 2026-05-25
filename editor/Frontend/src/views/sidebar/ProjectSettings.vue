@@ -194,7 +194,10 @@ const handleBrowseScene = async () => {
   }
 };
 
-const closeFloat = () => appService.removeDockWidget('ProjectSettings');
+const closeFloat = () => {
+  window.__settingsOpen = false;
+  appService.removeDockWidgetByRoute('/SetUp').catch(() => {});
+};
 
 onMounted(loadSettings);
 </script>
