@@ -77,6 +77,7 @@ struct GeometryDevice {
 
 struct KinematicsDevice {
     std::uintptr_t geometry_handle{};
+    bool animation_enabled{true};
 };
 
 struct MechanicsDevice {
@@ -105,6 +106,7 @@ struct MechanicsDevice {
 struct AcousticsDevice {
     std::uintptr_t geometry_handle{};
     float volume{1.0f};
+    bool audio_enabled{true};
 };
 
 struct OpticsDevice {

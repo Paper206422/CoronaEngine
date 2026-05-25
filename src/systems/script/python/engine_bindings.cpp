@@ -178,7 +178,11 @@ void BindAll(nanobind::module_& m) {
         .def("set_volume", &Acoustics::set_volume, nb::arg("volume"),
              "Set audio volume")
         .def("get_volume", &Acoustics::get_volume,
-             "Get audio volume");
+             "Get audio volume")
+        .def("set_audio_enabled", &Acoustics::set_audio_enabled, nb::arg("enabled"),
+             "Enable or disable audio for this object")
+        .def("get_audio_enabled", &Acoustics::get_audio_enabled,
+             "Get whether audio is enabled for this object");
 
     // ============================================================================
     // Kinematics: 运动学/动画组件
@@ -192,6 +196,10 @@ void BindAll(nanobind::module_& m) {
              "Play the current animation at specified speed")
         .def("stop_animation", &Kinematics::stop_animation,
              "Stop the current animation")
+        .def("set_animation_enabled", &Kinematics::set_animation_enabled, nb::arg("enabled"),
+             "Enable or disable animation updates for this object")
+        .def("get_animation_enabled", &Kinematics::get_animation_enabled,
+             "Get whether animation is enabled for this object")
         .def("get_animation_index", &Kinematics::get_animation_index,
              "Get current animation index")
         .def("get_current_time", &Kinematics::get_current_time,

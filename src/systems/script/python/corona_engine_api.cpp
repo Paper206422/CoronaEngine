@@ -1309,6 +1309,27 @@ float Corona::API::Acoustics::get_volume() const {
     return result;
 }
 
+void Corona::API::Acoustics::set_audio_enabled(bool enabled) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Acoustics::set_audio_enabled] Invalid acoustics handle");
+        return;
+    }
+
+    if (auto accessor = SharedDataHub::instance().acoustics_storage().acquire_write(handle_)) {
+        accessor->audio_enabled = enabled;
+    } else {
+        CFW_LOG_ERROR("[Acoustics::set_audio_enabled] Failed to acquire write access to acoustics storage");
+    }
+}
+
+bool Corona::API::Acoustics::get_audio_enabled() const {
+    if (handle_ == 0) return true;
+    if (auto accessor = SharedDataHub::instance().acoustics_storage().try_acquire_read(handle_)) {
+        return accessor->audio_enabled;
+    }
+    return true;
+}
+
 std::uintptr_t Corona::API::Acoustics::get_handle() const {
     return handle_;
 }
@@ -1341,6 +1362,24 @@ void Corona::API::Kinematics::play_animation(float speed) {
 
 void Corona::API::Kinematics::stop_animation() {
     CFW_LOG_WARNING("[Kinematics::stop_animation] Not implemented yet");
+}
+
+void Corona::API::Kinematics::set_animation_enabled(bool enabled) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Kinematics::set_animation_enabled] Invalid kinematics handle");
+        return;
+    }
+    if (auto accessor = SharedDataHub::instance().kinematics_storage().acquire_write(handle_)) {
+        accessor->animation_enabled = enabled;
+    }
+}
+
+bool Corona::API::Kinematics::get_animation_enabled() const {
+    if (handle_ == 0) return true;
+    if (auto accessor = SharedDataHub::instance().kinematics_storage().try_acquire_read(handle_)) {
+        return accessor->animation_enabled;
+    }
+    return true;
 }
 
 std::uint32_t Corona::API::Kinematics::get_animation_index() const {
