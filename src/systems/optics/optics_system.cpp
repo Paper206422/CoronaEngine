@@ -21,6 +21,7 @@
 
 #ifdef CORONA_ENABLE_VISION
 #include "base/import/importer.h"
+#include "base/import/project_desc.h"
 #include "base/mgr/global.h"
 #include "base/mgr/pipeline.h"
 #include "base/mgr/scene.h"
@@ -28,6 +29,7 @@
 #include "base/sensor/sensor.h"
 #include "rhi/context.h"
 #include "vision/vision_geometry_adapter.h"
+#include "vision/vision_camera_adapter.h"
 #include "vision/vision_light_adapter.h"
 #include "vision/vision_output_bridge.h"
 #endif
@@ -36,6 +38,32 @@ namespace {
 #ifdef CORONA_ENABLE_VISION
 SP<vision::Pipeline> renderPipeline;
 vision::Device* visionDevicePtr = nullptr;
+
+[[nodiscard]] auto make_default_vision_project_desc() -> vision::ProjectDesc {
+    vision::ProjectDesc project_desc;
+    project_desc.pipeline_desc.init();
+    project_desc.renderer_desc.sampler_desc.init();
+    project_desc.renderer_desc.spectrum_desc.init();
+    project_desc.renderer_desc.light_sampler_desc.init();
+    project_desc.renderer_desc.integrator_desc.init();
+    project_desc.renderer_desc.warper_desc.init();
+    project_desc.renderer_desc.render_setting.init();
+    project_desc.scene_desc.sensor_desc.init();
+    project_desc.output_desc.init();
+    return project_desc;
+}
+
+[[nodiscard]] auto create_vision_pipeline() -> SP<vision::Pipeline> {
+    auto project_desc = make_default_vision_project_desc();
+    auto pipeline = vision::Node::create_shared<vision::Pipeline>(project_desc.pipeline_desc);
+    if (!pipeline) {
+        return {};
+    }
+    pipeline->init_project(project_desc);
+    pipeline->init_postprocessor(project_desc.renderer_desc.denoiser_desc);
+    pipeline->init();
+    return pipeline;
+}
 #endif
 }  // namespace
 
@@ -58,10 +86,6 @@ void OpticsSystem::set_render_backend(RenderBackend backend) {
 
 RenderBackend OpticsSystem::get_render_backend() const {
     return current_backend_;
-}
-
-void OpticsSystem::set_vision_scene_path(const std::string& path) {
-    vision_scene_path_ = path;
 }
 
 bool OpticsSystem::initialize_hardware_resources() {
@@ -163,22 +187,7 @@ bool OpticsSystem::initialize(Kernel::ISystemContext* ctx) {
 }
 
 void OpticsSystem::update() {
-#ifdef CORONA_ENABLE_VISION
-    // Vision 模式不依赖 Native 管线资源，提前进入渲染
-    if (current_backend_ == RenderBackend::Vision) {
-        static float vc = 0.f; static uint64_t vi = 0;
-        vc += delta_time(); ++vi;
-        optics_pipeline(vc, vi);
-        return;
-    }
-#endif
-    if (!hardware_->shaderHasInit || !hardware_->visibilityPipeline ||
-        !hardware_->lightingPipeline || !hardware_->skyPipeline || !hardware_->tonemapPipeline ||
-        !hardware_->debugResolvePipeline) {
-        return;
-    }
-
-    // Check for pending backend switch request
+    // Check for pending backend switch request before executing either render path.
     int pending = pending_backend_.load(std::memory_order_relaxed);
     RenderBackend requested = static_cast<RenderBackend>(pending);
     if (requested != current_backend_) {
@@ -192,12 +201,32 @@ void OpticsSystem::update() {
                 CFW_LOG_INFO("OpticsSystem: Switched to Vision backend");
             }
         } else {
-#endif
+            renderPipeline.reset();
+            vision_initialized_ = false;
+            consecutive_vision_failures_ = 0;
+            has_last_vision_frame_ = false;
             current_backend_ = RenderBackend::Native;
             CFW_LOG_INFO("OpticsSystem: Switched to Native backend");
-#ifdef CORONA_ENABLE_VISION
         }
+#else
+        current_backend_ = RenderBackend::Native;
+        CFW_LOG_INFO("OpticsSystem: Switched to Native backend");
 #endif
+    }
+
+#ifdef CORONA_ENABLE_VISION
+    // Vision 模式不依赖 Native 管线资源，提前进入渲染
+    if (current_backend_ == RenderBackend::Vision) {
+        static float vc = 0.f; static uint64_t vi = 0;
+        vc += delta_time(); ++vi;
+        optics_pipeline(vc, vi);
+        return;
+    }
+#endif
+    if (!hardware_->shaderHasInit || !hardware_->visibilityPipeline ||
+        !hardware_->lightingPipeline || !hardware_->skyPipeline || !hardware_->tonemapPipeline ||
+        !hardware_->debugResolvePipeline) {
+        return;
     }
 
     static float frame_count = 0.0f;
@@ -700,40 +729,45 @@ bool OpticsSystem::init_vision_lazy() {
         visionDevicePtr = &s_device;
         visionDevicePtr->init_rtx();
         vision::Global::instance().set_device(visionDevicePtr);
-        if (!vision_scene_path_.empty()) {
-            std::filesystem::path p(vision_scene_path_);
-            vision::Global::instance().set_scene_path(p.parent_path().string());
-            renderPipeline = vision::Importer::import_scene(vision_scene_path_);
-            renderPipeline->init();
-
-            // Phase B: populate Vision scene from CoronaEngine scene data
-            auto& scene = renderPipeline->scene();
-            int geom_count = Vision::build_vision_geometry(scene);
-
-            // Collect environment data for lights
-            Corona::EnvironmentDevice env{};
-            bool env_found = false;
-            for (const auto& sd : SharedDataHub::instance().scene_storage()) {
-                if (!sd.enabled) continue;
-                if (sd.environment != 0) {
-                    if (auto e = SharedDataHub::instance().environment_storage().acquire_read(sd.environment)) {
-                        env = *e;
-                        env_found = true;
-                        break;
-                    }
-                }
-            }
-            if (env_found) {
-                Vision::setup_vision_lights(scene, env);
-            }
-
-            CFW_LOG_INFO("OpticsSystem: Vision adapters finished ({} geometry instances)", geom_count);
-
-            renderPipeline->prepare();
-        } else {
-            CFW_LOG_WARNING("OpticsSystem: No Vision scene path set, cannot init Vision pipeline");
+        vision::Global::instance().set_scene_path(std::filesystem::current_path());
+        renderPipeline = create_vision_pipeline();
+        if (!renderPipeline) {
+            CFW_LOG_ERROR("OpticsSystem: Failed to create Vision pipeline without external scene import");
             return false;
         }
+
+        // Populate Vision scene directly from CoronaEngine scene data.
+        auto& scene = renderPipeline->scene();
+        int geom_count = Vision::build_vision_geometry(scene);
+
+        Corona::EnvironmentDevice env{};
+        bool env_found = false;
+        for (const auto& sd : SharedDataHub::instance().scene_storage()) {
+            if (!sd.enabled) continue;
+            if (sd.environment != 0) {
+                if (auto e = SharedDataHub::instance().environment_storage().acquire_read(sd.environment)) {
+                    env = *e;
+                    env_found = true;
+                    break;
+                }
+            }
+        }
+        if (env_found) {
+            Vision::setup_vision_lights(scene, env);
+        }
+
+        for (const auto& sd : SharedDataHub::instance().scene_storage()) {
+            if (!sd.enabled) continue;
+            if (sd.camera_handles.empty()) continue;
+            auto camera = SharedDataHub::instance().camera_storage().acquire_read(sd.camera_handles.front());
+            if (!camera) continue;
+            Vision::sync_vision_camera(*renderPipeline, *camera);
+            break;
+        }
+
+        CFW_LOG_INFO("OpticsSystem: Vision adapters finished ({} geometry instances)", geom_count);
+
+        renderPipeline->prepare();
         vision_initialized_ = true;
         CFW_LOG_INFO("OpticsSystem: Vision backend initialized successfully");
         return true;
@@ -743,49 +777,6 @@ bool OpticsSystem::init_vision_lazy() {
     }
 }
 
-void OpticsSystem::update_vision_camera(const CameraDevice* camera) {
-    if (!renderPipeline || !camera) return;
-    auto& sensor = renderPipeline->scene().sensor();
-
-    // --- 从 CoronaEngine 相机构建 camera-to-world 矩阵 ---
-    // Vision 使用右手系，相机沿 -Z 看，float4x4 为列主序：
-    //   col[0] = right (x_axis)
-    //   col[1] = up    (y_axis)
-    //   col[2] = -forward (z_axis, 朝相机背面)
-    //   col[3] = position (w=1)
-
-    float fx = camera->forward.x, fy = camera->forward.y, fz = camera->forward.z;
-    float ux = camera->world_up.x, uy = camera->world_up.y, uz = camera->world_up.z;
-
-    // z_axis = normalize(-forward)
-    float zx = -fx, zy = -fy, zz = -fz;
-    float zlen = std::sqrt(zx*zx + zy*zy + zz*zz);
-    if (zlen > 1e-6f) { zx /= zlen; zy /= zlen; zz /= zlen; }
-
-    // x_axis = normalize(cross(up, z_axis))
-    float xx = uy*zz - uz*zy, xy = uz*zx - ux*zz, xz = ux*zy - uy*zx;
-    float xlen = std::sqrt(xx*xx + xy*xy + xz*xz);
-    if (xlen > 1e-6f) { xx /= xlen; xy /= xlen; xz /= xlen; }
-
-    // y_axis = cross(z_axis, x_axis)  — 已是单位向量，无需再归一化
-    float yx = zy*xz - zz*xy, yy = zz*xx - zx*xz, yz = zx*xy - zy*xx;
-
-    float px = camera->position.x, py = camera->position.y, pz = camera->position.z;
-
-    // 构造列主序 float4x4 (ocarina::Matrix<float,4,4>)
-    // 每列是一个 float4；构造函数按列顺序接受 4 个 float4 参数
-    ocarina::float4x4 c2w{
-        make_float4(xx, xy, xz, 0.f),   // col 0: right
-        make_float4(yx, yy, yz, 0.f),   // col 1: up
-        make_float4(zx, zy, zz, 0.f),   // col 2: -forward
-        make_float4(px, py, pz, 1.f)    // col 3: position
-    };
-
-    sensor.set_mat(c2w);
-    sensor.set_fov_y(camera->fov);
-    sensor.update_device_data();
-}
-
 void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
     if (!renderPipeline) return;
     for (const auto& scene : SharedDataHub::instance().scene_storage()) {
@@ -793,33 +784,57 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
         for (auto cam_handle : scene.camera_handles) {
             auto camera = SharedDataHub::instance().camera_storage().acquire_read(cam_handle);
             if (!camera) continue;
-            // Update Vision camera from SharedDataHub
-            update_vision_camera(camera.operator->());
-            // Render one frame
-            renderPipeline->render(1.0 / 60.0);
-            // Download frame from Vision FrameBuffer
-            auto* fb = renderPipeline->frame_buffer();
-            uint2 res = fb->raytracing_resolution();
-            uint32_t w = res.x;
-            uint32_t h = res.y;
-            fb->fill_window_buffer(fb->view_texture_);
-            const auto& wbuf = fb->window_buffer_;
-            // window_buffer_ 是 vector<float4>，展开为连续 float 数组再上传
-            // float4 是 POD，内存布局等价于 4 个连续 float，reinterpret_cast 安全
-            static_assert(sizeof(wbuf[0]) == sizeof(float) * 4,
-                "float4 must be 16 bytes for reinterpret_cast to float* to be valid");
-            const float* raw = reinterpret_cast<const float*>(wbuf.data());
-            Vision::VisionOutputBridge::upload_to_hardware_image(raw, w, h, hardware_->finalOutputImage, hardware_->executor);
-            last_render_cam_handle_ = cam_handle;
-            // Publish frame ready event
-            if (image_handle_ != 0 && camera->surface != nullptr) {
-                if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
-                    image_device->image = hardware_->finalOutputImage;
-                    image_device->executor = hardware_->executor;
+            try {
+                Vision::sync_vision_camera(*renderPipeline, *camera);
+                renderPipeline->render(1.0 / 60.0);
+
+                auto* fb = renderPipeline->frame_buffer();
+                uint2 res = fb->raytracing_resolution();
+                uint32_t w = res.x;
+                uint32_t h = res.y;
+                fb->fill_window_buffer(fb->view_texture_);
+                const auto& wbuf = fb->window_buffer_;
+                static_assert(sizeof(wbuf[0]) == sizeof(float) * 4,
+                    "float4 must be 16 bytes for reinterpret_cast to float* to be valid");
+                const float* raw = reinterpret_cast<const float*>(wbuf.data());
+                const bool uploaded = Vision::VisionOutputBridge::upload_to_hardware_image(
+                    raw, w, h, hardware_->finalOutputImage, hardware_->executor);
+                if (!uploaded) {
+                    throw std::runtime_error("Vision output upload failed");
                 }
-                if (auto* event_bus = context()->event_bus()) {
-                    event_bus->publish<Events::OpticsFrameReadyEvent>(
-                        {camera->surface, image_handle_, frame_index, w, h});
+
+                last_render_cam_handle_ = cam_handle;
+                consecutive_vision_failures_ = 0;
+                has_last_vision_frame_ = true;
+                last_vision_frame_width_ = w;
+                last_vision_frame_height_ = h;
+
+                if (image_handle_ != 0 && camera->surface != nullptr) {
+                    if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
+                        image_device->image = hardware_->finalOutputImage;
+                        image_device->executor = hardware_->executor;
+                    }
+                    if (auto* event_bus = context()->event_bus()) {
+                        event_bus->publish<Events::OpticsFrameReadyEvent>(
+                            {camera->surface, image_handle_, frame_index, w, h});
+                    }
+                }
+            } catch (const std::exception& e) {
+                ++consecutive_vision_failures_;
+                CFW_LOG_ERROR("OpticsSystem: Vision frame failed: {}", e.what());
+                if (consecutive_vision_failures_ >= 3) {
+                    CFW_LOG_WARNING("OpticsSystem: Vision backend failed {} consecutive frames; manual fallback to native is recommended",
+                                    consecutive_vision_failures_);
+                }
+                if (has_last_vision_frame_ && image_handle_ != 0 && camera->surface != nullptr) {
+                    if (auto* event_bus = context()->event_bus()) {
+                        event_bus->publish<Events::OpticsFrameReadyEvent>({
+                            camera->surface,
+                            image_handle_,
+                            frame_index,
+                            last_vision_frame_width_,
+                            last_vision_frame_height_});
+                    }
                 }
             }
             break; // process first camera only for Vision

@@ -1,6 +1,6 @@
 # Vision 渲染后端接入文档
 
-本文档总结 Vision 路径追踪后端与 CoronaEngine 的四处适配代码位置与职责。
+本文档总结当前 Vision 路径追踪后端与 CoronaEngine 的适配代码位置与职责。
 
 ---
 
@@ -35,7 +35,7 @@ static uint16_t float_to_half(float f);
 
 ---
 
-## 适配器二：OpticsSystem Vision 方法（渲染循环与相机同步）
+## 适配器二：OpticsSystem Vision 方法（渲染循环与后端调度）
 
 **位置**
 - 头文件声明：`include/corona/systems/optics/optics_system.h`（`#ifdef CORONA_ENABLE_VISION` 块）
@@ -44,13 +44,18 @@ static uint16_t float_to_half(float f);
 
 **职责**
 
-`OpticsSystem` 是 CoronaEngine 的渲染驱动系统，通过以下三个私有方法桥接 Vision 后端：
+`OpticsSystem` 是 CoronaEngine 的渲染驱动系统，通过以下两个私有方法桥接 Vision 后端：
 
 | 方法 | 作用 |
 |------|------|
-| `init_vision_lazy()` | 首次切换到 Vision 后端时执行懒初始化，加载场景 JSON、创建 `vision::Pipeline` |
+| `init_vision_lazy()` | 首次切换到 Vision 后端时执行懒初始化，纯代码创建 fixed `vision::Pipeline`，再把 Corona 场景数据注入到 Vision scene |
 | `run_vision_frame(frame_count, frame_index)` | 每帧调用 `Pipeline::render()`，读取 `window_buffer_`（`vector<float4>`），调用 `VisionOutputBridge` 上传图像，发布 `OpticsFrameReadyEvent` |
-| `update_vision_camera(camera)` | 从 `CameraDevice`（CoronaEngine 相机）构造列主序 `float4x4` 相机到世界矩阵，调用 `sensor.set_mat()` + `sensor.set_fov_y()` + `sensor.update_device_data()` 同步到 Vision Sensor |
+
+相机同步已收敛为独立 adapter：
+
+- 头文件：`src/systems/optics/vision/vision_camera_adapter.h`
+- 实现：`src/systems/optics/vision/vision_camera_adapter.cpp`
+- 职责：从引擎主相机读取位置、朝向、FOV 与尺寸，负责 Vision sensor 更新、分辨率切换与累积失效。
 
 **后端切换机制**
 
@@ -83,7 +88,7 @@ void OpticsSystem::update() {
 `KernelContext → SystemManager → get_system("Optics") → dynamic_cast<OpticsSystem*>`
 访问 `OpticsSystem`。
 
-**三个函数**
+**两个函数**
 
 ```cpp
 // 切换后端，接受 "native" 或 "vision" 字符串
@@ -91,9 +96,6 @@ void set_render_backend(const std::string& backend_name);
 
 // 返回当前后端名称 "native" / "vision"
 std::string get_render_backend();
-
-// 设置 Vision 场景 JSON 路径（切换前调用）
-void set_vision_scene_path(const std::string& path);
 ```
 
 ---
@@ -105,12 +107,11 @@ void set_vision_scene_path(const std::string& path);
 
 **职责**
 
-通过 nanobind 将适配器三的三个 C++ 函数注册到 `corona_engine` Python 模块，
+通过 nanobind 将适配器三的两个 C++ 函数注册到 `corona_engine` Python 模块，
 Python 脚本可直接调用：
 
 ```python
 import corona_engine as ce
-ce.set_vision_scene_path("/path/to/scene.json")
 ce.set_render_backend("vision")   # 下一帧生效
 print(ce.get_render_backend())    # "vision"
 ```
@@ -124,10 +125,6 @@ m.def("set_render_backend", &Corona::API::set_render_backend,
 
 m.def("get_render_backend", &Corona::API::get_render_backend,
       "Return the current active render backend name: 'native' or 'vision'.");
-
-m.def("set_vision_scene_path", &Corona::API::set_vision_scene_path,
-      nb::arg("path"),
-      "Set the Vision scene JSON file path. Must be called before switching to Vision backend.");
 ```
 
 ---
@@ -142,8 +139,8 @@ corona_engine_api.cpp          ← 适配器三：API 实现
   │  OpticsSystem::set_render_backend(Vision)
   ▼
 optics_system.cpp update()     ← 适配器二：渲染循环
-  │  init_vision_lazy()        ← 首次：加载 Vision Pipeline
-  │  update_vision_camera()    ← 每帧：同步相机（c2w 矩阵）
+  │  init_vision_lazy()        ← 首次：纯代码创建 Vision Pipeline
+  │  vision_camera_adapter     ← 每帧：同步主相机与分辨率
   │  Pipeline::render()        ← Vision 渲染
   │  window_buffer_ (float4[]) ← FrameBuffer 输出
   ▼
@@ -163,4 +160,4 @@ OpticsFrameReadyEvent → DisplaySystem → 屏幕显示
 target_compile_definitions(corona_engine PRIVATE CORONA_ENABLE_VISION)
 ```
 
-未定义该宏时，上述四处适配代码均不参与编译，引擎退回 Native Vulkan 管线。
+未定义该宏时，上述适配代码均不参与编译，引擎退回 Native Vulkan 管线。

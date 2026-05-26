@@ -3,6 +3,8 @@
 #ifdef CORONA_ENABLE_VISION
 
 #include <corona/kernel/core/i_logger.h>
+#include <corona/resource/resource_manager.h>
+#include <corona/resource/types/scene.h>
 #include <corona/shared_data_hub.h>
 
 #include <cstring>
@@ -16,6 +18,102 @@
 #include "vision/vision_material_adapter.h"
 
 namespace Corona::Systems::Vision {
+
+namespace {
+
+    struct CpuMeshData {  
+[[nodiscard]] auto load_cpu_mesh_from_resource(const GeometryDevice& geometry,
+                                               std::size_t mesh_index,
+                                               CpuMeshData& out_mesh) -> bool {
+    if (geometry.model_resource_handle == 0) {
+        return false;
+    }
+
+    auto resource = SharedDataHub::instance().model_resource_storage().acquire_read(geometry.model_resource_handle);
+    if (!resource || resource->model_id == 0) {
+        return false;
+    }
+
+    auto scene = Resource::ResourceManager::get_instance().acquire_read<Resource::Scene>(resource->model_id);
+    if (!scene || mesh_index >= scene->data.meshes.size()) {
+        return false;
+    }
+
+    const auto& vertices = scene->get_mesh_vertices(static_cast<uint32_t>(mesh_index));
+    const auto& indices = scene->get_mesh_indices(static_cast<uint32_t>(mesh_index));
+    if (vertices.empty() || indices.empty()) {
+        return false;
+    }
+
+    out_mesh.vertices.assign(vertices.begin(), vertices.end());
+    out_mesh.indices.assign(indices.begin(), indices.end());
+    return true;
+}
+
+[[nodiscard]] auto load_cpu_mesh_from_buffers(const MeshDevice& mesh_dev,
+                                              CpuMeshData& out_mesh) -> bool {
+    HardwareBuffer const* vertex_buffer = &mesh_dev.vertexBuffer;
+    if (!(*vertex_buffer) || vertex_buffer->getElementCount() == 0) {
+        vertex_buffer = &mesh_dev.vertexStorageBuffer;
+    }
+    if (!(*vertex_buffer) || vertex_buffer->getElementCount() == 0) {
+        return false;
+    }
+
+    const uint64_t vertex_bytes = vertex_buffer->getElementCount() * vertex_buffer->getElementSize();
+    constexpr uint64_t vertex_stride = sizeof(Corona::Resource::Vertex);
+    if (vertex_bytes == 0 || vertex_bytes % vertex_stride != 0) {
+        return false;
+    }
+
+    out_mesh.vertices.resize(static_cast<std::size_t>(vertex_bytes / vertex_stride));
+    if (!vertex_buffer->copyToData(out_mesh.vertices.data(), vertex_bytes)) {
+        out_mesh.vertices.clear();
+        return false;
+    }
+
+    HardwareBuffer const* index_buffer = &mesh_dev.indexBuffer;
+    if (!(*index_buffer) || index_buffer->getElementCount() == 0) {
+        index_buffer = &mesh_dev.indexStorageBuffer;
+    }
+    if (!(*index_buffer) || index_buffer->getElementCount() == 0) {
+        out_mesh.vertices.clear();
+        return false;
+    }
+
+    const uint64_t index_bytes = index_buffer->getElementCount() * index_buffer->getElementSize();
+    const uint64_t element_size = index_buffer->getElementSize();
+    if (index_bytes == 0 || (element_size != 2 && element_size != 4)) {
+        out_mesh.vertices.clear();
+        return false;
+    }
+
+    std::vector<uint8_t> index_data(index_bytes);
+    if (!index_buffer->copyToData(index_data.data(), index_bytes)) {
+        out_mesh.vertices.clear();
+        return false;
+    }
+
+    out_mesh.indices.clear();
+    out_mesh.indices.reserve(static_cast<std::size_t>(index_bytes / element_size));
+    if (element_size == 2) {
+        const auto* indices16 = reinterpret_cast<const uint16_t*>(index_data.data());
+        const auto count = index_bytes / element_size;
+        for (uint64_t i = 0; i < count; ++i) {
+            out_mesh.indices.push_back(indices16[i]);
+        }
+    } else {
+        const auto* indices32 = reinterpret_cast<const uint32_t*>(index_data.data());
+        const auto count = index_bytes / element_size;
+        for (uint64_t i = 0; i < count; ++i) {
+            out_mesh.indices.push_back(indices32[i]);
+        }
+    }
+
+    return !out_mesh.vertices.empty() && !out_mesh.indices.empty();
+}
+
+}  // namespace
 
 int build_vision_geometry(::vision::Scene& scene) {
     scene.clear_shapes();
@@ -61,94 +159,35 @@ int build_vision_geometry(::vision::Scene& scene) {
                     }
                 }
 
-                for (auto& mesh_dev : geom->mesh_handles) {
-                    // Pick the vertex buffer that has data (primary or storage mirror)
-                    HardwareBuffer* vbuf = &mesh_dev.vertexBuffer;
-                    if (!(*vbuf) || vbuf->getElementCount() == 0) {
-                        vbuf = &mesh_dev.vertexStorageBuffer;
-                    }
-                    if (!(*vbuf) || vbuf->getElementCount() == 0) {
-                        CFW_LOG_WARNING("Vision geometry adapter: no vertex data, skipping mesh");
+                for (std::size_t mesh_index = 0; mesh_index < geom->mesh_handles.size(); ++mesh_index) {
+                    auto& mesh_dev = geom->mesh_handles[mesh_index];
+                    CpuMeshData cpu_mesh;
+                    if (!load_cpu_mesh_from_resource(*geom, mesh_index, cpu_mesh) &&
+                        !load_cpu_mesh_from_buffers(mesh_dev, cpu_mesh)) {
+                        CFW_LOG_WARNING("Vision geometry adapter: no CPU mesh data available, skipping mesh");
                         continue;
                     }
 
-                    uint64_t vert_bytes = vbuf->getElementCount() * vbuf->getElementSize();
-                    constexpr uint64_t kCoronaVertexStride = 32;  // pos(12) + normal(12) + uv(8)
-                    uint64_t vert_count = vert_bytes / kCoronaVertexStride;
-                    if (vert_count == 0) {
-                        CFW_LOG_WARNING("Vision geometry adapter: zero vertices after stride division");
-                        continue;
-                    }
-
-                    std::vector<uint8_t> vert_data(vert_bytes);
-                    if (!vbuf->copyToData(vert_data.data(), vert_bytes)) {
-                        CFW_LOG_WARNING("Vision geometry adapter: failed to read vertex data");
-                        continue;
-                    }
-
-                    // Pick the index buffer that has data
-                    HardwareBuffer* ibuf = &mesh_dev.indexBuffer;
-                    if (!(*ibuf) || ibuf->getElementCount() == 0) {
-                        ibuf = &mesh_dev.indexStorageBuffer;
-                    }
-                    if (!(*ibuf) || ibuf->getElementCount() == 0) {
-                        CFW_LOG_WARNING("Vision geometry adapter: no index data, skipping mesh");
-                        continue;
-                    }
-
-                    uint64_t idx_bytes = ibuf->getElementCount() * ibuf->getElementSize();
-                    uint64_t idx_elem_size = ibuf->getElementSize();
-                    if (idx_bytes == 0 || idx_elem_size == 0) {
-                        CFW_LOG_WARNING("Vision geometry adapter: empty index buffer, skipping mesh");
-                        continue;
-                    }
-
-                    std::vector<uint8_t> idx_data(idx_bytes);
-                    if (!ibuf->copyToData(idx_data.data(), idx_bytes)) {
-                        CFW_LOG_WARNING("Vision geometry adapter: failed to read index data");
-                        continue;
-                    }
-
-                    // Parse Corona vertices (interleaved: pos3, normal3, uv2) into ocarina::Vertex
                     std::vector<::vision::Vertex> vertices;
-                    vertices.reserve(vert_count);
-                    for (uint64_t vi = 0; vi < vert_count; ++vi) {
-                        const float* fptr = reinterpret_cast<const float*>(
-                            vert_data.data() + vi * kCoronaVertexStride);
+                    vertices.reserve(cpu_mesh.vertices.size());
+                    for (const auto& src_vertex : cpu_mesh.vertices) {
                         ::vision::Vertex v;
-                        v.pos = {fptr[0], fptr[1], fptr[2]};
-                        v.n   = {fptr[3], fptr[4], fptr[5]};
-                        v.uv  = {fptr[6], fptr[7]};
+                        v.pos = {src_vertex.position[0], src_vertex.position[1], src_vertex.position[2]};
+                        v.n   = {src_vertex.normal[0], src_vertex.normal[1], src_vertex.normal[2]};
+                        v.uv  = {src_vertex.tex_coords[0], src_vertex.tex_coords[1]};
                         v.uv2 = {0.f, 0.f};
                         vertices.push_back(v);
                     }
 
-                    // Parse indices into ocarina::Triangle
-                    uint64_t idx_count = idx_bytes / idx_elem_size;
-                    uint64_t tri_count = idx_count / 3;
                     std::vector<::vision::Triangle> triangles;
-                    triangles.reserve(tri_count);
-
-                    if (idx_elem_size == 4) {
-                        const uint32_t* idx32 = reinterpret_cast<const uint32_t*>(idx_data.data());
-                        for (uint64_t ti = 0; ti < tri_count; ++ti) {
-                            triangles.emplace_back(
-                                static_cast<uint32_t>(idx32[ti * 3]),
-                                static_cast<uint32_t>(idx32[ti * 3 + 1]),
-                                static_cast<uint32_t>(idx32[ti * 3 + 2]));
-                        }
-                    } else if (idx_elem_size == 2) {
-                        const uint16_t* idx16 = reinterpret_cast<const uint16_t*>(idx_data.data());
-                        for (uint64_t ti = 0; ti < tri_count; ++ti) {
-                            triangles.emplace_back(
-                                static_cast<uint32_t>(idx16[ti * 3]),
-                                static_cast<uint32_t>(idx16[ti * 3 + 1]),
-                                static_cast<uint32_t>(idx16[ti * 3 + 2]));
-                        }
-                    } else {
-                        CFW_LOG_WARNING("Vision geometry adapter: unsupported index element size {}",
-                                        static_cast<int>(idx_elem_size));
+                    triangles.reserve(cpu_mesh.indices.size() / 3);
+                    if (cpu_mesh.indices.size() < 3) {
                         continue;
+                    }
+                    for (std::size_t triangle_index = 0; triangle_index + 2 < cpu_mesh.indices.size(); triangle_index += 3) {
+                        triangles.emplace_back(cpu_mesh.indices[triangle_index],
+                                               cpu_mesh.indices[triangle_index + 1],
+                                               cpu_mesh.indices[triangle_index + 2]);
                     }
 
                     // Create Vision Mesh and upload to Vision GPU device

@@ -165,6 +165,8 @@ struct CameraDevice {
     float aspect{16.0f / 9.0f};
     float near_plane{0.1f};
     float far_plane{100.0f};
+    std::uint32_t width{1920};
+    std::uint32_t height{1080};
     CameraOutputMode output_mode{CameraOutputMode::FinalColor};
 
     CameraDevice() {

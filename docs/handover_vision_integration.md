@@ -2,7 +2,7 @@
 
 **分支**：`merge_vision`
 **日期**：2026-05-25
-**状态**：阶段 A + 阶段 C + 阶段 D 已完成，阶段 B（几何/光源/材质适配器）待实现
+**状态**：该文档反映的是早期接入状态；当前主文档以 `docs/planning/VISION_INTEGRATION_MINIMAL_PLAN_cn.md` 为准。
 
 ---
 
@@ -33,7 +33,7 @@
 
 ### 2.2 阶段 A：后端切换骨架
 
-- `optics_system.h`：新增 `RenderBackend` 枚举（`Native=0` / `Vision=1`）、`pending_backend_`（atomic）、`current_backend_`、`vision_initialized_`、`vision_scene_path_` 字段，以及公开的 `set_render_backend` / `get_render_backend` / `set_vision_scene_path` 接口。
+- `optics_system.h`：新增 `RenderBackend` 枚举（`Native=0` / `Vision=1`）、`pending_backend_`（atomic）、`current_backend_`、`vision_initialized_` 字段，以及公开的 `set_render_backend` / `get_render_backend` 接口。
 - `optics_system.cpp`：
   - `update()` 入口处优先检测 Vision 路径，绕过 Native Vulkan 初始化 Guard 条件。
   - 后端切换通过 `pending_backend_` atomic 提交，在 OpticsSystem 渲染线程内每帧前生效，外部线程仅写 atomic，不做资源操作。
@@ -53,7 +53,7 @@
 
 ### 2.5 阶段 D：Python 脚本接口
 
-- `include/corona/systems/script/corona_engine_api.h`：新增 `set_render_backend` / `get_render_backend` / `set_vision_scene_path` 声明。
+- `include/corona/systems/script/corona_engine_api.h`：新增 `set_render_backend` / `get_render_backend` 声明。
 - `src/systems/script/python/corona_engine_api.cpp`：通过 `KernelContext → SystemManager → OpticsSystem` 实现三个函数。
 - `src/systems/script/python/engine_bindings.cpp`：通过 nanobind 将三个函数注册到 `corona_engine` Python 模块。
 
@@ -61,7 +61,6 @@ Python 使用示例：
 
 ```python
 import corona_engine as ce
-ce.set_vision_scene_path("/path/to/scene.json")
 ce.set_render_backend("vision")   # 下一帧生效
 print(ce.get_render_backend())    # "vision"
 ce.set_render_backend("native")   # 切回 native
@@ -96,7 +95,7 @@ ce.set_render_backend("native")   # 切回 native
 - 运行 10 分钟无显存泄漏趋势。
 
 **可维护性**
-- `optics_system.cpp` 不再包含硬编码场景路径。
+- `optics_system.cpp` 不再依赖外部 Vision scene JSON 作为首版主路径。
 - 适配器职责边界清晰，每类数据有独立适配器文件。
 
 ---

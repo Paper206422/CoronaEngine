@@ -79,9 +79,6 @@ class OpticsSystem : public Kernel::SystemBase {
     /// 获取当前生效的渲染后端
     [[nodiscard]] RenderBackend get_render_backend() const;
 
-    /// 设置 Vision 场景 JSON 路径（切换到 Vision 时使用）
-    void set_vision_scene_path(const std::string& path);
-
    private:
     bool initialize_vision_backend_if_enabled();
     bool initialize_hardware_resources();
@@ -94,7 +91,6 @@ class OpticsSystem : public Kernel::SystemBase {
     // Vision 相关私有方法（在 CORONA_ENABLE_VISION 宏保护下实现）
     bool init_vision_lazy();  ///< 首次切换到 Vision 时的 lazy 初始化
     void run_vision_frame(float frame_count, uint64_t frame_index);
-    void update_vision_camera(const struct CameraDevice* camera);
 #endif  // CORONA_ENABLE_VISION
 
     std::unique_ptr<Hardware> hardware_;
@@ -106,8 +102,11 @@ class OpticsSystem : public Kernel::SystemBase {
     std::atomic<int> pending_backend_{static_cast<int>(RenderBackend::Native)};
     RenderBackend current_backend_{RenderBackend::Native};
     bool vision_initialized_{false};
-    std::string vision_scene_path_;
     std::uintptr_t last_render_cam_handle_{0};
+    uint32_t consecutive_vision_failures_{0};
+    bool has_last_vision_frame_{false};
+    uint32_t last_vision_frame_width_{0};
+    uint32_t last_vision_frame_height_{0};
 
     struct PendingScreenshot {
         std::uintptr_t camera_handle = 0;

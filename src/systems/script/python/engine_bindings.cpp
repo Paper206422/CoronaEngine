@@ -391,10 +391,6 @@ void BindAll(nanobind::module_& m) {
     m.def("get_render_backend", &Corona::API::get_render_backend,
           "Return the current active render backend name: 'native' or 'vision'.");
 
-    m.def("set_vision_scene_path", &Corona::API::set_vision_scene_path,
-          nb::arg("path"),
-          "Set the Vision scene JSON file path. Must be called before switching to Vision backend.");
-
 }
 
 }  // namespace EngineScripts

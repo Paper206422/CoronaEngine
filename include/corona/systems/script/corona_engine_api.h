@@ -380,8 +380,6 @@ void write_scene(Scene* scene, const std::filesystem::path& scene_path);
 void set_render_backend(const std::string& backend_name);
 /// Get current render backend name: "native" or "vision"
 std::string get_render_backend();
-/// Set Vision scene JSON file path (must be set before switching to Vision)
-void set_vision_scene_path(const std::string& path);
 
 }  // namespace API
 }  // namespace Corona

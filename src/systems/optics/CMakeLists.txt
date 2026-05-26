@@ -11,6 +11,7 @@ corona_add_system(optics
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_geometry_adapter.cpp>
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_material_adapter.cpp>
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_light_adapter.cpp>
+        $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_camera_adapter.cpp>
     DEPENDENCIES
         Horizon
         corona::resource::manager
