@@ -166,6 +166,24 @@ FetchContent_MakeAvailable(Horizon)
 # trigger MSVC D8016 from mixing the long and short UTF-8 charset flags.
 corona_strip_msvc_charset_interface(Helicon)
 corona_strip_msvc_charset_interface(corona_pal)
+
+if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    if(TARGET ShaderCompileScripts)
+        target_compile_options(ShaderCompileScripts PRIVATE
+            $<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>)
+    endif()
+
+    if(TARGET corona_kernel)
+        target_compile_options(corona_kernel PRIVATE
+            $<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>)
+    endif()
+
+    if(TARGET Horizon)
+        target_compile_options(Horizon PRIVATE
+            $<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>)
+    endif()
+endif()
+
 message(STATUS "[3rdparty] Horizon module enabled")
 
 FetchContent_MakeAvailable(glfw)
