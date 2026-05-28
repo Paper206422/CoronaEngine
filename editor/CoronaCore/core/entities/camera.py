@@ -133,7 +133,7 @@ class Camera:
 
     def pick_actor_at_pixel(self, x: int, y: int):
         """在像素坐标处拾取 Actor"""
-        self.engine_obj.pick_actor_at_pixel(x, y)
+        return self.engine_obj.pick_actor_at_pixel(x, y)
 
     def to_dict(self) -> Dict[str, Any]:
         return {

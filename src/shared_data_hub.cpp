@@ -38,6 +38,9 @@ const SharedDataHub::ActorStorage& SharedDataHub::actor_storage() const { return
 SharedDataHub::CameraStorage& SharedDataHub::camera_storage() { return camera_storage_; }
 const SharedDataHub::CameraStorage& SharedDataHub::camera_storage() const { return camera_storage_; }
 
+SharedDataHub::ActorPickStorage& SharedDataHub::actor_pick_storage() { return actor_pick_storage_; }
+const SharedDataHub::ActorPickStorage& SharedDataHub::actor_pick_storage() const { return actor_pick_storage_; }
+
 SharedDataHub::EnvironmentStorage& SharedDataHub::environment_storage() { return environment_storage_; }
 const SharedDataHub::EnvironmentStorage& SharedDataHub::environment_storage() const { return environment_storage_; }
 

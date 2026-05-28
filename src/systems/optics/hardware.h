@@ -17,6 +17,7 @@ using uint = uint32_t;
 #include GLSL(../../../assets/shaders/sky.comp.glsl)
 #include GLSL(../../../assets/shaders/tonemap.comp.glsl)
 #include GLSL(../../../assets/shaders/debug_resolve.comp.glsl)
+#include GLSL(../../../assets/shaders/actor_pick.comp.glsl)
 // clang-format on
 
 struct Hardware {
@@ -35,6 +36,7 @@ struct Hardware {
     // === Instance & Material tables (uploaded per frame) ===
     HardwareBuffer instanceInfoBuffer;
     HardwareBuffer materialTableBuffer;
+    HardwareBuffer actorPickBuffer;
 
     // === Shader pipelines ===
     bool shaderHasInit = false;
@@ -43,6 +45,7 @@ struct Hardware {
     std::optional<ComputePipeline<sky_comp_glsl>> skyPipeline;
     std::optional<ComputePipeline<tonemap_comp_glsl>> tonemapPipeline;
     std::optional<ComputePipeline<debug_resolve_comp_glsl>> debugResolvePipeline;
+    std::optional<ComputePipeline<actor_pick_comp_glsl>> actorPickPipeline;
 
     // === CPU-side uniform data ===
     struct UniformBufferObject {
@@ -80,6 +83,7 @@ struct Hardware {
         uint32_t objectID;
     };
     std::vector<InstanceInfo> instanceInfoData;
+    std::vector<std::uintptr_t> instanceActorHandles;
 
     // === GPU-side material table (matches GLSL MaterialInfo layout) ===
     // 64 bytes = 16 uints per entry:

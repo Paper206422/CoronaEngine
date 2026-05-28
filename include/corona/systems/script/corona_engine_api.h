@@ -161,6 +161,8 @@ class Acoustics {
 
     void set_volume(float volume);
     [[nodiscard]] float get_volume() const;
+    void set_audio_enabled(bool enabled);
+    [[nodiscard]] bool get_audio_enabled() const;
 
    private:
     friend class Actor;
@@ -183,6 +185,8 @@ class Kinematics {
     void set_animation(std::uint32_t animation_index);
     void play_animation(float speed = 1.0f);
     void stop_animation();
+    void set_animation_enabled(bool enabled);
+    [[nodiscard]] bool get_animation_enabled() const;
 
     [[nodiscard]] std::uint32_t get_animation_index() const;
     [[nodiscard]] float get_current_time() const;
@@ -276,7 +280,7 @@ class Camera {
 
     void set_size(int width, int height);
     void set_viewport_rect(int x, int y, int width, int height);
-    void pick_actor_at_pixel(int x, int y) const;
+    [[nodiscard]] std::uintptr_t pick_actor_at_pixel(int x, int y) const;
 
    private:
     friend class Scene;
