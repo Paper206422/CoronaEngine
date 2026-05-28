@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -92,6 +93,13 @@ class OpticsSystem : public Kernel::SystemBase {
     bool init_vision_lazy();  ///< 首次切换到 Vision 时的 lazy 初始化
     void run_vision_frame(float frame_count, uint64_t frame_index);
 #endif  // CORONA_ENABLE_VISION
+    struct ActorPickRequest {
+        std::uintptr_t pick_handle{0};
+        std::uint32_t x{0};
+        std::uint32_t y{0};
+    };
+    std::optional<ActorPickRequest> take_pending_actor_pick(std::uintptr_t camera_handle);
+    void complete_actor_pick(const ActorPickRequest& request);
 
     std::unique_ptr<Hardware> hardware_;
     std::uintptr_t image_handle_{};

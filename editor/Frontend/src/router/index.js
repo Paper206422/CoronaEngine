@@ -63,6 +63,11 @@ const routes = [
     component: () => import('../views/sidebar/FileManager.vue'),
   },
   {
+    path: '/SetUp',
+    name: 'SetUp',
+    component: () => import('../views/sidebar/EditorSettings.vue'),
+  },
+  {
     path: '/ProjectSettings',
     name: 'ProjectSettings',
     component: () => import('../views/sidebar/ProjectSettings.vue'),

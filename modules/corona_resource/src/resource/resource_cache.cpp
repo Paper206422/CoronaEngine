@@ -1,5 +1,7 @@
 #include "corona/resource/resource_cache.h"
 
+#include "corona/kernel/core/i_logger.h"
+
 namespace Corona::Resource {
 
 ResourceCache::~ResourceCache() {
@@ -28,6 +30,11 @@ std::shared_ptr<ResourceEntry> ResourceCache::get_entry(TResourceID rid) {
 bool ResourceCache::remove_entry(TResourceID rid) {
     typename decltype(resources_)::accessor accessor;
     if (resources_.find(accessor, rid)) {
+        if (accessor->second->ref_count > 0) {
+            CFW_LOG_DEBUG("[ResourceCache] Resource {} has {} active references, delay remove",
+                         rid, accessor->second->ref_count.load());
+            return false;
+        }
         return resources_.erase(accessor);
     }
     return false;

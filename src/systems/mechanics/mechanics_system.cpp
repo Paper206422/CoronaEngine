@@ -3,8 +3,8 @@
 #include <corona/kernel/core/i_logger.h>
 #include <corona/kernel/event/i_event_bus.h>
 #include <corona/kernel/event/i_event_stream.h>
-#include <corona/spatial/octree.h>
 #include <corona/systems/mechanics/mechanics_system.h>
+#include <corona/systems/scene/scene_system.h>
 
 #include <algorithm>      // min,max,clamp,sort,unique
 #include <array>          // std::array（八叉树子节点）
@@ -89,18 +89,22 @@ inline ktm::fvec3 transform_local_point_to_world(const Corona::ModelTransform& t
 inline void world_aabb_from_local_bounds(const Corona::ModelTransform& t,
                                          const ktm::fvec3& lmin, const ktm::fvec3& lmax,
                                          ktm::fvec3& out_min, ktm::fvec3& out_max, ktm::fvec3& out_center) {
-    ktm::fvec3 c0 = transform_local_point_to_world(t, make_fvec3(lmin.x, lmin.y, lmin.z));  // 角点 (min,min,min)
-    out_min = c0;                                                                           // 初始化 min
-    out_max = c0;                                                                           // 初始化 max
-    for (int i = 1; i < 8; ++i) {                                                           // i 从 1 到 7：其余顶点
-        const float x = (i & 1) != 0 ? lmax.x : lmin.x;                                     // 按位选 min 或 max
-        const float y = (i & 2) != 0 ? lmax.y : lmin.y;
-        const float z = (i & 4) != 0 ? lmax.z : lmin.z;
-        const ktm::fvec3 wp = transform_local_point_to_world(t, make_fvec3(x, y, z));  // 世界顶点
-        out_min.x = std::min(out_min.x, wp.x);                                         // 扩张 min.x
+    // 局部 AABB 的 8 个角点：min/max 各分量组合 → 世界空间 → 取包络
+    const ktm::fvec3 corners[8] = {
+        {lmin.x, lmin.y, lmin.z}, {lmax.x, lmin.y, lmin.z},
+        {lmin.x, lmax.y, lmin.z}, {lmax.x, lmax.y, lmin.z},
+        {lmin.x, lmin.y, lmax.z}, {lmax.x, lmin.y, lmax.z},
+        {lmin.x, lmax.y, lmax.z}, {lmax.x, lmax.y, lmax.z},
+    };
+    ktm::fvec3 wp0 = transform_local_point_to_world(t, corners[0]);
+    out_min = wp0;
+    out_max = wp0;
+    for (int i = 1; i < 8; ++i) {
+        const ktm::fvec3 wp = transform_local_point_to_world(t, corners[i]);
+        out_min.x = std::min(out_min.x, wp.x);
         out_min.y = std::min(out_min.y, wp.y);
         out_min.z = std::min(out_min.z, wp.z);
-        out_max.x = std::max(out_max.x, wp.x);  // 扩张 max.x
+        out_max.x = std::max(out_max.x, wp.x);
         out_max.y = std::max(out_max.y, wp.y);
         out_max.z = std::max(out_max.z, wp.z);
     }
@@ -761,7 +765,7 @@ void triangle_narrowphase(
 namespace Corona::Systems {
 
 bool MechanicsSystem::initialize(Kernel::ISystemContext* ctx) {
-    (void)ctx;
+    m_ctx = ctx;
     g_shutdown_requested = false;
     CFW_LOG_INFO("MechanicsSystem initialized");
     return true;
@@ -1032,35 +1036,6 @@ void MechanicsSystem::update_physics() {
         mechanics_data.push_back(entry);
     }
 
-    // --- 阶段 4：把所有物体的世界 AABB 并起来写入 Scene（供裁剪/调试等），并把 floor_y 纳入场景包围，避免物体落地面却被剔除 ---
-    if (!mechanics_data.empty()) {
-        ktm::fvec3 scene_min = mechanics_data[0].min_world;  // 世界 AABB 最小角
-        ktm::fvec3 scene_max = mechanics_data[0].max_world;  // 世界 AABB 最大角
-
-        for (const auto& e : mechanics_data) {
-            scene_min.x = std::min(scene_min.x, e.min_world.x);  // 逐轴扩张包络
-            scene_min.y = std::min(scene_min.y, e.min_world.y);
-            scene_min.z = std::min(scene_min.z, e.min_world.z);
-            scene_max.x = std::max(scene_max.x, e.max_world.x);
-            scene_max.y = std::max(scene_max.y, e.max_world.y);
-            scene_max.z = std::max(scene_max.z, e.max_world.z);
-        }
-        scene_min.y = std::min(scene_min.y, floor_y - floor_eps);  // 下移 min.y，保证地板带进入 Scene AABB
-
-        ktm::fvec3 scene_center = make_fvec3(
-            (scene_min.x + scene_max.x) * 0.5f,
-            (scene_min.y + scene_max.y) * 0.5f,
-            (scene_min.z + scene_max.z) * 0.5f);
-
-        for (auto sh : scene_handles) {  // 每个被遍历过的 scene 写同一套包围（多场景时行为一致）
-            if (auto s_w = scene_storage.acquire_write(sh)) {
-                s_w->min_world = scene_min;
-                s_w->max_world = scene_max;
-                s_w->center_world = scene_center;
-            }
-        }
-    }
-
     // 预加载所有物理物体的碰撞网格（用于三角形碰撞检测和精确地板碰撞）
     for (const auto& entry : mechanics_data) {
         if (entry.model_id != 0) {
@@ -1071,48 +1046,42 @@ void MechanicsSystem::update_physics() {
     // 临时校正表：记录 Phase 5 末轮的位置校正量，在 Phase 6 积分后统一应用
     std::unordered_map<std::uintptr_t, ktm::fvec3> position_correction;
 
-    // --- 阶段 5：八叉树粗测 → 世界 AABB 再筛 → 窄相（AABB 或 OBB+SAT）→ 顺序冲量 + 摩擦 + 末轮位置校正 ---
+    // 阶段 5：从 SceneSystem 获取宽相候选对 → 窄相（AABB 或 OBB+SAT）→ 顺序冲量 + 摩擦 + 末轮位置校正 ---
+    //SceneSystem 八叉树 payload 是 actor_handle，query_pairs() 返回 (actor_a, actor_b)
+    //一个 actor 可能挂多个含 mechanics 的 profile，故用 vector 存储所有 mechanics_handle
+    //转换时展开笛卡尔积；遍历 actor_a 的每个 mechanics vs actor_b 的每个 mechanics
+
+    // 构建 actor_handle → vector<mechanics_handle> 反向映射
+    std::unordered_map<std::uintptr_t, std::vector<std::uintptr_t>> actor_to_mech;
+    for (const auto& [mh, ah] : mech_to_actor) {
+        actor_to_mech[ah].push_back(mh);
+    }
+
+    std::vector<std::pair<std::uintptr_t, std::uintptr_t>> collision_pairs;
+    collision_pairs.reserve(mechanics_data.size() * 4);
+
+    // 通过 ISystemContext 获取 SceneSystem 指针，调用其八叉树的 query_pairs()
+    // 宽相阶段由 SceneSystem 维护的八叉树统一服务，MechanicsSystem 不再自建本地 octree
+    auto* scene_sys = dynamic_cast<SceneSystem*>(m_ctx->get_system("Scene"));
+    if (scene_sys) {
+        for (auto sh : scene_handles) {
+            auto actor_pairs = scene_sys->query_pairs(sh);
+            for (const auto& [ah, bh] : actor_pairs) {
+                auto it_a = actor_to_mech.find(ah);
+                auto it_b = actor_to_mech.find(bh);
+                if (it_a == actor_to_mech.end() || it_b == actor_to_mech.end()) continue;
+
+                // 展开一个 actor 挂多个 mechanics 的所有组合（笛卡尔积）
+                for (auto mh_a : it_a->second) {
+                    for (auto mh_b : it_b->second) {
+                        collision_pairs.emplace_back(mh_a, mh_b);
+                    }
+                }
+            }
+        }
+    }
+
     if (mechanics_data.size() >= 2) {
-        // 5.1 用全体物体世界 AABB 建略大于一切的轴对齐根盒子（pad 防边界物体漏分桶）
-        ktm::fvec3 root_min = mechanics_data[0].min_world;
-        ktm::fvec3 root_max = mechanics_data[0].max_world;
-        for (const auto& e : mechanics_data) {
-            root_min.x = std::min(root_min.x, e.min_world.x);
-            root_min.y = std::min(root_min.y, e.min_world.y);
-            root_min.z = std::min(root_min.z, e.min_world.z);
-            root_max.x = std::max(root_max.x, e.max_world.x);
-            root_max.y = std::max(root_max.y, e.max_world.y);
-            root_max.z = std::max(root_max.z, e.max_world.z);
-        }
-        // 扩展根节点边界，包含地板
-        root_min.y = std::min(root_min.y, floor_y - floor_eps);
-        const float pad = 0.01f;  // 米级小膨胀；过小可能使 AABB 贴边物体跨层不稳
-        root_min = make_fvec3(root_min.x - pad, root_min.y - pad, root_min.z - pad);
-        root_max = make_fvec3(root_max.x + pad, root_max.y + pad, root_max.z + pad);
-
-        // 5.2 使用通用 Octree 生成宽相候选对（Octree 模块已迁移出 MechanicsSystem）
-        Spatial::Octree<std::uintptr_t> tree;
-        std::vector<Spatial::Octree<std::uintptr_t>::Entry> entries;
-        entries.reserve(mechanics_data.size());
-
-        for (const auto& e : mechanics_data) {
-            Spatial::AABB b;
-            b.min = e.min_world;
-            b.max = e.max_world;
-            entries.push_back({e.handle, b});
-        }
-
-        Spatial::AABB root;
-        root.min = root_min;
-        root.max = root_max;
-        tree.rebuild(root, entries);
-
-        std::vector<std::pair<std::uintptr_t, std::uintptr_t>> collision_pairs;
-        collision_pairs.reserve(mechanics_data.size() * 4);
-        tree.collect_pairs(collision_pairs);
-
-        // CFW_LOG_DEBUG("Detected {} potential collision pairs", collision_pairs.size());
-
         // 碰撞对跟踪（用于回调通知 collision start/end）
         std::unordered_set<std::pair<std::uintptr_t, std::uintptr_t>, PairHash> curr_active_collisions;
 

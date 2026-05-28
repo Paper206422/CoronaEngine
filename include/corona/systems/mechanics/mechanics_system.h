@@ -61,6 +61,7 @@ class MechanicsSystem : public Kernel::SystemBase {
     // 力学系统私有成员
     void update_physics();
 
+    Kernel::ISystemContext* m_ctx = nullptr;
     float m_time_accumulator{0.0f};
     std::chrono::steady_clock::time_point m_last_update_time{};
     bool m_first_update{true};

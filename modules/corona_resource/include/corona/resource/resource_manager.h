@@ -125,6 +125,13 @@ class ResourceManager final {
     bool remove_cache(TResourceID rid);
 
     /**
+     * @brief 异步移除资源缓存
+     * @param rid 资源ID
+     * @return 包含移除结果的future对象
+     */
+    std::future<bool> remove_cache_async(TResourceID rid);
+
+    /**
      * @brief 添加已加载的资源到缓存
      *
      * 将外部加载的资源添加到管理器缓存中。

@@ -11,6 +11,8 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <future>
+#include <unordered_map>
 
 namespace Corona::Systems {
 /**
@@ -122,14 +124,30 @@ class SceneSystem : public Kernel::SystemBase {
     [[nodiscard]] ActorLoadState get_actor_load_state(std::uintptr_t actor,std::uintptr_t scene) const;
 
     // ========================================
+    // LOD 工具
+    // ========================================
+    /// 计算物体包围球在屏幕上的占比（0~1）
+    static float compute_screen_ratio(const ktm::fvec3& camera_pos,
+                                      float              camera_fov_deg,
+                                      const ktm::fvec3& world_center,
+                                      float              bounding_radius);
+
+    /// 根据屏幕占比选择 LOD 等级（0 = 原始网格）
+    static int select_lod_level(float                     screen_ratio,
+                                const std::vector<float>& thresholds);
+
+    // ========================================
     // 统计
     // ========================================
     [[nodiscard]] SceneStats stats(std::uintptr_t scene) const;
 
    private:
 
-    void on_load_complete(const Events::ActorLoadCompletedEvent& event);
-    void on_unload_complete(const Events::ActorUnloadCompletedEvent& event);
+    void on_load_completed(const Events::ActorLoadCompletedEvent& event);
+    void on_unload_completed(const Events::ActorUnloadCompletedEvent& event);
+    void on_load_requested(const Events::ActorLoadRequestedEvent& event);
+    void on_unload_requested(const Events::ActorUnloadRequestedEvent& event);
+    void process_async_tasks(); // 处理完成的异步资源任务
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

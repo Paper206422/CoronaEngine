@@ -32,6 +32,7 @@ struct ResourceEntry {
     std::shared_mutex mutex;
     std::atomic<LoadState> state{LoadState::Unloaded};
     std::condition_variable_any cv;
+    std::atomic<int> ref_count{0};  // 资源引用计数，防止共享资源提前释放
 };
 
 /**
@@ -58,6 +59,10 @@ class ReadHandle {
     ReadHandle& operator=(ReadHandle&&) = default;
     ReadHandle(const ReadHandle&) = delete;
     ReadHandle& operator=(const ReadHandle&) = delete;
+
+    ~ReadHandle() {
+        if (entry_) entry_->ref_count--;
+    }
 
     /**
      * @brief 检查句柄是否有效
@@ -116,6 +121,10 @@ class WriteHandle {
     WriteHandle& operator=(WriteHandle&&) = default;
     WriteHandle(const WriteHandle&) = delete;
     WriteHandle& operator=(const WriteHandle&) = delete;
+
+    ~WriteHandle() {
+        if (entry_) entry_->ref_count--;
+    }
 
     /**
      * @brief 检查句柄是否有效
@@ -222,6 +231,7 @@ class ResourceCache {
         if (entry->state != LoadState::Ready || !entry->resource) {
             return {};
         }
+        entry->ref_count++;
         return ReadHandle<T>(std::move(entry), std::move(lock));
     }
 
@@ -242,6 +252,7 @@ class ResourceCache {
         if (entry->state != LoadState::Ready || !entry->resource) {
             return {};
         }
+        entry->ref_count++;
         return WriteHandle<T>(std::move(entry), std::move(lock));
     }
 
