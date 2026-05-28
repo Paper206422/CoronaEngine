@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <filesystem>
 
 #include "Horizon.h"
 
@@ -144,6 +145,7 @@ struct ProfileDevice {
 
 struct ActorDevice {
     std::vector<std::uintptr_t> profile_handles;
+    std::filesystem::path model_path;  //Actor文件路径，同时作为Actor的唯一标识
 };
 
 enum class CameraOutputMode : uint8_t {

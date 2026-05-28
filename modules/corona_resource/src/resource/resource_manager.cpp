@@ -95,6 +95,15 @@ bool ResourceManager::remove_cache(TResourceID rid) {
     return resource_cache_.remove_entry(rid);
 }
 
+std::future<bool> ResourceManager::remove_cache_async(TResourceID rid) {
+    auto promise = std::make_shared<std::promise<bool>>();
+    auto future = promise->get_future();
+    async_tasks_.run([this, rid, promise]() {
+        promise->set_value(remove_cache(rid));
+    });
+    return future;
+}
+
 bool ResourceManager::add_resource(TResourceID const rid, std::shared_ptr<IResource> resource) {
     return resource_cache_.add_resource(rid, std::move(resource));
 }

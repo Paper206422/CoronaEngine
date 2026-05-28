@@ -11,6 +11,8 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <future>
+#include <unordered_map>
 
 namespace Corona::Systems {
 /**
@@ -128,8 +130,11 @@ class SceneSystem : public Kernel::SystemBase {
 
    private:
 
-    void on_load_complete(const Events::ActorLoadCompletedEvent& event);
-    void on_unload_complete(const Events::ActorUnloadCompletedEvent& event);
+    void on_load_completed(const Events::ActorLoadCompletedEvent& event);
+    void on_unload_completed(const Events::ActorUnloadCompletedEvent& event);
+    void on_load_requested(const Events::ActorLoadRequestedEvent& event);
+    void on_unload_requested(const Events::ActorUnloadRequestedEvent& event);
+    void process_async_tasks(); // 处理完成的异步资源任务
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
