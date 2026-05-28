@@ -4,9 +4,21 @@ import { appService } from './utils/bridge.js';
 
 let gcTimer = null;
 
+function isSettingsOpen() {
+  return window.__settingsOpen === true;
+}
+
 function onGlobalKeyDown(event) {
   if (event.key === 'Escape' || event.code === 'Escape') {
-    appService.addDockWidget('/SetUp', 'center').catch(() => {});
+    if (isSettingsOpen()) {
+      appService.removeDockWidgetByRoute('/SetUp').then(() => {
+        window.__settingsOpen = false;
+      }).catch(() => {});
+    } else {
+      appService.addDockWidget('/SetUp', 'center', 450, 550, false).then(() => {
+        window.__settingsOpen = true;
+      }).catch(() => {});
+    }
   }
 }
 
