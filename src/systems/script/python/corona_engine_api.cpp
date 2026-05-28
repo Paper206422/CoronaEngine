@@ -7,6 +7,7 @@
 #include <corona/resource/types/scene.h>
 #include <corona/shared_data_hub.h>
 #include <corona/systems/script/corona_engine_api.h>
+#include <corona/systems/optics/optics_system.h>
 #include <corona/utils/path_utils.h>
 
 #include <algorithm>
@@ -1539,6 +1540,9 @@ Corona::API::Camera::Camera()
         accessor->forward = fwd_vec;
         accessor->world_up = up_vec;
         accessor->fov = fov;
+        accessor->width = static_cast<std::uint32_t>(width_);
+        accessor->height = static_cast<std::uint32_t>(height_);
+        accessor->aspect = static_cast<float>(width_) / static_cast<float>(height_);
         accessor->surface = get_default_surface();
     } else {
         CFW_LOG_ERROR("[Camera::Camera] Failed to acquire write access to camera storage");
@@ -1570,6 +1574,9 @@ Corona::API::Camera::Camera(const std::array<float, 3>& position, const std::arr
         accessor->forward = fwd_vec;
         accessor->world_up = up_vec;
         accessor->fov = fov;
+        accessor->width = static_cast<std::uint32_t>(width_);
+        accessor->height = static_cast<std::uint32_t>(height_);
+        accessor->aspect = static_cast<float>(width_) / static_cast<float>(height_);
         accessor->surface = get_default_surface();
     } else {
         CFW_LOG_ERROR("[Camera::Camera] Failed to acquire write access to camera storage");
@@ -1611,6 +1618,7 @@ void Corona::API::Camera::set(const std::array<float, 3>& position, const std::a
         accessor->forward = fwd_vec;
         accessor->world_up = up_vec;
         accessor->fov = fov;
+        accessor->aspect = static_cast<float>(width_) / static_cast<float>(height_);
     } else {
         CFW_LOG_ERROR("[Camera::set] Failed to acquire write access to camera storage");
     }
@@ -1856,6 +1864,14 @@ void Corona::API::Camera::set_size(int width, int height) {
 
     width_ = width;
     height_ = height;
+
+    if (auto accessor = SharedDataHub::instance().camera_storage().acquire_write(handle_)) {
+        accessor->width = static_cast<std::uint32_t>(width_);
+        accessor->height = static_cast<std::uint32_t>(height_);
+        accessor->aspect = static_cast<float>(width_) / static_cast<float>(height_);
+    } else {
+        CFW_LOG_ERROR("[Camera::set_size] Failed to acquire write access to camera storage");
+    }
 }
 
 void Corona::API::Camera::set_viewport_rect(int x, int y, int width, int height) {
@@ -1883,3 +1899,35 @@ void* get_default_surface() {
 }
 
 }  // namespace Corona::API
+void Corona::API::set_render_backend(const std::string& backend_name) {
+    auto* sys_mgr = Kernel::KernelContext::instance().system_manager();
+    if (!sys_mgr) {
+        CFW_LOG_ERROR("[API] set_render_backend: system manager unavailable");
+        return;
+    }
+    auto sys = sys_mgr->get_system("Optics");
+    if (!sys) {
+        CFW_LOG_ERROR("[API] set_render_backend: OpticsSystem not found");
+        return;
+    }
+    auto* optics = dynamic_cast<Systems::OpticsSystem*>(sys.get());
+    if (!optics) {
+        CFW_LOG_ERROR("[API] set_render_backend: cast to OpticsSystem failed");
+        return;
+    }
+    if (backend_name == "vision") {
+        optics->set_render_backend(Systems::RenderBackend::Vision);
+    } else {
+        optics->set_render_backend(Systems::RenderBackend::Native);
+    }
+}
+
+std::string Corona::API::get_render_backend() {
+    auto* sys_mgr = Kernel::KernelContext::instance().system_manager();
+    if (!sys_mgr) return "native";
+    auto sys = sys_mgr->get_system("Optics");
+    if (!sys) return "native";
+    auto* optics = dynamic_cast<Systems::OpticsSystem*>(sys.get());
+    if (!optics) return "native";
+    return optics->get_render_backend() == Systems::RenderBackend::Vision ? "vision" : "native";
+}

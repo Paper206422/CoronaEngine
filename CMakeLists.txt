@@ -8,7 +8,7 @@
 #   - Add subdirectories in module order: src -> engine -> examples.
 # ============================================================================== 
 
-cmake_minimum_required(VERSION 4.0)
+cmake_minimum_required(VERSION 3.29)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/misc/cmake")
 
@@ -23,6 +23,14 @@ project(
     HOMEPAGE_URL "https://github.com/CoronaEngine/CoronaEngine"
     LANGUAGES    C CXX
 )
+
+set(_CORONA_OFFLINE_FETCH_BASE "${CMAKE_SOURCE_DIR}/cmake-build-relwithdebinfo/_deps")
+if(WIN32 AND EXISTS "${_CORONA_OFFLINE_FETCH_BASE}")
+    set(FETCHCONTENT_BASE_DIR "${_CORONA_OFFLINE_FETCH_BASE}" CACHE PATH "FetchContent base directory" FORCE)
+    set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "Skip FetchContent updates when local sources are present" FORCE)
+    set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "Require local FetchContent sources only" FORCE)
+    message(STATUS "[FetchContent] Offline cache enabled: ${FETCHCONTENT_BASE_DIR}")
+endif()
 
 # ------------------------------------------------------------------------------
 # Modular Configuration Includes

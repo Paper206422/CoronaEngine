@@ -16,13 +16,56 @@ FetchContent_Declare(
 
 # Fetch Assimp 3D model import library
 message(STATUS "Fetching Assimp library...")
-FetchContent_Declare(
-    assimp
-    GIT_REPOSITORY https://github.com/assimp/assimp.git
-    GIT_TAG master
-    GIT_SHALLOW TRUE
-    EXCLUDE_FROM_ALL
-)
+set(CORONA_ASSIMP_GIT_REPOSITORY "https://github.com/assimp/assimp.git" CACHE STRING "Assimp git repository URL")
+set(CORONA_ASSIMP_ARCHIVE_URL "https://codeload.github.com/assimp/assimp/tar.gz/refs/heads/master" CACHE STRING "Assimp source archive URL")
+set(CORONA_ASSIMP_PREBUILT_ROOT "${CMAKE_SOURCE_DIR}/cmake-build-relwithdebinfo/_deps/assimp-build" CACHE PATH "Local prebuilt Assimp root path (contains include/ and lib/)")
+
+if(WIN32)
+    set(_CORONA_ASSIMP_USE_ARCHIVE_DEFAULT ON)
+else()
+    set(_CORONA_ASSIMP_USE_ARCHIVE_DEFAULT OFF)
+endif()
+
+option(CORONA_ASSIMP_USE_ARCHIVE "Download Assimp as archive instead of git clone" ${_CORONA_ASSIMP_USE_ARCHIVE_DEFAULT})
+
+set(_CORONA_ASSIMP_PREBUILT_LIB "${CORONA_ASSIMP_PREBUILT_ROOT}/lib/assimp-vc143-mt.lib")
+set(_CORONA_ASSIMP_PREBUILT_INCLUDE "${CORONA_ASSIMP_PREBUILT_ROOT}/include")
+set(_CORONA_ASSIMP_FETCH_REQUIRED TRUE)
+
+if(WIN32 AND EXISTS "${_CORONA_ASSIMP_PREBUILT_LIB}" AND EXISTS "${_CORONA_ASSIMP_PREBUILT_INCLUDE}/assimp")
+    if(NOT TARGET assimp)
+        add_library(assimp STATIC IMPORTED GLOBAL)
+        set_target_properties(assimp PROPERTIES
+            IMPORTED_LOCATION "${_CORONA_ASSIMP_PREBUILT_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_CORONA_ASSIMP_PREBUILT_INCLUDE}"
+        )
+    endif()
+    if(NOT TARGET assimp::assimp)
+        add_library(assimp::assimp ALIAS assimp)
+    endif()
+    set(_CORONA_ASSIMP_FETCH_REQUIRED FALSE)
+    message(STATUS "Using local prebuilt Assimp: ${CORONA_ASSIMP_PREBUILT_ROOT}")
+endif()
+
+if(_CORONA_ASSIMP_FETCH_REQUIRED)
+    if(CORONA_ASSIMP_USE_ARCHIVE)
+        FetchContent_Declare(
+            assimp
+            URL ${CORONA_ASSIMP_ARCHIVE_URL}
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+            EXCLUDE_FROM_ALL
+        )
+    else()
+        FetchContent_Declare(
+            assimp
+            GIT_REPOSITORY ${CORONA_ASSIMP_GIT_REPOSITORY}
+            GIT_TAG master
+            GIT_SHALLOW TRUE
+            GIT_CONFIG http.sslBackend=schannel http.version=HTTP/1.1
+            EXCLUDE_FROM_ALL
+        )
+    endif()
+endif()
 
 # Fetch stb single-file public domain libraries
 message(STATUS "Fetching stb library...")
@@ -124,7 +167,6 @@ set(ASTCENC_SHAREDLIB OFF CACHE BOOL "Build shared library" FORCE)
 # Make dependencies available
 set(_CORONA_RESOURCE_FETCH_DEPS
     ktm
-    assimp
     stb
     nlohmann_json
     OpenUSD
@@ -132,6 +174,10 @@ set(_CORONA_RESOURCE_FETCH_DEPS
     meshoptimizer
     astc-encoder
 )
+
+if(_CORONA_ASSIMP_FETCH_REQUIRED)
+    list(APPEND _CORONA_RESOURCE_FETCH_DEPS assimp)
+endif()
 
 if(NOT TARGET corona::kernel)
     list(APPEND _CORONA_RESOURCE_FETCH_DEPS CoronaFramework)

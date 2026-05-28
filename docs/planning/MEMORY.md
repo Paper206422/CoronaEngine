@@ -1,0 +1,1 @@
+- [Session Handover 2026-05-12](session_handover.md) — SSAT merge validation: merge verified (API renames only), CUDA build_accel crash blocks runtime testing, next steps

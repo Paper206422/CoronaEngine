@@ -54,12 +54,68 @@ FetchContent_Declare(Horizon
     EXCLUDE_FROM_ALL
 )
 
-FetchContent_Declare(assimp
-    GIT_REPOSITORY https://github.com/assimp/assimp.git
-    GIT_TAG master
-    GIT_SHALLOW TRUE
-    EXCLUDE_FROM_ALL
-)
+set(CORONA_ASSIMP_GIT_REPOSITORY "https://github.com/assimp/assimp.git" CACHE STRING "Assimp git repository URL")
+set(CORONA_ASSIMP_ARCHIVE_URL "https://codeload.github.com/assimp/assimp/tar.gz/refs/heads/master" CACHE STRING "Assimp source archive URL")
+set(CORONA_ASSIMP_PREBUILT_ROOT "${CMAKE_SOURCE_DIR}/cmake-build-relwithdebinfo/_deps/assimp-build" CACHE PATH "Local prebuilt Assimp root path (contains include/ and lib/)")
+
+if(WIN32)
+    set(_CORONA_ASSIMP_USE_ARCHIVE_DEFAULT ON)
+else()
+    set(_CORONA_ASSIMP_USE_ARCHIVE_DEFAULT OFF)
+endif()
+
+option(CORONA_ASSIMP_USE_ARCHIVE "Download Assimp as archive instead of git clone" ${_CORONA_ASSIMP_USE_ARCHIVE_DEFAULT})
+
+set(_CORONA_ASSIMP_PREBUILT_LIB "${CORONA_ASSIMP_PREBUILT_ROOT}/lib/assimp-vc143-mt.lib")
+set(_CORONA_ASSIMP_PREBUILT_INCLUDE "${CORONA_ASSIMP_PREBUILT_ROOT}/include")
+set(_CORONA_ASSIMP_FETCH_REQUIRED TRUE)
+
+if(WIN32 AND EXISTS "${_CORONA_ASSIMP_PREBUILT_LIB}" AND EXISTS "${_CORONA_ASSIMP_PREBUILT_INCLUDE}/assimp")
+    if(NOT TARGET assimp)
+        # assimp prebuilt 自带 zlibstatic，需要一起链接
+        set(_CORONA_ASSIMP_ZLIB "${CORONA_ASSIMP_PREBUILT_ROOT}/contrib/zlib/zlibstatic.lib")
+        if(EXISTS "${_CORONA_ASSIMP_ZLIB}")
+            add_library(assimp_zlibstatic STATIC IMPORTED GLOBAL)
+            set_target_properties(assimp_zlibstatic PROPERTIES
+                IMPORTED_LOCATION "${_CORONA_ASSIMP_ZLIB}"
+            )
+        endif()
+
+        add_library(assimp STATIC IMPORTED GLOBAL)
+        set_target_properties(assimp PROPERTIES
+            IMPORTED_LOCATION "${_CORONA_ASSIMP_PREBUILT_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_CORONA_ASSIMP_PREBUILT_INCLUDE}"
+        )
+        if(TARGET assimp_zlibstatic)
+            set_target_properties(assimp PROPERTIES
+                INTERFACE_LINK_LIBRARIES "assimp_zlibstatic"
+            )
+        endif()
+    endif()
+    if(NOT TARGET assimp::assimp)
+        add_library(assimp::assimp ALIAS assimp)
+    endif()
+    set(_CORONA_ASSIMP_FETCH_REQUIRED FALSE)
+    message(STATUS "[3rdparty] assimp prebuilt package enabled: ${CORONA_ASSIMP_PREBUILT_ROOT}")
+endif()
+
+if(_CORONA_ASSIMP_FETCH_REQUIRED)
+    if(CORONA_ASSIMP_USE_ARCHIVE)
+        FetchContent_Declare(assimp
+            URL ${CORONA_ASSIMP_ARCHIVE_URL}
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+            EXCLUDE_FROM_ALL
+        )
+    else()
+        FetchContent_Declare(assimp
+            GIT_REPOSITORY ${CORONA_ASSIMP_GIT_REPOSITORY}
+            GIT_TAG master
+            GIT_SHALLOW TRUE
+            GIT_CONFIG http.sslBackend=schannel http.version=HTTP/1.1
+            EXCLUDE_FROM_ALL
+        )
+    endif()
+endif()
 
 FetchContent_Declare(stb
     GIT_REPOSITORY https://github.com/nothings/stb.git
@@ -150,8 +206,10 @@ if(CORONA_BUILD_VISION)
     set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT   ON  CACHE BOOL "" FORCE)
 endif()
 
-FetchContent_MakeAvailable(assimp)
-message(STATUS "[3rdparty] assimp module enabled")
+if(_CORONA_ASSIMP_FETCH_REQUIRED)
+    FetchContent_MakeAvailable(assimp)
+    message(STATUS "[3rdparty] assimp module enabled")
+endif()
 
 FetchContent_MakeAvailable(stb)
 message(STATUS "[3rdparty] stb module enabled")
