@@ -388,17 +388,6 @@ void BindAll(nanobind::module_& m) {
                   PY_LOG_INFO("{}", message.c_str());  // Default to INFO
               } }, nb::arg("level"), nb::arg("message"), "Send a log message to the engine logger with specified level");
 
-    // ============================================================================
-    // 渲染后端切换 API
-    // ============================================================================
-    m.def("set_render_backend", &Corona::API::set_render_backend,
-          nb::arg("backend_name"),
-          "Switch render backend: 'native' for Vulkan rasterization, 'vision' for CUDA path tracing. "
-          "Takes effect on the next frame.");
-
-    m.def("get_render_backend", &Corona::API::get_render_backend,
-          "Return the current active render backend name: 'native' or 'vision'.");
-
 }
 
 }  // namespace EngineScripts

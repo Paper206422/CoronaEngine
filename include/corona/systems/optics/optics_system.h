@@ -70,16 +70,6 @@ class OpticsSystem : public Kernel::SystemBase {
      */
     void shutdown() override;
 
-    // ========================================
-    // 渲染后端切换 API（线程安全）
-    // ========================================
-
-    /// 提交后端切换请求（线程安全，下一帧生效）
-    void set_render_backend(RenderBackend backend);
-
-    /// 获取当前生效的渲染后端
-    [[nodiscard]] RenderBackend get_render_backend() const;
-
    private:
     bool initialize_vision_backend_if_enabled();
     bool initialize_hardware_resources();
@@ -107,7 +97,13 @@ class OpticsSystem : public Kernel::SystemBase {
     uint32_t offscreen_w_{0}, offscreen_h_{0};
 
     // Vision 后端状态
+#ifdef CORONA_ENABLE_VISION
+    // 启用 Vision 编译时，首帧 update() 检测到 pending != current 会自动触发
+    // init_vision_lazy() 切换到 Vision；若初始化失败仍会回退 Native。
+    std::atomic<int> pending_backend_{static_cast<int>(RenderBackend::Vision)};
+#else
     std::atomic<int> pending_backend_{static_cast<int>(RenderBackend::Native)};
+#endif
     RenderBackend current_backend_{RenderBackend::Native};
     bool vision_initialized_{false};
     std::uintptr_t last_render_cam_handle_{0};

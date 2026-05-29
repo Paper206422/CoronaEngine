@@ -86,14 +86,6 @@ bool OpticsSystem::initialize_vision_backend_if_enabled() {
     return true;
 }
 
-void OpticsSystem::set_render_backend(RenderBackend backend) {
-    pending_backend_.store(static_cast<int>(backend), std::memory_order_relaxed);
-}
-
-RenderBackend OpticsSystem::get_render_backend() const {
-    return current_backend_;
-}
-
 bool OpticsSystem::initialize_hardware_resources() {
     try {
         hardware_ = std::make_unique<Hardware>();
