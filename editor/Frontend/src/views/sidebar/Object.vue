@@ -609,6 +609,19 @@
               </div>
             </div>
 
+            <!-- 单位 - 积木 -->
+            <div v-show="ActiveSubTab === 'Blockly'" style="height: 400px;">
+              <BlocklyWorkspace
+                v-if="actorData.name"
+                :actorName="actorData.name"
+                :sceneName="actorData.parentScene || sceneData.name"
+                embedded
+              />
+              <div v-else class="flex items-center justify-center h-full text-[#909090] text-xs">
+                请先选中一个物体
+              </div>
+            </div>
+
             <!-- 单位 - 脚本 -->
             <div v-show="ActiveSubTab === 'Script'" class="space-y-2 text-xs">
               <div class="bg-[#3c3c3c]/50 p-2 rounded border-l-2 border-blue-600">
@@ -881,6 +894,19 @@
                 </div>
               </div>
             </div>
+
+            <!-- 模型 - 积木 -->
+            <div v-show="ActiveSubTab === 'Blockly'" style="height: 400px;">
+              <BlocklyWorkspace
+                v-if="modelData.name"
+                :actorName="modelData.name"
+                :sceneName="modelData.targetScene || sceneData.name"
+                embedded
+              />
+              <div v-else class="flex items-center justify-center h-full text-[#909090] text-xs">
+                请先选中一个物体
+              </div>
+            </div>
           </template>
         </div>
       </template>
@@ -925,12 +951,14 @@ const sceneTabs = [
 const actorTabs = [
   { id: 'Basic', label: '基础' },
   { id: 'Model', label: '模型' },
+  { id: 'Blockly', label: '积木' },
   { id: 'Script', label: '脚本' },
 ];
 
 const modelTabs = [
   { id: 'Basic', label: '基础' },
   { id: 'Model', label: '模型' },
+  { id: 'Blockly', label: '积木' },
 ];
 
 // ========== 当前打开的文件 ==========
