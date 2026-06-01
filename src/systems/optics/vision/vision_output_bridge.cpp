@@ -40,7 +40,9 @@ bool VisionOutputBridge::upload_to_hardware_image(
     uint32_t width,
     uint32_t height,
     HardwareImage& out_image,
-    HardwareExecutor& executor) {
+    HardwareExecutor& executor,
+    uint32_t& last_width,
+    uint32_t& last_height) {
     if (!rgba32f_data || width == 0 || height == 0) return false;
     const uint64_t pixel_count = static_cast<uint64_t>(width) * height;
     const uint64_t channel_count = pixel_count * 4;
@@ -49,18 +51,20 @@ bool VisionOutputBridge::upload_to_hardware_image(
         half_data[i] = float_to_half(rgba32f_data[i]);
     }
 
-    // HardwareImage does not expose its dimensions, so we track the size used to
-    // create out_image here. The image must be (re)created whenever it is null or
-    // when the requested dimensions differ from the last created ones; otherwise
-    // copyFrom() would upload width*height*4 halfs into an image of a different
-    // size (e.g. the Native-mode 1920x1080 finalOutputImage), producing a black
-    // or garbled frame when the Vision render resolution differs.
-    static uint32_t s_last_width = 0;
-    static uint32_t s_last_height = 0;
-    if (!out_image || width != s_last_width || height != s_last_height) {
-        out_image = HardwareImage(width, height, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
-        s_last_width = width;
-        s_last_height = height;
+    // HardwareImage does not expose its dimensions, so the caller tracks the size
+    // used to create out_image via last_width/last_height. The image must be
+    // (re)created whenever it is null or when the requested dimensions differ from
+    // the last created ones; otherwise copyFrom() would upload width*height*4 halfs
+    // into an image of a different size, producing a black or garbled frame.
+    //
+    // IMPORTANT: out_image must be an image OWNED by the caller (e.g. a dedicated
+    // Vision output image), never a shared image such as the display pipeline's
+    // finalOutputImage. Recreating a shared image here would release the underlying
+    // resource while another system still references it -> black screen.
+    if (!out_image || width != last_width || height != last_height) {
+        //out_image = HardwareImage(width, height, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
+        last_width = width;
+        last_height = height;
     }
     executor << out_image.copyFrom(half_data.data())
              << executor.commit();

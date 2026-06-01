@@ -40,6 +40,21 @@ bool DisplaySystem::initialize(Kernel::ISystemContext* ctx) {
             const auto surface_id = reinterpret_cast<uint64_t>(event.surface);
             std::lock_guard<std::mutex> lock(frame_mutex_);
             auto& layer = surface_states_[surface_id].optics;
+            // [VDIAG-B3] Confirm DisplaySystem actually receives Vision optics frames
+            // (and that they are not dropped by the monotonic frame_index guard below).
+            // Gated periodically + first few so it keeps reporting after a scene loads
+            // (Vision frame_index is already in the hundreds by then).
+            {
+                static uint32_t s_b3_count = 0;
+                if (s_b3_count < 5 || (event.frame_index % 120) == 0) {
+                    ++s_b3_count;
+                    CFW_LOG_INFO(
+                        "DisplaySystem: [VDIAG-B3] recv optics: surface={} (id={}) handle={} frame={} {}x{} (prev_frame={}, accepted={})",
+                        static_cast<const void*>(event.surface), surface_id, event.image_handle,
+                        event.frame_index, event.width, event.height, layer.frame_index,
+                        (event.frame_index >= layer.frame_index));
+                }
+            }
             if (event.frame_index >= layer.frame_index) {
                 layer.image_handle = event.image_handle;
                 layer.frame_index = event.frame_index;
@@ -112,6 +127,30 @@ void DisplaySystem::update() {
         const bool has_optics = state.optics.image_handle != 0;
         const bool has_ui = state.ui.image_handle != 0;
 
+        // [VDIAG-B5] Surface-binding probe: confirm whether the surface being composed
+        // actually has an optics layer bound. A black screen with bg(optics)=0x0 means
+        // this displayer's surface_id never received an OpticsFrameReadyEvent (mismatch
+        // between the surface used for display vs. the surface Vision renders to).
+        {
+            static uint32_t s_b5_count = 0;
+            // Log the first few, then every 120 UI frames, AND always log the first
+            // 5 iterations where optics actually carries a handle. The previous
+            // s_b5_count<8 gate only fired during early frames (before Vision started
+            // publishing), so it never captured the loaded-scene compose path.
+            static uint32_t s_b5_optics_seen = 0;
+            const bool optics_present = state.optics.image_handle != 0;
+            const bool optics_edge = optics_present && s_b5_optics_seen < 5;
+            if (s_b5_count < 8 || optics_edge || (state.ui.frame_index % 120) == 0) {
+                ++s_b5_count;
+                if (optics_present) { ++s_b5_optics_seen; }
+                CFW_LOG_INFO(
+                    "DisplaySystem: [VDIAG-B5] compose-iter surface_id={} optics(handle={} {}x{} frame={}) ui(handle={} {}x{} frame={})",
+                    surface_id,
+                    state.optics.image_handle, state.optics.width, state.optics.height, state.optics.frame_index,
+                    state.ui.image_handle, state.ui.width, state.ui.height, state.ui.frame_index);
+            }
+        }
+
         if (!has_optics && !has_ui) {
             continue;
         }
@@ -143,6 +182,22 @@ void DisplaySystem::update() {
 
         HardwareImage& bg_image = (optics_img_ptr && *optics_img_ptr) ? *optics_img_ptr : transparent_storage_;
         HardwareImage& fg_image = (ui_img_ptr && *ui_img_ptr) ? *ui_img_ptr : transparent_sampled_;
+
+        // [VDIAG-B6] Resolve probe: distinguish "snapshot missing optics" from
+        // "image_storage acquire failed" from "stored image invalid". Logged the
+        // first few times optics is present so we capture the loaded-scene path.
+        if (has_optics) {
+            static uint32_t s_b6_count = 0;
+            if (s_b6_count < 8) {
+                ++s_b6_count;
+                CFW_LOG_INFO(
+                    "DisplaySystem: [VDIAG-B6] resolve: optics_handle={} acquire_ok={} stored_image_valid={} using_bg_optics={}",
+                    state.optics.image_handle,
+                    static_cast<bool>(optics_frame),
+                    (optics_img_ptr ? static_cast<bool>(*optics_img_ptr) : false),
+                    (optics_img_ptr && *optics_img_ptr));
+            }
+        }
 
         if (!bg_image || !fg_image) {
             continue;
@@ -211,6 +266,24 @@ void DisplaySystem::compose_and_present(HardwareDisplayer& displayer,
     composite_pipeline_.pushConsts.outputHeight = state.ui.height;
     composite_pipeline_.pushConsts.bgWidth = std::max(state.optics.width, 1u);
     composite_pipeline_.pushConsts.bgHeight = std::max(state.optics.height, 1u);
+
+    // [VDIAG-B4] Composite probe: a mismatch between the optics (bg) resolution and
+    // the output resolution forces the shader to rescale; an integer /8 dispatch that
+    // rounds down to 0 groups (very small resolutions) leaves the output untouched ->
+    // black. Logged a few times to compare bg vs output dimensions and dispatch size.
+    {
+        static uint32_t s_vdiag_compose_count = 0;
+        static uint32_t s_vdiag_compose_optics = 0;
+        const bool b4_optics_present = state.optics.image_handle != 0;
+        if (s_vdiag_compose_count < 5 || (b4_optics_present && s_vdiag_compose_optics < 5)) {
+            ++s_vdiag_compose_count;
+            if (b4_optics_present) { ++s_vdiag_compose_optics; }
+            CFW_LOG_INFO(
+                "DisplaySystem: [VDIAG-B4] compose: out={}x{} bg(optics)={}x{} dispatch={}x{}",
+                state.ui.width, state.ui.height, state.optics.width, state.optics.height,
+                state.ui.width / 8, state.ui.height / 8);
+        }
+    }
 
     // GPU sync: wait for each producer's rendering to finish before reading their images
     if (optics_executor) {

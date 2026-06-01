@@ -482,7 +482,13 @@ bool VulkanBackend::ensure_render_target(ViewportRenderResources& resources, uin
         return true;
     }
 
-    HardwareImage new_target(width, height, ImageFormat::RGBA8_SRGB, usage);
+    // RGBA8_SRGB does not support VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT on many GPUs.
+    // When the render target is used as a storage image (secondary viewports), use a
+    // storage-capable format (RGBA16_FLOAT) to avoid VK_ERROR_FORMAT_NOT_SUPPORTED.
+    const ImageFormat target_format =
+        (usage == ImageUsage::StorageImage) ? ImageFormat::RGBA16_FLOAT : ImageFormat::RGBA8_SRGB;
+
+    HardwareImage new_target(width, height, target_format, usage);
     if (!new_target) {
         CFW_LOG_ERROR("VulkanBackend: create render target failed ({}x{})", width, height);
         return false;

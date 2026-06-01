@@ -1123,51 +1123,87 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
     // material params, per-mesh color) before rendering this frame.
     sync_vision_dynamic_scene();
 
+    // [VDIAG-B0] Entry/loop probe: tells apart "run_vision_frame never iterates a
+    // camera" (no enabled scene / empty camera_handles -> nothing rendered -> black)
+    // from "renders but is not displayed". Rate-limited to once per 120 frames.
+    //bool vdiag_rendered_any = false;
+
     for (const auto& scene : SharedDataHub::instance().scene_storage()) {
         if (!scene.enabled) continue;
         for (auto cam_handle : scene.camera_handles) {
             auto camera = SharedDataHub::instance().camera_storage().acquire_read(cam_handle);
             if (!camera) continue;
             try {
+                // [VDIAG-B2] Bracket the CUDA calls so an exit-code crash can be pinned
+                // to the exact stage (sync_vision_camera vs render vs readback). The
+                // process exited -1 right after "Vision scene rebuilt", so we want to
+                // know whether the first render() after a rebuild is the crash site.
+                //if ((frame_index % 120) == 0) {
+                //    CFW_LOG_INFO("OpticsSystem: [VDIAG-B2] frame={} stage=sync_camera cam={}",
+                //                 frame_index, cam_handle);
+                //}
                 Vision::sync_vision_camera(*renderPipeline, *camera);
+ /*               if ((frame_index % 120) == 0) {
+                    CFW_LOG_INFO("OpticsSystem: [VDIAG-B2] frame={} stage=render begin", frame_index);
+                }*/
                 renderPipeline->render(1.0 / 60.0);
+                //vdiag_rendered_any = true;
+                //if ((frame_index % 120) == 0) {
+                //    CFW_LOG_INFO("OpticsSystem: [VDIAG-B2] frame={} stage=render done", frame_index);
+                //}
 
                 auto* fb = renderPipeline->frame_buffer();
                 auto res = fb->raytracing_resolution();  // ocarina::uint2
                 uint32_t w = res.x;
                 uint32_t h = res.y;
-                fb->fill_window_buffer(fb->view_texture());
-                const auto& wbuf = fb->window_buffer();
-                static_assert(sizeof(wbuf[0]) == sizeof(float) * 4,
-                    "float4 must be 16 bytes for reinterpret_cast to float* to be valid");
+
+                // [MANUAL-READBACK] Manually expand fill_window_buffer() for debuggability.
+                // fill_window_buffer() internally does:
+                //     view_texture_.download_immediately(window_buffer_.data());
+                //     visualizer_->draw(window_buffer_.data());   // overlays (gizmos etc.)
+                // Here we download view_texture() directly into a locally-owned buffer and
+                // SKIP visualizer_->draw(), so the bytes we inspect/upload are exactly the
+                // raytraced + tone-mapped final picture (mirrors the reference snippet's
+                // view_buffer()/download_immediately() flow, since this workspace's Vision
+                // FrameBuffer exposes view_texture() rather than view_buffer()).
+                // view_texture() holds the FINAL tone-mapped color (see render_final()).
+                const ocarina::Texture2D& view_tex = fb->view_texture();
+                const uint64_t pixel_count = static_cast<uint64_t>(w) * static_cast<uint64_t>(h);
+                // vision_readback_buffer_ is a flat std::vector<float> (4 floats = 1 RGBA pixel),
+                // owned by this system to avoid leaking ocarina::float4 into the public header.
+                vision_readback_buffer_.resize(pixel_count * 4ull);
+                view_tex.download_immediately(
+                    reinterpret_cast<ocarina::float4*>(vision_readback_buffer_.data()));
+                const auto& wbuf = vision_readback_buffer_;
+                static_assert(sizeof(wbuf[0]) == sizeof(float),
+                    "vision_readback_buffer_ must be a flat float buffer (4 floats per pixel)");
 
                 // [DIAG] Probe the just-rendered window buffer so we can tell apart
                 // "integrator produced black" from "upload/display lost the image".
-                // Logged only for the first few frames to avoid spamming.
-                if (frame_index < 5) {
-                    const float* probe = reinterpret_cast<const float*>(wbuf.data());
-                    const uint64_t channels = static_cast<uint64_t>(w) * h * 4ull;
-                    uint64_t non_zero = 0;
-                    float max_v = 0.f;
-                    double sum_v = 0.0;
-                    for (uint64_t i = 0; i < channels; ++i) {
-                        const float v = probe[i];
-                        if (v > 0.f) ++non_zero;
-                        if (v > max_v) max_v = v;
-                        sum_v += v;
+                // Gating: log the first few frames after every resolution change AND
+                // periodically (every 120 frames). The previous absolute frame_index<5
+                // gate only fired while the scene was still empty (before a project was
+                // opened), so it never captured the loaded-scene frames.
+                //if (frame_index>120) {
+                    for (uint64_t i = 0; i < vision_readback_buffer_.size(); ++i) {
+                    vision_readback_buffer_[i] = 0.5;
+                        //if (vision_readback_buffer_[i] > 1e-8) {
+                        //    CFW_LOG_INFO("OpticsSystem: [DIAG] Vision color: {}", vision_readback_buffer_[i]);
+                        //}
                     }
-                    const double avg_v = channels ? (sum_v / static_cast<double>(channels)) : 0.0;
-                    CFW_LOG_INFO(
-                        "OpticsSystem: [DIAG] Vision window buffer {}x{}: non_zero_channels={} max={:.4f} avg={:.6f}",
-                        w, h, non_zero, max_v, avg_v);
-                }
+                //}
 
-                const float* raw = reinterpret_cast<const float*>(wbuf.data());
-                const bool uploaded = Vision::VisionOutputBridge::upload_to_hardware_image(
-                    raw, w, h, hardware_->finalOutputImage, hardware_->executor);
-                if (!uploaded) {
-                    throw std::runtime_error("Vision output upload failed");
-                }
+                //const float* raw = wbuf.data();  // flat RGBA float32, 4 per pixel
+                //const bool uploaded = Vision::VisionOutputBridge::upload_to_hardware_image(
+                //    raw, w, h, hardware_->finalOutputImage, hardware_->executor,
+                //    vision_output_w_, vision_output_h_);
+
+                hardware_->executor << hardware_->finalOutputImage.copyFrom(vision_readback_buffer_.data())
+                                    << hardware_->executor.commit();
+
+                //if (!uploaded) {
+                //    throw std::runtime_error("Vision output upload failed");
+                //}
 
                 last_render_cam_handle_ = cam_handle;
                 consecutive_vision_failures_ = 0;
@@ -1175,38 +1211,89 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 last_vision_frame_width_ = w;
                 last_vision_frame_height_ = h;
 
-                if (image_handle_ != 0 && camera->surface != nullptr) {
-                    if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
-                        image_device->image = hardware_->finalOutputImage;
-                        image_device->executor = hardware_->executor;
-                    }
-                    if (auto* event_bus = context()->event_bus()) {
-                        event_bus->publish<Events::OpticsFrameReadyEvent>(
-                            {camera->surface, image_handle_, frame_index, w, h});
+                
+                if (image_handle_ != 0) {
+                    if (camera->surface != nullptr) {
+                        if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
+                            image_device->image = hardware_->finalOutputImage;
+                            image_device->executor = hardware_->executor;
+                        }
+
+                        if (auto* event_bus = context()->event_bus()) {
+                            event_bus->publish<Events::OpticsFrameReadyEvent>({camera->surface,
+                                                                               image_handle_,
+                                                                               frame_index,
+                                                                               hardware_->gbufferSize.x,
+                                                                               hardware_->gbufferSize.y});
+                        }
                     }
                 }
+
+                // [VDIAG-B1] Publish-gate probe: an offscreen camera (surface==nullptr)
+                // or a zero image_handle silently skips the OpticsFrameReadyEvent and the
+                // frame never reaches DisplaySystem -> black screen. Gated the same way as
+                // [DIAG] so it keeps reporting after a project/scene is loaded.
+                //{
+                //    static uint32_t s_b1_count = 0;
+                //    static uint32_t s_b1_w = 0, s_b1_h = 0;
+                //    const bool b1_dim_changed = (w != s_b1_w || h != s_b1_h);
+                //    if (b1_dim_changed) { s_b1_w = w; s_b1_h = h; s_b1_count = 0; }
+                //    if (s_b1_count < 5 || (frame_index % 120) == 0) {
+                //        ++s_b1_count;
+                //        CFW_LOG_INFO(
+                //            "OpticsSystem: [VDIAG-B1] publish-gate: image_handle={} surface={} frame={} {}x{}",
+                //            image_handle_, static_cast<const void*>(camera->surface), frame_index, w, h);
+                //    }
+                //}
+
+                //if (image_handle_ != 0 && camera->surface != nullptr) {
+                //    if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
+                //        image_device->image = vision_output_image_;
+                //        image_device->executor = hardware_->executor;
+                //    }
+                //    if (auto* event_bus = context()->event_bus()) {
+                //        event_bus->publish<Events::OpticsFrameReadyEvent>(
+                //            {camera->surface, image_handle_, frame_index, w, h});
+                //    }
+                //} else if ((frame_index % 120) == 0) {
+                //    // [VDIAG-B1b] Publish was SKIPPED. This is the prime suspect for a
+                //    // black screen: the frame is rendered+uploaded but never published to
+                //    // DisplaySystem because the handle/surface gate failed.
+                //    CFW_LOG_WARNING(
+                //        "OpticsSystem: [VDIAG-B1b] publish SKIPPED frame={} image_handle={} surface={}",
+                //        frame_index, image_handle_, static_cast<const void*>(camera->surface));
+                //}
             } catch (const std::exception& e) {
-                ++consecutive_vision_failures_;
-                CFW_LOG_ERROR("OpticsSystem: Vision frame failed: {}", e.what());
-                if (consecutive_vision_failures_ >= 3) {
-                    CFW_LOG_WARNING("OpticsSystem: Vision backend failed {} consecutive frames; manual fallback to native is recommended",
-                                    consecutive_vision_failures_);
-                }
-                if (has_last_vision_frame_ && image_handle_ != 0 && camera->surface != nullptr) {
-                    if (auto* event_bus = context()->event_bus()) {
-                        event_bus->publish<Events::OpticsFrameReadyEvent>({
-                            camera->surface,
-                            image_handle_,
-                            frame_index,
-                            last_vision_frame_width_,
-                            last_vision_frame_height_});
-                    }
-                }
+                //++consecutive_vision_failures_;
+                //CFW_LOG_ERROR("OpticsSystem: Vision frame failed: {}", e.what());
+                //if (consecutive_vision_failures_ >= 3) {
+                //    CFW_LOG_WARNING("OpticsSystem: Vision backend failed {} consecutive frames; manual fallback to native is recommended",
+                //                    consecutive_vision_failures_);
+                //}
+                //if (has_last_vision_frame_ && image_handle_ != 0 && camera->surface != nullptr) {
+                //    if (auto* event_bus = context()->event_bus()) {
+                //        event_bus->publish<Events::OpticsFrameReadyEvent>({
+                //            camera->surface,
+                //            image_handle_,
+                //            frame_index,
+                //            last_vision_frame_width_,
+                //            last_vision_frame_height_});
+                //    }
+                //}
             }
             break; // process first camera only for Vision
         }
         break; // process first scene only for Vision
     }
+
+    // [VDIAG-B0] If no enabled scene/camera was iterated, run_vision_frame produced
+    // nothing this frame. A persistent "rendered=false" while in Vision mode means the
+    // scene/camera storage is empty or all scenes are disabled -> guaranteed black.
+    //if (!vdiag_rendered_any && (frame_index % 120) == 0) {
+    //    CFW_LOG_WARNING(
+    //        "OpticsSystem: [VDIAG-B0] frame={} rendered NO camera (no enabled scene or empty camera_handles)",
+    //        frame_index);
+    //}
 }
 #endif  // CORONA_ENABLE_VISION
 

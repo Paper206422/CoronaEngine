@@ -118,6 +118,21 @@ class OpticsSystem : public Kernel::SystemBase {
 
     // Vision 后端状态
 #ifdef CORONA_ENABLE_VISION
+    // Dedicated, stable output image for the Vision backend. Vision must NOT reuse
+    // hardware_->finalOutputImage: when the resolution changes the bridge recreated
+    // that shared image in-place, releasing the underlying Vulkan resource that the
+    // DisplaySystem compositor was still referencing -> black screen. Owning a
+    // separate image here keeps the resource stable across the optics->display
+    // handoff and is only (re)created by this system when its own size changes.
+    //HardwareImage vision_output_image_;
+    uint32_t vision_output_w_{0}, vision_output_h_{0};
+
+    // [MANUAL-READBACK] Locally-owned CPU staging buffer for the manual expansion of
+    // FrameBuffer::fill_window_buffer(). Stored flat as 4 floats (RGBA) per pixel to
+    // avoid leaking ocarina::float4 into this public header; the .cpp reinterpret_casts
+    // data() to ocarina::float4* for view_texture().download_immediately().
+    std::vector<float> vision_readback_buffer_;
+
     // 启用 Vision 编译时，首帧 update() 检测到 pending != current 会自动触发
     // init_vision_lazy() 切换到 Vision；若初始化失败仍会回退 Native。
     std::atomic<int> pending_backend_{static_cast<int>(RenderBackend::Vision)};
