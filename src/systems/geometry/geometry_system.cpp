@@ -214,7 +214,7 @@ void GeometrySystem::update() {
                 auto mechanics_read = mechanics_storage.try_acquire_read(mechanics_handle);
                 if (!mechanics_read.valid()) continue;
 
-                auto geometry_read = geometry_storage.try_acquire_read(profile_dev.geometry_handle);
+                auto geometry_read = geometry_storage.try_acquire_read(mechanics_read->geometry_handle);
                 if (!geometry_read.valid() || geometry_read->transform_handle == 0) continue;
 
                 auto transform_read = transform_storage.try_acquire_read(geometry_read->transform_handle);
@@ -226,6 +226,18 @@ void GeometrySystem::update() {
                 octree_entries.push_back({actor_handle,aabb});
                 added_actors.insert(actor_handle);
                 break;
+            }
+        }
+        // 批量初始化 Actor 加载状态（单次加锁替代逐 Actor 加锁）
+        // 当距离剔除关闭时，actor 视为始终已加载；否则从 Unloaded 开始由距离剔除系统管理
+        {
+            std::unique_lock lock(impl_->mtx);
+            auto& scene_state = impl_->get_or_create(scene_handle);
+            const ActorLoadState initial_state = scene_state.cfg.enable_distance_culling
+                                                     ? ActorLoadState::Unloaded
+                                                     : ActorLoadState::Loaded;
+            for (auto actor_handle : added_actors) {
+                scene_state.actor_load_states.try_emplace(actor_handle, initial_state);
             }
         }
 
@@ -279,6 +291,23 @@ void GeometrySystem::update() {
             std::lock_guard stats_lock(scene_state.stats_mutex);
             scene_state.stats.last_rebuild_ms = rebuild_ms;
         }
+        // 发布粗筛碰撞候选对：SceneSystem 仅负责空间划分，不依赖物理系统
+        {
+            auto pairs = query_pairs(scene_handle);
+            if (impl_->ctx && impl_->ctx->event_bus()) {
+                impl_->ctx->event_bus()->publish(
+                    Events::BroadphasePairsEvent{scene_handle, std::move(pairs)});
+            }
+        }
+
+        // 发布粗筛碰撞候选对：SceneSystem 仅负责空间划分，不依赖物理系统
+        {
+            auto pairs = query_pairs(scene_handle);
+            if (impl_->ctx && impl_->ctx->event_bus()) {
+                impl_->ctx->event_bus()->publish(
+                    Events::BroadphasePairsEvent{scene_handle, std::move(pairs)});
+            }
+        }
 
         std::vector<std::pair<ktm::fvec3,Math::Frustum>> cameras;
         std::unordered_set<Impl::Payload> visible_actors;
@@ -303,7 +332,8 @@ void GeometrySystem::update() {
         std::vector<Events::ActorUnloadRequestedEvent> pending_unloads;
         std::vector<Events::ActorLoadRequestedEvent> pending_loads;
         {
-            std::unique_lock lock(impl_->mtx);
+            // Phase 1: shared_lock — 收集候选、计算距离、决定转换（只读不写）
+            std::shared_lock lock(impl_->mtx);
             auto& scene_state = impl_->get_or_create(scene_handle);
             if (scene_state.cfg.enable_distance_culling && !cameras.empty()) {
                 std::unordered_set<Impl::Payload> candidates;
@@ -324,58 +354,75 @@ void GeometrySystem::update() {
                     }
                 }
 
-            //仅处理候选物体
-            for (auto actor : candidates) {
-                auto entry_it = scene_state.actor_to_entry.find(actor);
-                if (entry_it == scene_state.actor_to_entry.end()) {
-                    continue;
-                }
+                //仅处理候选物体
+                for (auto actor : candidates) {
+                    auto entry_it = scene_state.actor_to_entry.find(actor);
+                    if (entry_it == scene_state.actor_to_entry.end()) continue;
 
-                const auto& aabb = entry_it->second;
-                auto state_it = scene_state.actor_load_states.find(actor);
-                if (state_it == scene_state.actor_load_states.end()) {
-                    continue;
-                }
-                ActorLoadState& state = state_it->second;
+                    const auto& aabb = entry_it->second;
+                    auto state_it = scene_state.actor_load_states.find(actor);
+                    if (state_it == scene_state.actor_load_states.end()) continue;
+                    ActorLoadState state = state_it->second;  // 值拷贝，只读
 
+                    // 计算物体到最近相机的欧氏距离
+                    ktm::fvec3 center = aabb.center();
+                    float min_distance = std::numeric_limits<float>::max();
+                    for (const auto& [cam_pos,_] : cameras) {
+                        min_distance = std::min(min_distance,ktm::distance(center,cam_pos));
+                    }
 
-                // 计算物体到最近相机的欧氏距离
-                ktm::fvec3 center = aabb.center();
-                float min_distance = std::numeric_limits<float>::max();
-                for (const auto& [cam_pos,_] : cameras) {
-                    min_distance = std::min(min_distance,ktm::distance(center,cam_pos));
-                }
+                    // 状态机转换（只记录决策，不修改状态 — 由 Phase 2 统一应用）
+                    switch (state) {
+                        case ActorLoadState::Loaded:
+                            if (min_distance > scene_state.cfg.unload_distance &&
+                                !visible_actors.count(actor)) {
+                                pending_unloads.push_back({scene_handle, actor});
+                                }
+                            break;
 
-                // 状态机转换
-                switch (state) {
-                    case ActorLoadState::Loaded:
-                        // 超过卸载距离 + 不在任何相机视锥内
-                        if (min_distance > scene_state.cfg.unload_distance &&
-                            !visible_actors.count(actor)) {
-                            state = ActorLoadState::Unloading;
-                            pending_unloads.push_back({scene_handle, actor});
-                            CFW_LOG_NOTICE("[GeometrySystem] Published unload request for actor {} (distance: {:.2f}m)",
-                                          actor, min_distance);
+                        case ActorLoadState::Unloaded:
+                            if (min_distance < scene_state.cfg.preload_distance) {
+                                pending_loads.push_back({scene_handle, actor});
                             }
-                        break;
+                            break;
 
-                    case ActorLoadState::Unloaded:
-                        // 进入预加载距离范围
-                        if (min_distance < scene_state.cfg.preload_distance) {
-                            state = ActorLoadState::Loading;
-                            pending_loads.push_back({scene_handle, actor});
-                            CFW_LOG_NOTICE("[GeometrySystem] Published preload request for actor {} (distance: {:.2f}m)",
-                                          actor, min_distance);
-                        }
-                        break;
-
-                    case  ActorLoadState::Loading:
-                    case  ActorLoadState::Unloading:
-                        // 过渡状态不做任何操作，等待资源系统的完成事件
-                        break;
+                        default:
+                            // 过渡状态不做任何操作，等待资源系统的完成事件
+                            break;
+                    }
                 }
             }
         }
+        // Phase 2: unique_lock — 应用状态转换（带 TOCTOU 重校验）
+        if (!pending_unloads.empty() || !pending_loads.empty()) {
+            std::unique_lock lock(impl_->mtx);
+            auto& scene_state = impl_->get_or_create(scene_handle);
+
+            for (auto it = pending_unloads.begin(); it != pending_unloads.end(); ) {
+                auto state_it = scene_state.actor_load_states.find(it->actor);
+                if (state_it != scene_state.actor_load_states.end() &&
+                    state_it->second == ActorLoadState::Loaded) {
+                    state_it->second = ActorLoadState::Unloading;
+                    CFW_LOG_NOTICE("[SceneSystem] Published unload request for actor {} (distance culling)",
+                                  it->actor);
+                    ++it;
+                    } else {
+                        it = pending_unloads.erase(it);  // 状态已被异步事件改变，取消此事件
+                    }
+            }
+
+            for (auto it = pending_loads.begin(); it != pending_loads.end(); ) {
+                auto state_it = scene_state.actor_load_states.find(it->actor);
+                if (state_it != scene_state.actor_load_states.end() &&
+                    state_it->second == ActorLoadState::Unloaded) {
+                    state_it->second = ActorLoadState::Loading;
+                    CFW_LOG_NOTICE("[SceneSystem] Published preload request for actor {} (distance culling)",
+                                  it->actor);
+                    ++it;
+                    } else {
+                        it = pending_loads.erase(it);
+                    }
+            }
         }
         for (const auto& evt : pending_unloads) {
             if (impl_->ctx && impl_->ctx->event_bus())
@@ -758,20 +805,30 @@ void GeometrySystem::process_async_tasks() {
         std::uintptr_t actor;
         bool success;
     };
+    struct DeferredLoadTask {
+        std::uintptr_t scene_handle;
+        std::uintptr_t actor;
+        std::future<std::uint64_t> future;
+    };
+    struct DeferredUnloadTask {
+        std::uintptr_t scene_handle;
+        std::uintptr_t actor;
+        std::future<bool> future;
+    };
 
     std::vector<CompletedLoadTask> completed_loads;
     std::vector<CompletedUnloadTask> completed_unloads;
-
+    std::vector<DeferredLoadTask> deferred_loads;
+    std::vector<DeferredUnloadTask> deferred_unloads;
     {
         std::unique_lock lock(impl_->mtx);
         for (auto& [scene_handle, scene_state] : impl_->scenes) {
             auto load_it = scene_state.loading_tasks.begin();
             while (load_it != scene_state.loading_tasks.end()) {
                 if (load_it->second.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                    const uint64_t rid = load_it->second.get();
-                    completed_loads.push_back({scene_handle,load_it->first,rid});
+                    deferred_loads.push_back({scene_handle, load_it->first, std::move(load_it->second)});
                     load_it = scene_state.loading_tasks.erase(load_it);
-                }else {
+                } else {
                     ++load_it;
                 }
             }
@@ -779,8 +836,7 @@ void GeometrySystem::process_async_tasks() {
             auto unload_it = scene_state.unloading_tasks.begin();
             while (unload_it != scene_state.unloading_tasks.end()) {
                 if (unload_it->second.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                    const bool success = unload_it->second.get();
-                    completed_unloads.push_back({scene_handle, unload_it->first, success});
+                    deferred_unloads.push_back({scene_handle, unload_it->first, std::move(unload_it->second)});
                     unload_it = scene_state.unloading_tasks.erase(unload_it);
                 } else {
                     ++unload_it;
@@ -789,12 +845,20 @@ void GeometrySystem::process_async_tasks() {
         }
     }
 
+    // 无锁阶段调用 future.get()，处理结果
+    for (auto& task : deferred_loads) {
+        completed_loads.push_back({task.scene_handle, task.actor, task.future.get()});
+    }
+    for (auto& task : deferred_unloads) {
+        completed_unloads.push_back({task.scene_handle, task.actor, task.future.get()});
+    }
+
     for (const auto& task : completed_loads) {
         if (task.rid != Resource::IResource::INVALID_UID) {
             impl_->ctx->event_bus()->publish(Events::ActorLoadCompletedEvent{task.scene_handle,task.actor});
-            CFW_LOG_DEBUG("[GeometrySystem] Actor {} loaded (resource: {})", task.actor, task.rid);
+            CFW_LOG_DEBUG("[SceneSystem] Actor {} loaded (resource: {})", task.actor, task.rid);
         }else {
-            CFW_LOG_ERROR("[GeometrySystem] Failed to load actor {}", task.actor);
+            CFW_LOG_ERROR("[SceneSystem] Failed to load actor {}", task.actor);
             // 加载失败，回滚到Unloaded状态
             {
                 std::unique_lock lock(impl_->mtx);
@@ -818,7 +882,7 @@ void GeometrySystem::process_async_tasks() {
                 }
             }
             impl_->ctx->event_bus()->publish(Events::ActorUnloadCompletedEvent{task.scene_handle, task.actor});
-            CFW_LOG_DEBUG("[GeometrySystem] Actor {} unloaded", task.actor);
+            CFW_LOG_DEBUG("[SceneSystem] Actor {} unloaded", task.actor);
         } else {
             // 卸载失败，保存到列表中后续处理重试
             failed_unloads.push_back(task);
@@ -841,11 +905,11 @@ void GeometrySystem::process_async_tasks() {
             }
 
             int& retry_count = scene_state.unload_retry_counts[task.actor];
-            CFW_LOG_WARNING("[GeometrySystem] Actor 0x%lx unload delayed (resource in use), retry %d/10",
+            CFW_LOG_WARNING("[SceneSystem] Actor 0x%lx unload delayed (resource in use), retry %d/10",
                            (unsigned long)task.actor, retry_count + 1);
 
             if (++retry_count >= 10) {
-                CFW_LOG_ERROR("[GeometrySystem] Actor 0x%lx unload failed after 10 retries, resource is permanently in use",
+                CFW_LOG_ERROR("[SceneSystem] Actor 0x%lx unload failed after 10 retries, resource is permanently in use",
                              (unsigned long)task.actor);
                 scene_state.unload_retry_counts.erase(task.actor);
                 // 不强制设为Loaded，保留Unloading状态，由业务层处理
@@ -864,7 +928,7 @@ void GeometrySystem::process_async_tasks() {
                         scene_state.unloading_tasks[task.actor] =
                             Resource::ResourceManager::get_instance().remove_cache_async(rid);
                     } else {
-                        CFW_LOG_WARNING("[GeometrySystem] Actor 0x%lx model path empty, mark as unloaded",
+                        CFW_LOG_WARNING("[SceneSystem] Actor 0x%lx model path empty, mark as unloaded",
                                        (unsigned long)task.actor);
                         scene_state.unload_retry_counts.erase(task.actor);
                         scene_state.actor_load_states[task.actor] = ActorLoadState::Unloaded;
@@ -873,7 +937,7 @@ void GeometrySystem::process_async_tasks() {
                         lock.lock();
                     }
                 } else {
-                    CFW_LOG_WARNING("[GeometrySystem] Actor 0x%lx handle invalid, clean up all states",
+                    CFW_LOG_WARNING("[SceneSystem] Actor 0x%lx handle invalid, clean up all states",
                                    (unsigned long)task.actor);
                     scene_state.unload_retry_counts.erase(task.actor);
                     scene_state.actor_load_states.erase(task.actor);
