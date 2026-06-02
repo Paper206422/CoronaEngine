@@ -76,69 +76,46 @@ void OpticsSystem::update() {
 
 ---
 
-## 适配器三：Python API 实现（C++ 侧实现）
+## 适配器三：后端自动切换（编译宏驱动）
 
 **位置**
-- 文件：`src/systems/script/python/corona_engine_api.cpp`（文件末尾）
-- 命名空间：`Corona::API`
+- 文件：`include/corona/systems/optics/optics_system.h`（`pending_backend_` 成员初始化）
+- 文件：`src/systems/optics/optics_system.cpp`（`OpticsSystem::update()` 切换逻辑）
+- 命名空间：`Corona::Systems`
 
 **职责**
 
-将后端切换操作暴露为 Python 可调用的 C++ 函数。通过
-`KernelContext → SystemManager → get_system("Optics") → dynamic_cast<OpticsSystem*>`
-访问 `OpticsSystem`。
-
-**两个函数**
+当 `CORONA_ENABLE_VISION` 启用时，自动选择 Vision 后端，无需运行时手动切换。
 
 ```cpp
-// 切换后端，接受 "native" 或 "vision" 字符串
-void set_render_backend(const std::string& backend_name);
-
-// 返回当前后端名称 "native" / "vision"
-std::string get_render_backend();
+// optics_system.h
+#ifdef CORONA_ENABLE_VISION
+    std::atomic<int> pending_backend_{static_cast<int>(RenderBackend::Vision)};
+#else
+    std::atomic<int> pending_backend_{static_cast<int>(RenderBackend::Native)};
+#endif
+    RenderBackend current_backend_{RenderBackend::Native};
 ```
+
+`OpticsSystem::update()` 首帧检测到 `pending_backend_ != current_backend_`，调用
+`init_vision_lazy()` 完成切换；初始化失败时回退到 Native。
 
 ---
 
-## 适配器四：nanobind 绑定（Python 模块注册）
+## 适配器四：像素桥接（VisionOutputBridge）
 
-**位置**
-- 文件：`src/systems/script/python/engine_bindings.cpp`（渲染后端切换 API 块）
-
-**职责**
-
-通过 nanobind 将适配器三的两个 C++ 函数注册到 `corona_engine` Python 模块，
-Python 脚本可直接调用：
-
-```python
-import corona_engine as ce
-ce.set_render_backend("vision")   # 下一帧生效
-print(ce.get_render_backend())    # "vision"
-```
-
-**注册代码**
-
-```cpp
-m.def("set_render_backend", &Corona::API::set_render_backend,
-      nb::arg("backend_name"),
-      "Switch render backend: 'native' or 'vision'. Takes effect on the next frame.");
-
-m.def("get_render_backend", &Corona::API::get_render_backend,
-      "Return the current active render backend name: 'native' or 'vision'.");
-```
+> 注意：早期通过 Python `ce.set_render_backend("vision")` 手动切换后端的接口已移除。
+> 后端现完全由编译宏 `CORONA_ENABLE_VISION` 决定。
 
 ---
 
 ## 数据流总览
 
 ```
-Python 脚本
-  │  ce.set_render_backend("vision")
+CORONA_ENABLE_VISION 编译宏启用
+  │  pending_backend_ 默认 = Vision
   ▼
-corona_engine_api.cpp          ← 适配器三：API 实现
-  │  OpticsSystem::set_render_backend(Vision)
-  ▼
-optics_system.cpp update()     ← 适配器二：渲染循环
+optics_system.cpp update()     ← 适配器二：渲染循环（首帧自动切换）
   │  init_vision_lazy()        ← 首次：纯代码创建 Vision Pipeline
   │  vision_camera_adapter     ← 每帧：同步主相机与分辨率
   │  Pipeline::render()        ← Vision 渲染

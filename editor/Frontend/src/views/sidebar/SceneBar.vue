@@ -129,6 +129,23 @@
             />
           </svg>
         </button>
+        <!-- Vision / Native 渲染后端切换（仅 Vision 可用时显示） -->
+        <button
+          v-if="visionAvailable"
+          class="p-1.5 hover:bg-[#545454] rounded flex items-center gap-0.5"
+          :class="activeRenderBackend === 'vision' ? 'text-[#34d399]' : 'text-[#e0e0e0]'"
+          :title="activeRenderBackend === 'vision' ? '当前: Vision (路径追踪)，点击切换到 Native' : '当前: Native (光栅化)，点击切换到 Vision'"
+          @click.stop="ToggleRenderBackend"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M3 12a9 9 0 1018 0 9 9 0 00-18 0zm9-9v18m-9-9h18"
+            />
+          </svg>
+        </button>
         <!-- GBuffer 输出模式切换 -->
         <div class="relative">
           <button
@@ -542,6 +559,43 @@ const outputModes = [
 const ShowGBufferDropdown = ref(false);
 const activeOutputMode = ref('final_color');
 
+// Vision / Native 渲染后端切换状态
+const visionAvailable = ref(false);
+const activeRenderBackend = ref('native');
+
+const RefreshRenderBackendState = async () => {
+  try {
+    const availResult = await sceneService.isVisionAvailable();
+    const availPayload = availResult?.data ?? availResult;
+    visionAvailable.value = !!availPayload?.available;
+    if (!visionAvailable.value) {
+      return;
+    }
+    const modeResult = await sceneService.getRenderBackend();
+    const modePayload = modeResult?.data ?? modeResult;
+    if (modePayload?.mode) {
+      activeRenderBackend.value = modePayload.mode;
+    }
+  } catch (e) {
+    logError('Failed to query render backend state', e);
+  }
+};
+
+const ToggleRenderBackend = async () => {
+  const next = activeRenderBackend.value === 'vision' ? 'native' : 'vision';
+  try {
+    const result = await sceneService.setRenderBackend(next);
+    const payload = result?.data ?? result;
+    if (result?.success === false || payload?.status === 'error') {
+      logError('Switch render backend failed', payload?.message || result?.error || 'unknown error');
+    } else {
+      activeRenderBackend.value = next;
+    }
+  } catch (e) {
+    logError('Failed to switch render backend', e);
+  }
+};
+
 const SetOutputMode = async (mode) => {
   ShowGBufferDropdown.value = false;
   try {
@@ -851,6 +905,7 @@ onMounted(async () => {
 
   setupFragmentListener();
   await OnInitObjTree();
+  await RefreshRenderBackendState();
 });
 
 onUnmounted(() => {});

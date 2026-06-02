@@ -51,21 +51,14 @@
 
 `update_vision_camera()` 从 `CameraDevice` 构造完整的列主序相机到世界矩阵（c2w），调用 Vision `sensor.set_mat()` + `sensor.set_fov_y()` + `sensor.update_device_data()`，每帧同步相机位置与朝向。矩阵列定义：`col[0]=right, col[1]=up, col[2]=-forward, col[3]=position`，与 `ocarina::float4x4` 约定一致。
 
-### 2.5 阶段 D：Python 脚本接口
+### 2.5 阶段 D：后端自动切换（无 Python 接口）
 
-- `include/corona/systems/script/corona_engine_api.h`：新增 `set_render_backend` / `get_render_backend` 声明。
-- `src/systems/script/python/corona_engine_api.cpp`：通过 `KernelContext → SystemManager → OpticsSystem` 实现三个函数。
-- `src/systems/script/python/engine_bindings.cpp`：通过 nanobind 将三个函数注册到 `corona_engine` Python 模块。
+当编译宏 `CORONA_ENABLE_VISION` 启用时，引擎在首帧自动切换到 Vision 后端，无需任何 Python 调用：
 
-Python 使用示例：
+- `include/corona/systems/optics/optics_system.h`：在 `#ifdef CORONA_ENABLE_VISION` 下将成员 `pending_backend_` 默认值设为 `RenderBackend::Vision`，`current_backend_` 仍为 `Native`。
+- `OpticsSystem::update()` 首帧检测到 `pending_backend_ != current_backend_`，触发 `init_vision_lazy()` 完成切换；若初始化失败则回退 `Native`。
 
-```python
-import corona_engine as ce
-ce.set_render_backend("vision")   # 下一帧生效
-print(ce.get_render_backend())    # "vision"
-ce.set_render_backend("native")   # 切回 native
-```
-
+> 说明：早期版本通过 Python `set_render_backend` / `get_render_backend` 手动切换的接口已移除（含 `corona_engine_api.h/.cpp` 声明与实现、`engine_bindings.cpp` 的 nanobind 绑定，以及 `OpticsSystem` 对应公有方法）。后端现由编译宏决定。
 ### 2.6 构建脚本与日志管理
 
 - 新增 `scripts/build/build_relwithdebinfo.bat`：无硬编码路径，通过 `vswhere.exe` 自动定位 VS 安装，通过 `where clion64.exe` 推导 CLion 内置 ninja 路径，日志统一输出到 `scripts/build/logs/`。

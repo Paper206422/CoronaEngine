@@ -377,13 +377,19 @@ class Scene {
 // ============================================================================
 Scene* read_scene(const std::filesystem::path& scene_path);
 void write_scene(Scene* scene, const std::filesystem::path& scene_path);
+
 // ============================================================================
-// Render Backend API
+// Render backend control (Native vs Vision)
 // ============================================================================
-/// Switch render backend: "native" or "vision"
-void set_render_backend(const std::string& backend_name);
-/// Get current render backend name: "native" or "vision"
-std::string get_render_backend();
+/// 是否在编译期启用了 Vision 后端（CORONA_ENABLE_VISION）。
+[[nodiscard]] bool is_vision_available();
+
+/// 请求切换光学渲染后端。mode: "native" 或 "vision"。
+/// 仅当 is_vision_available() 为 true 时生效，否则被忽略。
+void set_render_backend(const std::string& mode);
+
+/// 获取当前请求的渲染后端，返回 "native" 或 "vision"。
+[[nodiscard]] std::string get_render_backend();
 
 }  // namespace API
 }  // namespace Corona

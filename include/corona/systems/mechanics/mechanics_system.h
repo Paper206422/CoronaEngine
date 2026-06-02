@@ -55,6 +55,8 @@ class MechanicsSystem : public Kernel::SystemBase {
      *
      * 清理所有物理资源
      */
+    void stop() override;
+
     void shutdown() override;
 
    private:

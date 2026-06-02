@@ -211,6 +211,33 @@ class SceneTools(PluginBase):
             return {"status": "error", "message": str(exc)}
 
     @staticmethod
+    def is_vision_available() -> dict:
+        try:
+            available = bool(CoronaEditor.CoronaEngine.is_vision_available())
+            return {"status": "success", "available": available}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    @staticmethod
+    def set_render_backend(mode: str = "native") -> dict:
+        try:
+            if not CoronaEditor.CoronaEngine.is_vision_available():
+                return {"status": "error", "message": "Vision backend is not available in this build"}
+            CoronaEditor.CoronaEngine.set_render_backend(mode)
+            logger.info("Render backend switch requested: %s", mode)
+            return {"status": "success", "mode": mode}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    @staticmethod
+    def get_render_backend() -> dict:
+        try:
+            mode = CoronaEditor.CoronaEngine.get_render_backend()
+            return {"status": "success", "mode": mode}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    @staticmethod
     def select_screenshot_path(scene_name: str, camera_name: str = None) -> dict:
         try:
             init_path = CoronaEditor.CoronaEngine.active_project_path if CoronaEditor.CoronaEngine.active_project_path else None

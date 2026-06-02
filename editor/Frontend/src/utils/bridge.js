@@ -118,6 +118,9 @@ export const sceneService = {
     Bridge.callCEF('SceneTools', 'set_output_mode', [sceneName, cameraName, mode]),
   getOutputMode: (sceneName, cameraName) =>
     Bridge.callCEF('SceneTools', 'get_output_mode', [sceneName, cameraName]),
+  isVisionAvailable: () => Bridge.callCEF('SceneTools', 'is_vision_available', []),
+  setRenderBackend: (mode) => Bridge.callCEF('SceneTools', 'set_render_backend', [mode]),
+  getRenderBackend: () => Bridge.callCEF('SceneTools', 'get_render_backend', []),
   listActorTree: (sceneName) => Bridge.callCEF('SceneTools', 'list_actor_tree', [sceneName]),
   listSceneTree: (sceneName) => Bridge.callCEF('SceneTools', 'list_scene_tree', [sceneName]),
   openSceneActor: (sceneName, actorName) =>

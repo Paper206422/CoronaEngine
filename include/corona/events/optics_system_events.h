@@ -45,4 +45,16 @@ struct ScreenshotRequestEvent {
     std::shared_ptr<std::promise<bool>> completion_promise;
 };
 
+/**
+ * @brief Request to switch the optics render backend (published by script API,
+ *        consumed by OpticsSystem).
+ *
+ * backend: 0 = Native (Vulkan rasterization), 1 = Vision (CUDA path tracing).
+ * The switch is only meaningful when the engine is compiled with
+ * CORONA_ENABLE_VISION; otherwise OpticsSystem keeps the Native backend.
+ */
+struct RenderBackendSwitchEvent {
+    int backend = 0;
+};
+
 }  // namespace Corona::Events

@@ -1,13 +1,17 @@
 <template>
-  <div class="h-screen rounded-lg overflow-hidden relative bg-[#282828]/90 flex flex-col text-white font-sans">
+  <div
+    :class="embedded ? 'h-full' : 'h-screen'"
+    class="rounded-lg overflow-hidden relative bg-[#282828]/90 flex flex-col text-white font-sans"
+  >
     <DockTitleBar
+      v-if="!embedded"
       :title="editingTarget ? `积木编辑器 - ${editingTarget}` : '积木编辑器'"
       extraClass="bg-[#84A65B]"
       routePath="/ScratchTool"
       @close="handleClose"
     />
 
-    <Navigat @new-canvas="handleNewCanvas" />
+    <Navigat v-if="!embedded" @new-canvas="handleNewCanvas" />
 
     <div class="flex-1 flex overflow-hidden">
       <div ref="blockdiv" class="flex-1 relative" style="overflow: hidden;">
@@ -58,6 +62,9 @@
 /** 存储每个 actor 的工作区序列化状态 key: "scene_name/actor_name" → state JSON */
 const workspaceStates = new Map();
 
+/** localStorage 键前缀 */
+const LS_WS_PREFIX = '__bl_ws__';
+
 /** 当前已加载的 actor key */
 let loadedActorKey = '';
 
@@ -82,6 +89,10 @@ import { currentSceneName, currentActorName, getActorContext, syncActorContextFr
 
 const props = defineProps({
   actorName: { type: String, default: '' },
+  /** 嵌入式模式：作为子组件内嵌到物体属性面板 */
+  embedded: { type: Boolean, default: false },
+  /** 场景名称（嵌入式时由父组件传入） */
+  sceneName: { type: String, default: '' },
 });
 
 const emit = defineEmits(['resize']);
@@ -190,8 +201,14 @@ async function handleToggleRun() {
     return;
   }
 
-  // 优先从 ref 读取，兜底从 localStorage 读取（兼容 CEF 多标签页跨实例通信）
-  const { scene, actor } = getActorContext();
+  // 嵌入模式用 props，独立模式用 useActorContext
+  let scene, actor;
+  if (props.embedded) {
+    scene = props.sceneName;
+    actor = props.actorName;
+  } else {
+    ({ scene, actor } = getActorContext());
+  }
   if (!scene || !actor) {
     alert('请先在场景中选中一个物体，再点击运行。');
     return;
@@ -270,6 +287,8 @@ function saveCurrentWorkspace() {
   try {
     const state = BlocklyLib.serialization.workspaces.save(workspace);
     workspaceStates.set(loadedActorKey, state);
+    // 持久化到 localStorage，使积木数据在页面刷新后不丢失
+    try { localStorage.setItem(LS_WS_PREFIX + loadedActorKey, JSON.stringify(state)); } catch (_) {}
   } catch (e) {
     logError('保存工作区状态失败', e);
   }
@@ -300,12 +319,21 @@ function switchToActor(sceneName, actorName) {
   loadedActorKey = newKey;
   currentActorNameVar = actorName || '';
 
-  if (newKey && workspaceStates.has(newKey)) {
-    try {
-      const state = workspaceStates.get(newKey);
-      BlocklyLib.serialization.workspaces.load(state, workspace);
-    } catch (e) {
-      logError('加载工作区状态失败', e);
+  if (newKey) {
+    // 优先内存，兜底从 localStorage 恢复
+    let state = workspaceStates.get(newKey);
+    if (!state) {
+      try {
+        const raw = localStorage.getItem(LS_WS_PREFIX + newKey);
+        if (raw) { state = JSON.parse(raw); workspaceStates.set(newKey, state); }
+      } catch (_) {}
+    }
+    if (state) {
+      try {
+        BlocklyLib.serialization.workspaces.load(state, workspace);
+      } catch (e) {
+        logError('加载工作区状态失败', e);
+      }
     }
   }
 
@@ -318,14 +346,19 @@ function switchToActor(sceneName, actorName) {
   updateGeneratedCode();
 }
 
-// 监听全局 Actor 选择变化（来自 Object.vue）
-watch(
-  [currentSceneName, currentActorName],
-  ([scene, actor]) => {
-    switchToActor(scene, actor);
-  },
-  { immediate: false },
-);
+// 嵌入模式监听 props，独立模式监听全局选中
+if (props.embedded) {
+  watch(
+    () => [props.sceneName, props.actorName],
+    ([s, a]) => { switchToActor(s, a); },
+  );
+} else {
+  watch(
+    [currentSceneName, currentActorName],
+    ([scene, actor]) => { switchToActor(scene, actor); },
+    { immediate: false },
+  );
+}
 
 const initBlocklyAndGenerators = async () => {
   currentActorNameVar = props.actorName || '';
@@ -506,6 +539,7 @@ function handleNewCanvas() {
   // 2. 清除当前 Actor 的持久化状态
   if (loadedActorKey) {
     workspaceStates.delete(loadedActorKey);
+    try { localStorage.removeItem(LS_WS_PREFIX + loadedActorKey); } catch (_) {}
   }
 
   // 3. 清空工作区
@@ -543,9 +577,12 @@ onMounted(async () => {
 
   try {
     await initBlockly();
-    // 挂载后先同步 localStorage（兼容 CEF 多标签页跨实例通信）
-    syncActorContextFromStorage();
-    switchToActor(currentSceneName.value, currentActorName.value);
+    if (props.embedded) {
+      switchToActor(props.sceneName, props.actorName);
+    } else {
+      syncActorContextFromStorage();
+      switchToActor(currentSceneName.value, currentActorName.value);
+    }
   } catch (err) {
     logError('初始化失败', err);
     const overlay = document.getElementById('status-overlay');

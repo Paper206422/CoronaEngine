@@ -19,6 +19,12 @@ struct Hardware;
 
 namespace Corona::Systems {
 
+#ifdef CORONA_ENABLE_VISION
+namespace Vision {
+struct VisionBuildResult;  // 定义见 vision/vision_geometry_adapter.h
+}  // namespace Vision
+#endif
+
 /**
  * @brief 光学系统 (Optics System)
  *
@@ -70,16 +76,6 @@ class OpticsSystem : public Kernel::SystemBase {
      */
     void shutdown() override;
 
-    // ========================================
-    // 渲染后端切换 API（线程安全）
-    // ========================================
-
-    /// 提交后端切换请求（线程安全，下一帧生效）
-    void set_render_backend(RenderBackend backend);
-
-    /// 获取当前生效的渲染后端
-    [[nodiscard]] RenderBackend get_render_backend() const;
-
    private:
     bool initialize_vision_backend_if_enabled();
     bool initialize_hardware_resources();
@@ -92,6 +88,20 @@ class OpticsSystem : public Kernel::SystemBase {
     // Vision 相关私有方法（在 CORONA_ENABLE_VISION 宏保护下实现）
     bool init_vision_lazy();  ///< 首次切换到 Vision 时的 lazy 初始化
     void run_vision_frame(float frame_count, uint64_t frame_index);
+
+    /// 计算当前 SharedDataHub 场景的轻量签名，用于检测动态变化
+    /// （几何拓扑 / transform / 材质参数 / materialColor / visible）。
+    std::size_t compute_vision_scene_signature() const;
+
+    /// 以"全量重建"方式把当前场景数据重新同步到 Vision：
+    /// build_vision_geometry → scene.prepare → prepare_geometry → invalidate。
+    /// 复用现有 pipeline（材质类型固定，无需重编译着色器），并通过
+    /// scene.prepare() 内部的 remove_unused_elements() 回收旧材质，避免累积泄漏。
+    /// 返回本次重建的统计结果，供去抖/重试逻辑区分"空场景"与"数据未就绪"。
+    Vision::VisionBuildResult rebuild_vision_scene();
+
+    /// 去抖检测：若签名变化则触发（延迟）重建，覆盖导入/导出/参数调整等动态操作。
+    void sync_vision_dynamic_scene();
 #endif  // CORONA_ENABLE_VISION
     struct ActorPickRequest {
         std::uintptr_t pick_handle{0};
@@ -107,7 +117,28 @@ class OpticsSystem : public Kernel::SystemBase {
     uint32_t offscreen_w_{0}, offscreen_h_{0};
 
     // Vision 后端状态
+#ifdef CORONA_ENABLE_VISION
+    // Dedicated, stable output image for the Vision backend. Vision must NOT reuse
+    // hardware_->finalOutputImage: when the resolution changes the bridge recreated
+    // that shared image in-place, releasing the underlying Vulkan resource that the
+    // DisplaySystem compositor was still referencing -> black screen. Owning a
+    // separate image here keeps the resource stable across the optics->display
+    // handoff and is only (re)created by this system when its own size changes.
+    //HardwareImage vision_output_image_;
+    uint32_t vision_output_w_{0}, vision_output_h_{0};
+
+    // [MANUAL-READBACK] Locally-owned CPU staging buffer for the manual expansion of
+    // FrameBuffer::fill_window_buffer(). Stored flat as 4 floats (RGBA) per pixel to
+    // avoid leaking ocarina::float4 into this public header; the .cpp reinterpret_casts
+    // data() to ocarina::float4* for view_texture().download_immediately().
+    std::vector<float> vision_readback_buffer_;
+
+    // 启用 Vision 编译时，首帧 update() 检测到 pending != current 会自动触发
+    // init_vision_lazy() 切换到 Vision；若初始化失败仍会回退 Native。
+    std::atomic<int> pending_backend_{static_cast<int>(RenderBackend::Vision)};
+#else
     std::atomic<int> pending_backend_{static_cast<int>(RenderBackend::Native)};
+#endif
     RenderBackend current_backend_{RenderBackend::Native};
     bool vision_initialized_{false};
     std::uintptr_t last_render_cam_handle_{0};
@@ -115,6 +146,17 @@ class OpticsSystem : public Kernel::SystemBase {
     bool has_last_vision_frame_{false};
     uint32_t last_vision_frame_width_{0};
     uint32_t last_vision_frame_height_{0};
+
+    // ---- Vision 动态场景同步（脏标记 + 去抖全量重建）----
+    std::size_t vision_applied_signature_{0};   ///< 已同步到 Vision 的场景签名基线
+    std::size_t vision_pending_signature_{0};   ///< 最近一次检测到的（可能仍在变化的）签名
+    uint32_t vision_stable_frames_{0};          ///< 签名保持稳定的连续帧数，用于去抖
+    static constexpr uint32_t kVisionRebuildDebounceFrames = 3;  ///< 稳定该帧数后才重建
+
+    // 当一次重建检测到"有候选物体但 0 实例"（数据尚未就绪）时，不锁定签名并在
+    // 后续帧重试，直到数据就绪或达到上限后兜底接受，避免每帧空转重建。
+    uint32_t vision_rebuild_retries_{0};        ///< 数据未就绪导致的连续重试次数
+    static constexpr uint32_t kVisionRebuildMaxRetries = 30;  ///< 重试上限（约 0.5s @60fps）
 
     struct PendingScreenshot {
         std::uintptr_t camera_handle = 0;
@@ -124,6 +166,7 @@ class OpticsSystem : public Kernel::SystemBase {
     std::vector<PendingScreenshot> pending_screenshots_;
     std::mutex screenshot_mutex_;
     Kernel::EventId screenshot_request_sub_id_ = 0;
+    Kernel::EventId backend_switch_sub_id_ = 0;
 };
 
 }  // namespace Corona::Systems

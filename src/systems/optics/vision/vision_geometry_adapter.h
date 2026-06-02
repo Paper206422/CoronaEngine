@@ -14,6 +14,16 @@ class Scene;
 
 namespace Corona::Systems::Vision {
 
+// Structured outcome of a geometry build pass. Lets callers distinguish a
+// genuinely empty scene (no candidate objects at all) from a transient
+// "data-not-ready" state (candidates existed but their CPU/GPU mesh data could
+// not be loaded yet), so dynamic-scene rebuilds can retry only when warranted.
+struct VisionBuildResult {
+    int instance_count = 0;   ///< ShapeInstances successfully added.
+    int candidate_count = 0;  ///< Visible objects with geometry that passed all filters.
+    int skipped_no_data = 0;  ///< Candidates skipped because mesh data was unavailable.
+};
+
 // Clears the Vision scene's existing shapes and repopulates it from the
 // CoronaEngine SharedDataHub (all enabled SceneDevice → actors → geometry).
 //
@@ -27,8 +37,9 @@ namespace Corona::Systems::Vision {
 // After this call, caller must invoke:
 //   pipeline->geometry()->build_accel() / upload()
 //
-// Returns the number of ShapeInstances successfully added.
-int build_vision_geometry(::vision::Scene& scene);
+// Returns a VisionBuildResult describing how many instances were added and
+// whether any candidate objects were skipped due to missing mesh data.
+VisionBuildResult build_vision_geometry(::vision::Scene& scene);
 
 }  // namespace Corona::Systems::Vision
 

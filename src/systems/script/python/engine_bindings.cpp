@@ -389,15 +389,14 @@ void BindAll(nanobind::module_& m) {
               } }, nb::arg("level"), nb::arg("message"), "Send a log message to the engine logger with specified level");
 
     // ============================================================================
-    // 渲染后端切换 API
+    // Render backend control (Native vs Vision)
     // ============================================================================
-    m.def("set_render_backend", &Corona::API::set_render_backend,
-          nb::arg("backend_name"),
-          "Switch render backend: 'native' for Vulkan rasterization, 'vision' for CUDA path tracing. "
-          "Takes effect on the next frame.");
-
-    m.def("get_render_backend", &Corona::API::get_render_backend,
-          "Return the current active render backend name: 'native' or 'vision'.");
+    m.def("is_vision_available", &is_vision_available,
+          "Return True if the engine was compiled with Vision (CORONA_ENABLE_VISION) support");
+    m.def("set_render_backend", &set_render_backend, nb::arg("mode"),
+          "Request a render backend switch. mode: 'native' or 'vision'. Only effective when Vision is available.");
+    m.def("get_render_backend", &get_render_backend,
+          "Get the currently requested render backend as 'native' or 'vision'");
 
 }
 
