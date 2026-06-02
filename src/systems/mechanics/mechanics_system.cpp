@@ -772,6 +772,10 @@ bool MechanicsSystem::initialize(Kernel::ISystemContext* ctx) {
 }
 
 void MechanicsSystem::update() {
+    if (g_shutdown_requested.load(std::memory_order_acquire)) {
+        return;
+    }
+
     // 用高精度计时器测量真实 dt
     auto now = std::chrono::steady_clock::now();
     if (m_first_update) {
@@ -792,15 +796,21 @@ void MechanicsSystem::update() {
 
     // 固定步长迭代（与 update_physics 内的 fixed_dt 保持一致，默认 1/60）
     const float fixed_dt = 1.0f / 60.0f;
-    while (m_time_accumulator >= fixed_dt) {
+    while (m_time_accumulator >= fixed_dt &&
+           !g_shutdown_requested.load(std::memory_order_acquire)) {
         update_physics();
         m_time_accumulator -= fixed_dt;
     }
 }
 
+void MechanicsSystem::stop() {
+    g_shutdown_requested.store(true, std::memory_order_release);
+    Kernel::SystemBase::stop();
+}
+
 void MechanicsSystem::shutdown() {
     // 标记关闭请求，不再接受新的回调任务
-    g_shutdown_requested = true;
+    g_shutdown_requested.store(true, std::memory_order_release);
 
     // 清空延迟回调队列
     g_deferred_move_callbacks.clear();
@@ -821,7 +831,7 @@ void MechanicsSystem::shutdown() {
 // 物理主循环（单帧）：搜集物体 → 积分外力(重力/阻尼) → 建世界 AABB → 粗/细碰撞改速度 → 积分位姿 → 地板 → 休眠 → 清理缓存
 void MechanicsSystem::update_physics() {
     // 如果正在关闭，不再处理新的物理更新
-    if (g_shutdown_requested) {
+    if (g_shutdown_requested.load(std::memory_order_acquire)) {
         return;
     }
 
@@ -867,6 +877,9 @@ void MechanicsSystem::update_physics() {
 
     // --- 阶段 1：遍历场景 → 读环境(gravity/floor/dt) → 展开 Actor/Profile → 收集 mechanics_handle ---
     for (const auto& scene : scene_storage) {
+        if (g_shutdown_requested.load(std::memory_order_acquire)) {
+            return;
+        }
         if (!scene.enabled)
             continue;
 
@@ -887,8 +900,14 @@ void MechanicsSystem::update_physics() {
         }
 
         for (auto actor_handle : scene.actor_handles) {
+            if (g_shutdown_requested.load(std::memory_order_acquire)) {
+                return;
+            }
             if (auto actor = actor_storage.acquire_read(actor_handle)) {
                 for (auto profile_handle : actor->profile_handles) {
+                    if (g_shutdown_requested.load(std::memory_order_acquire)) {
+                        return;
+                    }
                     if (auto profile = profile_storage.acquire_read(profile_handle)) {
                         if (auto h = profile->mechanics_handle) {
                             // 读 MechanicsDevice：检查物理开关 + 质量/阻尼/恢复；读失败则用默认值
@@ -937,6 +956,9 @@ void MechanicsSystem::update_physics() {
 
     // --- 阶段 2：半隐式前推速度（仅非休眠体）：先阻尼旧速度，再叠加重力加速度 ---
     for (std::uintptr_t h : mechanics_handles) {  // 对存活列表逐个施力
+        if (g_shutdown_requested.load(std::memory_order_acquire)) {
+            return;
+        }
         if (g_handle_to_sleeping[h]) continue;    // 休眠体本阶段不改速度
 
         float damping = handle_to_damping[h];   // 线性阻尼乘子（以 60Hz 为基准的每步保留系数）
@@ -967,6 +989,9 @@ void MechanicsSystem::update_physics() {
     std::unordered_map<std::uintptr_t, std::size_t> handle_to_index;
 
     for (std::uintptr_t h : mechanics_handles) {         // 为每个力学体准备碰撞与惯量数据
+        if (g_shutdown_requested.load(std::memory_order_acquire)) {
+            return;
+        }
         auto m_acc = mechanics_storage.acquire_read(h);  // mechanics 组件读锁
         if (!m_acc) continue;                            // 无数据则跳过
         const auto& m = *m_acc;                          // 其 min/max、geometry_handle
@@ -1038,6 +1063,9 @@ void MechanicsSystem::update_physics() {
 
     // 预加载所有物理物体的碰撞网格（用于三角形碰撞检测和精确地板碰撞）
     for (const auto& entry : mechanics_data) {
+        if (g_shutdown_requested.load(std::memory_order_acquire)) {
+            return;
+        }
         if (entry.model_id != 0) {
             ensure_collision_mesh(entry.model_id);
         }
@@ -1065,8 +1093,14 @@ void MechanicsSystem::update_physics() {
     auto* scene_sys = dynamic_cast<SceneSystem*>(m_ctx->get_system("Scene"));
     if (scene_sys) {
         for (auto sh : scene_handles) {
+            if (g_shutdown_requested.load(std::memory_order_acquire)) {
+                return;
+            }
             auto actor_pairs = scene_sys->query_pairs(sh);
             for (const auto& [ah, bh] : actor_pairs) {
+                if (g_shutdown_requested.load(std::memory_order_acquire)) {
+                    return;
+                }
                 auto it_a = actor_to_mech.find(ah);
                 auto it_b = actor_to_mech.find(bh);
                 if (it_a == actor_to_mech.end() || it_b == actor_to_mech.end()) continue;
@@ -1094,9 +1128,14 @@ void MechanicsSystem::update_physics() {
         constexpr float k_positional_slop = 0.004f;    // Baumgarte 式校正：小穿透只靠冲量，不修位姿
         constexpr float k_positional_percent = 0.35f;  // 仅末轮按穿透拆分平移，且只推一部分，防过冲
         constexpr int k_impulse_iterations = 5;        // 轮数↑ 堆叠更稳、成本↑；典型 3~8
-
         for (int impulse_iter = 0; impulse_iter < k_impulse_iterations; ++impulse_iter) {
+            if (g_shutdown_requested.load(std::memory_order_acquire)) {
+                return;
+            }
             for (const auto& pair : collision_pairs) {  // 内层：单对接触解一次（顺序依赖）
+                if (g_shutdown_requested.load(std::memory_order_acquire)) {
+                    return;
+                }
                 std::uintptr_t ha = pair.first;
                 std::uintptr_t hb = pair.second;
                 // 两个都休眠则跳过
@@ -1455,7 +1494,7 @@ void MechanicsSystem::update_physics() {
 
                         bool was_active = (g_prev_active_collisions.find(sorted_pair) != g_prev_active_collisions.end());
 
-                        if (!was_active) {
+                        if (!was_active && !g_shutdown_requested.load(std::memory_order_acquire)) {
                             if (cb_a) {
                                 try {
                                     cb_a(actor_b, true, normal_arr, point_arr);
@@ -1481,6 +1520,9 @@ void MechanicsSystem::update_physics() {
 
         // ===== 碰撞结束检测：遍历上帧活跃但本帧消失的碰撞对，触发 end 回调 =====
         for (const auto& old_pair : g_prev_active_collisions) {
+            if (g_shutdown_requested.load(std::memory_order_acquire)) {
+                return;
+            }
             if (curr_active_collisions.find(old_pair) != curr_active_collisions.end()) {
                 continue;  // 仍在碰撞，不触发 end
             }
@@ -1500,7 +1542,7 @@ void MechanicsSystem::update_physics() {
 
             if (mech_ha != 0) {
                 if (auto m_acc = mechanics_storage.acquire_read(mech_ha)) {
-                    if (m_acc->collision_callback) {
+                    if (m_acc->collision_callback && !g_shutdown_requested.load(std::memory_order_acquire)) {
                         try {
                             m_acc->collision_callback(actor_b, false, zero_normal, zero_point);
                         } catch (...) {
@@ -1512,7 +1554,7 @@ void MechanicsSystem::update_physics() {
 
             if (mech_hb != 0) {
                 if (auto m_acc = mechanics_storage.acquire_read(mech_hb)) {
-                    if (m_acc->collision_callback) {
+                    if (m_acc->collision_callback && !g_shutdown_requested.load(std::memory_order_acquire)) {
                         try {
                             m_acc->collision_callback(actor_a, false, zero_normal, zero_point);
                         } catch (...) {
@@ -1528,6 +1570,9 @@ void MechanicsSystem::update_physics() {
     } else {
         // 物体数量不足2个时，为残留的碰撞对发送 collision end 回调
         for (const auto& old_pair : g_prev_active_collisions) {
+            if (g_shutdown_requested.load(std::memory_order_acquire)) {
+                return;
+            }
             std::uintptr_t actor_a = old_pair.first;
             std::uintptr_t actor_b = old_pair.second;
 
@@ -1542,7 +1587,7 @@ void MechanicsSystem::update_physics() {
 
             if (mech_ha != 0) {
                 if (auto m_acc = mechanics_storage.acquire_read(mech_ha)) {
-                    if (m_acc->collision_callback) {
+                    if (m_acc->collision_callback && !g_shutdown_requested.load(std::memory_order_acquire)) {
                         try {
                             m_acc->collision_callback(actor_b, false, zero_normal, zero_point);
                         } catch (...) {
@@ -1554,7 +1599,7 @@ void MechanicsSystem::update_physics() {
 
             if (mech_hb != 0) {
                 if (auto m_acc = mechanics_storage.acquire_read(mech_hb)) {
-                    if (m_acc->collision_callback) {
+                    if (m_acc->collision_callback && !g_shutdown_requested.load(std::memory_order_acquire)) {
                         try {
                             m_acc->collision_callback(actor_a, false, zero_normal, zero_point);
                         } catch (...) {
@@ -1569,6 +1614,9 @@ void MechanicsSystem::update_physics() {
 
     // --- 阶段 6：半隐式位姿积分（用冲量后的 v,ω）+ 无穷地板 + 休眠累计 + 缓存淘汰 ---
     for (std::size_t i = 0; i < mechanics_data.size(); ++i) {
+        if (g_shutdown_requested.load(std::memory_order_acquire)) {
+            return;
+        }
         const auto& data = mechanics_data[i];  // 与阶段 3 同一套 per-body 缓存
         std::uintptr_t h = data.handle;
         if (g_handle_to_sleeping[h])
@@ -1640,6 +1688,9 @@ void MechanicsSystem::update_physics() {
     }
 
     for (std::uintptr_t h : mechanics_handles) {
+        if (g_shutdown_requested.load(std::memory_order_acquire)) {
+            return;
+        }
         if (g_handle_to_sleeping[h]) continue;
 
         const auto& v = g_handle_to_velocity[h];
@@ -1708,6 +1759,9 @@ void MechanicsSystem::update_physics() {
 
     // 帧末统一同步执行延迟的 on_move 回调
     for (auto& cb : g_deferred_move_callbacks) {
+        if (g_shutdown_requested.load(std::memory_order_acquire)) {
+            break;
+        }
         try {
             cb();
         } catch (const std::exception& e) {
@@ -1731,9 +1785,6 @@ void MechanicsSystem::update_physics() {
         }
     };
 
-    clean_cache(g_handle_to_velocity);
-    clean_cache(g_handle_to_angular_vel);
-    clean_cache(g_handle_orientation_quat);
     clean_cache(g_handle_to_sleeping);
     clean_cache(g_handle_to_sleep_timer);
     clean_cache(handle_to_mass);
@@ -1742,6 +1793,7 @@ void MechanicsSystem::update_physics() {
     clean_cache(handle_to_collision_enabled);
     clean_cache(g_handle_to_last_move_callback_time);
     clean_cache(g_handle_to_last_move_callback_pos);
+
 }
 
 }  // namespace Corona::Systems

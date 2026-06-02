@@ -5,8 +5,10 @@
 #include <corona/spatial/octree.h>
 #include <corona/systems/scene/scene_system.h>
 #include <corona/utils/path_utils.h>
+#include <ktm/ktm.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <mutex>
 #include <shared_mutex>
@@ -19,6 +21,65 @@
 #include "../modules/corona_resource/include/corona/resource/resource_manager.h"
 
 namespace Corona::Systems {
+
+namespace {
+
+[[nodiscard]] ktm::fvec3 make_fvec3(float x, float y, float z) {
+    ktm::fvec3 value;
+    value[0] = x;
+    value[1] = y;
+    value[2] = z;
+    return value;
+}
+
+[[nodiscard]] ktm::fvec4 make_fvec4(float x, float y, float z, float w) {
+    ktm::fvec4 value;
+    value[0] = x;
+    value[1] = y;
+    value[2] = z;
+    value[3] = w;
+    return value;
+}
+
+[[nodiscard]] ktm::fvec3 transform_local_point_to_world(const Corona::ModelTransform& transform,
+                                                        const ktm::fvec3& local_point) {
+    const ktm::fmat4x4 matrix = transform.compute_matrix();
+    const ktm::fvec4 local_h = make_fvec4(local_point[0], local_point[1], local_point[2], 1.0f);
+    const ktm::fvec4 world_h = matrix * local_h;
+    return make_fvec3(world_h[0], world_h[1], world_h[2]);
+}
+
+void world_aabb_from_local_bounds(const Corona::ModelTransform& transform,
+                                  const ktm::fvec3& local_min,
+                                  const ktm::fvec3& local_max,
+                                  Spatial::AABB& out_world_aabb) {
+    const ktm::fvec3 corners[8] = {
+        make_fvec3(local_min[0], local_min[1], local_min[2]),
+        make_fvec3(local_max[0], local_min[1], local_min[2]),
+        make_fvec3(local_min[0], local_max[1], local_min[2]),
+        make_fvec3(local_max[0], local_max[1], local_min[2]),
+        make_fvec3(local_min[0], local_min[1], local_max[2]),
+        make_fvec3(local_max[0], local_min[1], local_max[2]),
+        make_fvec3(local_min[0], local_max[1], local_max[2]),
+        make_fvec3(local_max[0], local_max[1], local_max[2]),
+    };
+
+    const ktm::fvec3 first_corner = transform_local_point_to_world(transform, corners[0]);
+    out_world_aabb.min = first_corner;
+    out_world_aabb.max = first_corner;
+
+    for (int i = 1; i < 8; ++i) {
+        const ktm::fvec3 world_corner = transform_local_point_to_world(transform, corners[i]);
+        out_world_aabb.min[0] = std::min(out_world_aabb.min[0], world_corner[0]);
+        out_world_aabb.min[1] = std::min(out_world_aabb.min[1], world_corner[1]);
+        out_world_aabb.min[2] = std::min(out_world_aabb.min[2], world_corner[2]);
+        out_world_aabb.max[0] = std::max(out_world_aabb.max[0], world_corner[0]);
+        out_world_aabb.max[1] = std::max(out_world_aabb.max[1], world_corner[1]);
+        out_world_aabb.max[2] = std::max(out_world_aabb.max[2], world_corner[2]);
+    }
+}
+
+}  // namespace
 
 // ============================================================================
 // SceneSystem::Impl —— 私有状态
@@ -100,6 +161,8 @@ void SceneSystem::update() {
     auto& hub = SharedDataHub::instance();
     auto& scene_storage = hub.scene_storage();
     auto& camera_storage = hub.camera_storage();
+    auto& geometry_storage = hub.geometry_storage();
+    auto& transform_storage = hub.model_transform_storage();
     std::vector<std::uintptr_t> scene_handles;
     {
         for (auto it = scene_storage.cbegin(); it != scene_storage.cend(); ++it) {
@@ -111,6 +174,7 @@ void SceneSystem::update() {
     process_async_tasks();
 
     for (std::uintptr_t scene_handle : scene_handles) {
+        const auto scene_begin = std::chrono::steady_clock::now();
         std::vector<std::uintptr_t> actor_handles;
         std::vector<std::uintptr_t> camera_handles;
         {
@@ -152,10 +216,15 @@ void SceneSystem::update() {
                 auto mechanics_read = mechanics_storage.try_acquire_read(mechanics_handle);
                 if (!mechanics_read.valid()) continue;
 
+                auto geometry_read = geometry_storage.try_acquire_read(profile_dev.geometry_handle);
+                if (!geometry_read.valid() || geometry_read->transform_handle == 0) continue;
+
+                auto transform_read = transform_storage.try_acquire_read(geometry_read->transform_handle);
+                if (!transform_read.valid()) continue;
+
                 const MechanicsDevice& mechanics_dev = *mechanics_read;
                 Spatial::AABB aabb;
-                aabb.min = mechanics_dev.min_xyz;
-                aabb.max = mechanics_dev.max_xyz;
+                world_aabb_from_local_bounds(*transform_read, mechanics_dev.min_xyz, mechanics_dev.max_xyz, aabb);
                 octree_entries.push_back({actor_handle,aabb});
                 added_actors.insert(actor_handle);
                 break;
@@ -171,15 +240,17 @@ void SceneSystem::update() {
             ktm::fvec3 extent = root_aabb.extent();
 
             //padding 添加10%的内边距
-            float max_extent = std::max({extent.x,extent.y,extent.z});
+            float max_extent = std::max({extent[0], extent[1], extent[2]});
             float padding = max_extent * 0.1f;
             root_aabb = root_aabb.expanded(padding);
         }else {
-            root_aabb.min = ktm::fvec3{-1.0f, -1.0f, -1.0f};
-            root_aabb.max = ktm::fvec3{1.0f, 1.0f, 1.0f};
+            root_aabb.min = make_fvec3(-1.0f, -1.0f, -1.0f);
+            root_aabb.max = make_fvec3(1.0f, 1.0f, 1.0f);
         }
 
+        double rebuild_ms = 0.0;
         {
+            const auto rebuild_begin = std::chrono::steady_clock::now();
             std::unique_lock lock(impl_->mtx);
             auto& scene_state = impl_->get_or_create(scene_handle);
             scene_state.tree.rebuild(root_aabb,octree_entries);
@@ -203,12 +274,19 @@ void SceneSystem::update() {
                     ++it;
                 }
             }
+
+            rebuild_ms = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - rebuild_begin)
+                             .count();
+            std::lock_guard stats_lock(scene_state.stats_mutex);
+            scene_state.stats.last_rebuild_ms = rebuild_ms;
         }
 
         std::vector<std::pair<ktm::fvec3,Math::Frustum>> cameras;
         std::unordered_set<Impl::Payload> visible_actors;
+        double visible_query_ms_total = 0.0;
         for (std::uintptr_t camera_handle : camera_handles) {
-            auto cam_read = camera_storage.try_acquire_read(camera_handle);
+            auto cam_read = camera_storage.try_acquire_read_nowait(camera_handle);
             if ( !cam_read.valid() ) continue;
 
             // 填充相机位置和视锥
@@ -216,7 +294,11 @@ void SceneSystem::update() {
             Math::Frustum frustum = Math::Frustum::from_camera(cam_dev);
             cameras.emplace_back(cam_dev.position,frustum);
 
+            const auto visible_query_begin = std::chrono::steady_clock::now();
             std::vector<Impl::Payload> visible_for_camera = query_visible_for_camera(scene_handle,camera_handle);
+            visible_query_ms_total += std::chrono::duration<double, std::milli>(
+                                          std::chrono::steady_clock::now() - visible_query_begin)
+                                          .count();
             visible_actors.insert(visible_for_camera.begin(),visible_for_camera.end());
         }
 
@@ -362,12 +444,12 @@ void SceneSystem::update() {
             scene_state.stats.actor_total    = actor_handles.size();
             scene_state.stats.actor_visible  = visible_actors.size();
             scene_state.stats.octree_entries = octree_entries.size();
+            scene_state.stats.last_query_ms = visible_query_ms_total;
             scene_state.stats.actor_loaded    = loaded;
             scene_state.stats.actor_loading   = loading;
             scene_state.stats.actor_unloading = unloading;
             scene_state.stats.actor_unloaded  = unloaded;
         }
-
         auto scene_write = scene_storage.try_acquire_write(scene_handle);
         if (scene_write.valid()) {
             SceneDevice& scene_dev_write = *scene_write;
@@ -595,13 +677,14 @@ std::vector<std::pair<std::uintptr_t, std::uintptr_t>> SceneSystem::query_pairs(
             filtered.push_back(pair);
         }
     }
+
     return filtered;
 }
 
 std::vector<std::uintptr_t> SceneSystem::query_visible_for_camera(
     std::uintptr_t scene, std::uintptr_t camera) const {
     auto& cam_storage = SharedDataHub::instance().camera_storage();
-    auto cam_handle = cam_storage.try_acquire_read(camera);
+    auto cam_handle = cam_storage.try_acquire_read_nowait(camera);
     if (!cam_handle.valid()) {
         return {};
     }

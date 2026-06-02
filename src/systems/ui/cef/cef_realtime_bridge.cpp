@@ -67,7 +67,7 @@ bool handle_camera_move_fast(const CefRefPtr<CefProcessMessage>& message) {
         fov = static_cast<float>(args->GetDouble(4));
     }
 
-    if (auto accessor = Corona::SharedDataHub::instance().camera_storage().try_acquire_write(camera_handle)) {
+    if (auto accessor = Corona::SharedDataHub::instance().camera_storage().try_acquire_write_nowait(camera_handle)) {
         accessor->position = position;
         accessor->forward = forward;
         accessor->world_up = world_up;
