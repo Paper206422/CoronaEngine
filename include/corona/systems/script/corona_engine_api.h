@@ -46,7 +46,6 @@ class Geometry {
     friend class Mechanics;
     friend class Optics;
     friend class Acoustics;
-    friend class Kinematics;
 
    protected:
     [[nodiscard]] std::uintptr_t get_handle() const;
@@ -175,33 +174,6 @@ class Acoustics {
 };
 
 // ============================================================================
-// Kinematics: 运动学组件，依赖 Geometry
-// ============================================================================
-class Kinematics {
-   public:
-    explicit Kinematics(Geometry& geo);
-    ~Kinematics();
-
-    void set_animation(std::uint32_t animation_index);
-    void play_animation(float speed = 1.0f);
-    void stop_animation();
-    void set_animation_enabled(bool enabled);
-    [[nodiscard]] bool get_animation_enabled() const;
-
-    [[nodiscard]] std::uint32_t get_animation_index() const;
-    [[nodiscard]] float get_current_time() const;
-
-   private:
-    friend class Actor;
-
-    [[nodiscard]] std::uintptr_t get_handle() const;
-    [[nodiscard]] Geometry* get_geometry() const;
-
-    Geometry* geometry_;
-    std::uintptr_t handle_{0};
-};
-
-// ============================================================================
 // Actor: OOP 风格的实体类，支持多套组件和多个 Geometry
 // ============================================================================
 class Actor {
@@ -213,7 +185,6 @@ class Actor {
         Optics* optics{nullptr};
         Acoustics* acoustics{nullptr};
         Mechanics* mechanics{nullptr};
-        Kinematics* kinematics{nullptr};
         Geometry* geometry{nullptr};
     };
 

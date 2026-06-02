@@ -31,9 +31,6 @@ const SharedDataHub::ModelTransformStorage& SharedDataHub::model_transform_stora
 SharedDataHub::GeometryStorage& SharedDataHub::geometry_storage() { return geometry_storage_; }
 const SharedDataHub::GeometryStorage& SharedDataHub::geometry_storage() const { return geometry_storage_; }
 
-SharedDataHub::KinematicsStorage& SharedDataHub::kinematics_storage() { return kinematics_storage_; }
-const SharedDataHub::KinematicsStorage& SharedDataHub::kinematics_storage() const { return kinematics_storage_; }
-
 SharedDataHub::MechanicsStorage& SharedDataHub::mechanics_storage() { return mechanics_storage_; }
 const SharedDataHub::MechanicsStorage& SharedDataHub::mechanics_storage() const { return mechanics_storage_; }
 

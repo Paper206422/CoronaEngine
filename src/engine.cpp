@@ -9,10 +9,9 @@
 #include <corona/systems/acoustics/acoustics_system.h>
 #include <corona/systems/display/display_system.h>
 #include <corona/systems/geometry/geometry_system.h>
-#include <corona/systems/kinematics/kinematics_system.h>
 #include <corona/systems/mechanics/mechanics_system.h>
+#include <corona/systems/network/network_system.h>
 #include <corona/systems/optics/optics_system.h>
-#include <corona/systems/scene/scene_system.h>
 #include <corona/systems/script/script_system.h>
 #include <corona/systems/ui/imgui_system.h>
 
@@ -230,7 +229,7 @@ bool Engine::register_systems() {
     }
 
     // 注册核心系统（按优先级自动排序）
-    // Display(100) > Optics(90) > Geometry(85) > Animation(80) > Mechanics(75) > Acoustics(70)
+    // Geometry(85) > Mechanics(75)：八叉树在同帧物理前重建，query_pairs() 时序正确
 
     CFW_LOG_INFO("Registering core systems...");
 
@@ -242,18 +241,9 @@ bool Engine::register_systems() {
     sys_mgr->register_system(std::make_shared<Systems::OpticsSystem>());
     CFW_LOG_INFO("  - OpticsSystem registered (priority 90)");
 
-    // Scene System (场景管理 / 八叉树宿主)
-    // 必须在 Optics(90) 之前、Kinematics(80) 之后，确保渲染拿到当前帧的剔除结果
-    sys_mgr->register_system(std::make_shared<Systems::SceneSystem>());
-    CFW_LOG_INFO("  - SceneSystem registered (priority 88)");
-
-    // Geometry System (几何系统)
+    // Geometry System (几何 + 八叉树宿主，原 SceneSystem 职责已并入)
     sys_mgr->register_system(std::make_shared<Systems::GeometrySystem>());
-    CFW_LOG_INFO("  - GeometrySystem registered (priority 85)");
-
-    // Animation System (动画系统)
-    sys_mgr->register_system(std::make_shared<Systems::KinematicsSystem>());
-    CFW_LOG_INFO("  - AnimationSystem registered (priority 80)");
+    CFW_LOG_INFO("  - GeometrySystem registered (priority 85, octree host)");
 
     // Mechanics System (力学系统)
     sys_mgr->register_system(std::make_shared<Systems::MechanicsSystem>());
@@ -265,6 +255,10 @@ bool Engine::register_systems() {
 
     sys_mgr->register_system(std::make_shared<Systems::ScriptSystem>());
     CFW_LOG_INFO("  - ScriptSystem registered (priority 60)");
+
+    // Network System (Omniverse Nucleus 协作骨架)
+    sys_mgr->register_system(std::make_shared<Systems::NetworkSystem>());
+    CFW_LOG_INFO("  - NetworkSystem registered (priority 55)");
 
     // ImguiSystem - 运行在主线程
     auto imgui_system = std::make_shared<Systems::ImguiSystem>();
