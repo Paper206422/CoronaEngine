@@ -208,7 +208,7 @@ void SceneSystem::update() {
                 auto mechanics_read = mechanics_storage.try_acquire_read(mechanics_handle);
                 if (!mechanics_read.valid()) continue;
 
-                auto geometry_read = geometry_storage.try_acquire_read(profile_dev.geometry_handle);
+                auto geometry_read = geometry_storage.try_acquire_read(mechanics_read->geometry_handle);
                 if (!geometry_read.valid() || geometry_read->transform_handle == 0) continue;
 
                 auto transform_read = transform_storage.try_acquire_read(geometry_read->transform_handle);
@@ -224,11 +224,15 @@ void SceneSystem::update() {
         }
 
         // 批量初始化 Actor 加载状态（单次加锁替代逐 Actor 加锁）
+        // 当距离剔除关闭时，actor 视为始终已加载；否则从 Unloaded 开始由距离剔除系统管理
         {
             std::unique_lock lock(impl_->mtx);
             auto& scene_state = impl_->get_or_create(scene_handle);
+            const ActorLoadState initial_state = scene_state.cfg.enable_distance_culling
+                                                     ? ActorLoadState::Unloaded
+                                                     : ActorLoadState::Loaded;
             for (auto actor_handle : added_actors) {
-                scene_state.actor_load_states.try_emplace(actor_handle, ActorLoadState::Unloaded);
+                scene_state.actor_load_states.try_emplace(actor_handle, initial_state);
             }
         }
 
@@ -281,6 +285,14 @@ void SceneSystem::update() {
                              .count();
             std::lock_guard stats_lock(scene_state.stats_mutex);
             scene_state.stats.last_rebuild_ms = rebuild_ms;
+        }
+        // 发布粗筛碰撞候选对：SceneSystem 仅负责空间划分，不依赖物理系统
+        {
+            auto pairs = query_pairs(scene_handle);
+            if (impl_->ctx && impl_->ctx->event_bus()) {
+                impl_->ctx->event_bus()->publish(
+                    Events::BroadphasePairsEvent{scene_handle, std::move(pairs)});
+            }
         }
 
         std::vector<std::pair<ktm::fvec3,Math::Frustum>> cameras;

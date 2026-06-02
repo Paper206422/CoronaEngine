@@ -57,7 +57,7 @@ class SceneDatas(PluginBase):
         return actor.to_dict()
 
     @staticmethod
-    def actor_operation(scene_name: str, actor_name: str, operation: str, vector: list[float]) -> dict:
+    def actor_operation(scene_name: str, actor_name: str, operation: str, vector: list) -> dict:
 
         if scene_name:
             scene = scene_manager.get(scene_name)
@@ -90,6 +90,8 @@ class SceneDatas(PluginBase):
             actor.set_camera_lock_offset(vector)
         elif operation == "SetCameraLockRotation":
             actor.set_camera_lock_rotation_offset(vector)
+        elif operation == "SetCollision":
+            actor.set_collision_enabled(str(vector[0]))
         else:
             raise ValueError(f"Unsupported operation '{operation}'")
 

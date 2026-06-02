@@ -59,6 +59,9 @@ class Scene:
         # 应用保存的相机数据
         self._apply_pending_camera_data()
 
+        # 默认启用物理模拟（否则 MechanicsSystem 会跳过该场景的所有物理计算）
+        self.set_simulation_enabled(True)
+
     @auto_save
     def set_route(self, route):
         self.route = route
@@ -418,6 +421,17 @@ class Scene:
         if hasattr(self.engine_scene, 'is_enabled'):
             return self.engine_scene.is_enabled()
         return True
+
+    def set_simulation_enabled(self, enabled: bool) -> None:
+        """启用或禁用该场景的物理模拟（不影响渲染）"""
+        if hasattr(self.engine_scene, 'set_simulation_enabled'):
+            self.engine_scene.set_simulation_enabled(enabled)
+
+    def is_simulation_enabled(self) -> bool:
+        """返回场景物理模拟是否启用"""
+        if hasattr(self.engine_scene, 'is_simulation_enabled'):
+            return self.engine_scene.is_simulation_enabled()
+        return False
 
     def ensure_default_camera(self) -> bool:
         """确保场景至少有一个 Camera。"""
