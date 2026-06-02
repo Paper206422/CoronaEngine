@@ -665,36 +665,22 @@
               <!-- 播放控制栏 -->
               <div class="flex items-center gap-1 px-2 py-1.5 bg-[#383838] border-b border-[#555] shrink-0">
                 <div class="flex items-center gap-0.5">
-                  <button class="w-6 h-6 flex items-center justify-center rounded hover:bg-[#4a4a4a] text-[#ccc] hover:text-white transition-colors" title="跳到开始">
+                  <button class="w-6 h-6 flex items-center justify-center rounded hover:bg-[#4a4a4a] text-[#ccc] hover:text-white transition-colors" title="跳到开始" @click="seekToStart">
                     <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
                   </button>
-                  <button class="w-6 h-6 flex items-center justify-center rounded hover:bg-[#4a4a4a] text-[#ccc] hover:text-white transition-colors" title="上一帧">
-                    <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm4 6l8-6v12z"/></svg>
-                  </button>
                   <button
-                    class="w-7 h-7 flex items-center justify-center rounded-full bg-[#84a65b] hover:bg-[#9bc46d] text-white transition-colors mx-0.5"
-                    :title="timelineState.playing ? '暂停' : '播放'"
-                    @click="timelineState.playing = !timelineState.playing"
+                    class="w-7 h-7 flex items-center justify-center rounded-full transition-colors mx-0.5"
+                    :class="timelineState.playing ? 'bg-red-500 hover:bg-red-400' : 'bg-[#84a65b] hover:bg-[#9bc46d]'"
+                    :title="timelineState.playing ? '停止' : '播放'"
+                    @click="togglePlayback"
                   >
                     <svg v-if="!timelineState.playing" class="w-3.5 h-3.5 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                    <svg v-else class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                    <svg v-else class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
                   </button>
-                  <button class="w-6 h-6 flex items-center justify-center rounded hover:bg-[#4a4a4a] text-[#ccc] hover:text-white transition-colors" title="下一帧">
-                    <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M16 18h2V6h-2zm-9-6l8 6V6z"/></svg>
-                  </button>
-                  <button class="w-6 h-6 flex items-center justify-center rounded hover:bg-[#4a4a4a] text-[#ccc] hover:text-white transition-colors" title="跳到结尾">
+                  <button class="w-6 h-6 flex items-center justify-center rounded hover:bg-[#4a4a4a] text-[#ccc] hover:text-white transition-colors" title="跳到结尾" @click="seekToEnd">
                     <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
                   </button>
                 </div>
-                <div class="w-px h-5 bg-[#555] mx-1"></div>
-                <button
-                  class="w-6 h-6 flex items-center justify-center rounded-full transition-colors"
-                  :class="timelineState.recording ? 'bg-red-600 text-white' : 'text-red-400 hover:bg-[#4a4a4a]'"
-                  title="录制"
-                  @click="timelineState.recording = !timelineState.recording"
-                >
-                  <div class="w-2.5 h-2.5 rounded-sm" :class="timelineState.recording ? 'bg-white' : 'bg-red-400'"></div>
-                </button>
                 <div class="w-px h-5 bg-[#555] mx-1"></div>
                 <div class="flex items-center gap-1 text-xs">
                   <span class="text-[#909090] text-[10px]">时间</span>
@@ -707,6 +693,15 @@
                     class="w-14 bg-[#2d2d2d] text-[#e0e0e0] text-xs text-center rounded px-1 py-0.5 border border-[#555] font-mono" />
                 </div>
                 <div class="flex-1"></div>
+                <button
+                  class="px-2 py-1 text-[10px] text-red-400 hover:bg-red-500/20 hover:text-red-300 rounded transition-colors flex items-center gap-1"
+                  title="一键清除所有内容"
+                  @click="clearAllTimeline"
+                >
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                  清除
+                </button>
+                <div class="w-px h-5 bg-[#555] mx-1"></div>
                 <div class="flex items-center gap-1 text-xs">
                   <span class="text-[#909090] text-[10px]">FPS</span>
                   <select v-model="timelineState.fps"
@@ -729,8 +724,9 @@
                 <div class="w-32 shrink-0 bg-[#2d2d2d] border-r border-[#444] px-2 py-1">
                   <div class="h-5"></div>
                 </div>
-                <div class="flex-1 relative bg-[#2a2a2a] h-5 overflow-hidden">
-                  <div class="absolute inset-0 flex items-end">
+                <div class="flex-1 relative bg-[#2a2a2a] h-5 overflow-hidden" ref="timelineRulerRef"
+                  @click="onRulerClick">
+                  <div class="absolute inset-0 flex items-end pointer-events-none">
                     <div v-for="tick in timelineTicks" :key="tick.time"
                       class="absolute bottom-0 flex flex-col items-center"
                       :style="{ left: tick.left + '%' }">
@@ -756,31 +752,45 @@
                     <span class="text-[10px] text-[#888] mr-1">{{ track.expanded ? '▼' : '▶' }}</span>
                     <span class="text-[11px] text-[#ccc] truncate">{{ track.name }}</span>
                   </div>
-                  <div class="h-10 flex items-center justify-center border-b border-[#3a3a3a]">
-                    <button class="text-[10px] text-[#84a65b] hover:text-[#9bc46d] hover:bg-[#3a3a3a] rounded py-1 px-2 transition-colors">＋ 添加轨道</button>
-                  </div>
                 </div>
-                <div class="flex-1 relative bg-[#1e1e1e]">
+                <div class="flex-1 relative bg-[#1e1e1e]" ref="trackContentRef">
                   <div v-for="tick in timelineTicks" :key="'g'+tick.time"
-                    class="absolute top-0 bottom-0"
+                    class="absolute top-0 bottom-0 pointer-events-none"
                     :class="tick.major ? 'border-l border-[#333]' : 'border-l border-[#2a2a2a]'"
                     :style="{ left: tick.left + '%' }"></div>
                   <div v-for="track in timelineTracks" :key="track.id"
-                    class="h-10 relative border-b border-[#2a2a2a]"
-                    :class="{ 'bg-[#252525]': timelineState.selectedTrack === track.id }">
+                    class="h-10 relative border-b border-[#2a2a2a] cursor-crosshair"
+                    :class="{ 'bg-[#252525]': timelineState.selectedTrack === track.id }"
+                    @mousedown="onTrackMouseDown(track, $event)"
+                    @mousemove="onTrackMouseMove(track, $event)"
+                    @mouseup="onTrackMouseUp(track, $event)"
+                    @mouseleave="onTrackMouseLeave(track, $event)"
+                    @click="onTrackClick(track, $event)">
+                    <!-- 已添加的片段 -->
                     <div v-for="(clip, ci) in track.clips" :key="ci"
                       class="absolute top-1 bottom-1 rounded-sm cursor-pointer group"
                       :class="clipColorClass(track.type)"
                       :style="{ left: clipTimeToPercent(clip.startFrame) + '%', width: Math.max(clipTimeToPercent(clip.durationFrames) - clipTimeToPercent(0), 1.5) + '%' }"
-                      :title="clip.name + ' (' + clip.startFrame + '-' + (clip.startFrame+clip.durationFrames) + ')'">
-                      <span class="text-[9px] text-white/90 truncate px-1 leading-6 select-none block">{{ clip.name }}</span>
+                      :title="clip.name + ' (' + clip.startFrame + '-' + (clip.startFrame+clip.durationFrames) + ')'"
+                      @mousedown.stop
+                      @dblclick.stop="deleteClip(track, ci)">
+                      <span class="text-[9px] text-white/90 truncate px-1 leading-6 select-none block pointer-events-none">{{ clip.name }}</span>
                     </div>
+                    <!-- 已添加的关键帧 -->
                     <div v-for="(kf, ki) in track.keyframes" :key="'kf'+ki"
                       class="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 cursor-pointer z-10 hover:scale-125 transition-transform"
                       :class="keyframeColorClass(track.type)"
                       :style="{ left: 'calc(' + clipTimeToPercent(kf.frame) + '% - 5px)' }"
-                      :title="'帧 ' + kf.frame + ': ' + (kf.value || '')"></div>
+                      :title="'帧 ' + kf.frame + ': ' + (kf.value || '')"
+                      @mousedown.stop
+                      @dblclick.stop="deleteKeyframe(track, ki)"></div>
+                    <!-- 长按拖拽中的预览条 -->
+                    <div v-if="clipDragState.active && clipDragState.trackId === track.id"
+                      class="absolute top-1 bottom-1 rounded-sm z-20 pointer-events-none"
+                      :class="clipPreviewColor(track.type)"
+                      :style="clipDragPreviewStyle"></div>
                   </div>
+                  <!-- 播放头 -->
                   <div class="absolute top-0 bottom-0 w-0.5 bg-red-500 z-20 pointer-events-none"
                     :style="{ left: playheadPosition + '%' }"></div>
                 </div>
@@ -792,9 +802,9 @@
                 <span class="w-px h-3 bg-[#555]"></span>
                 <span>帧范围: 0 - {{ timelineState.totalFrames }}</span>
                 <span class="w-px h-3 bg-[#555]"></span>
-                <span>选中: {{ timelineState.selectedTrack ? (timelineTracks.find(t => t.id === timelineState.selectedTrack) || {}).name || '-' : '-' }}</span>
+                <span>提示: <span class="text-[#999]">长按拖拽添加片段 · 点击添加关键帧 · 双击删除</span></span>
                 <span class="flex-1"></span>
-                <span class="text-[#84a65b]/60">{{ timelineState.recording ? '● 录制中' : '' }}</span>
+                <span class="text-[#84a65b]">{{ timelineState.playing ? '▶ 播放中' : '' }}</span>
               </div>
             </div>
           </template>
@@ -1114,11 +1124,13 @@ const modelTabs = [
 ];
 
 // ========== 时间轴状态 ==========
+const timelineRulerRef = ref(null);
+const trackContentRef = ref(null);
+
 const timelineState = reactive({
   playing: false,
-  recording: false,
-  currentTime: 1.5,
-  currentFrame: 45,
+  currentTime: 0,
+  currentFrame: 0,
   totalFrames: 300,
   duration: 10.0,
   fps: 30,
@@ -1126,53 +1138,203 @@ const timelineState = reactive({
 });
 
 const timelineTracks = reactive([
-  {
-    id: 'track-anim', name: '动画轨道', type: 'animation', icon: '🎬', expanded: true,
-    clips: [
-      { name: '行走动画', startFrame: 0, durationFrames: 90 },
-      { name: '跳跃动画', startFrame: 120, durationFrames: 45 },
-      { name: '攻击动画', startFrame: 200, durationFrames: 60 },
-    ],
-    keyframes: [
-      { frame: 0, value: 'idle' }, { frame: 30, value: 'walk_start' },
-      { frame: 60, value: 'walk_loop' }, { frame: 90, value: 'walk_end' },
-      { frame: 120, value: 'jump_start' }, { frame: 165, value: 'jump_end' },
-      { frame: 200, value: 'attack' }, { frame: 260, value: 'attack_end' },
-    ],
-  },
-  {
-    id: 'track-audio', name: '音频轨道', type: 'audio', icon: '🔊', expanded: true,
-    clips: [
-      { name: '背景音乐', startFrame: 0, durationFrames: 300 },
-      { name: '脚步声', startFrame: 30, durationFrames: 60 },
-      { name: '跳跃音效', startFrame: 120, durationFrames: 10 },
-      { name: '攻击音效', startFrame: 200, durationFrames: 15 },
-    ],
-    keyframes: [
-      { frame: 0, value: 'bgm_start' }, { frame: 120, value: 'sfx_jump' },
-      { frame: 200, value: 'sfx_attack' },
-    ],
-  },
-  {
-    id: 'track-video', name: '视频轨道', type: 'video', icon: '🎥', expanded: false,
-    clips: [
-      { name: '开场动画', startFrame: 0, durationFrames: 60 },
-      { name: '过场动画', startFrame: 180, durationFrames: 90 },
-    ],
-    keyframes: [
-      { frame: 0, value: 'intro' }, { frame: 180, value: 'cutscene' },
-    ],
-  },
-  {
-    id: 'track-keyframe', name: '关键帧轨道', type: 'keyframe', icon: '🔑', expanded: true,
-    clips: [],
-    keyframes: [
-      { frame: 0, value: 'start' }, { frame: 45, value: 'event_A' },
-      { frame: 90, value: 'event_B' }, { frame: 150, value: 'event_C' },
-      { frame: 220, value: 'event_D' }, { frame: 280, value: 'event_E' },
-    ],
-  },
+  { id: 'track-anim', name: '动画轨道', type: 'animation', icon: '🎬', expanded: true, clips: [], keyframes: [] },
+  { id: 'track-audio', name: '音频轨道', type: 'audio', icon: '🔊', expanded: true, clips: [], keyframes: [] },
+  { id: 'track-video', name: '视频轨道', type: 'video', icon: '🎥', expanded: false, clips: [], keyframes: [] },
+  { id: 'track-keyframe', name: '关键帧轨道', type: 'keyframe', icon: '🔑', expanded: true, clips: [], keyframes: [] },
 ]);
+
+// ── 播放控制 ──
+let playbackRafId = null;
+let lastPlaybackTime = 0;
+
+function startPlayback() {
+  timelineState.playing = true;
+  lastPlaybackTime = performance.now();
+  playbackRafId = requestAnimationFrame(playbackLoop);
+}
+
+function stopPlayback() {
+  timelineState.playing = false;
+  if (playbackRafId != null) {
+    cancelAnimationFrame(playbackRafId);
+    playbackRafId = null;
+  }
+}
+
+function playbackLoop(now) {
+  if (!timelineState.playing) return;
+  const dt = (now - lastPlaybackTime) / 1000;
+  lastPlaybackTime = now;
+  timelineState.currentTime += dt;
+  timelineState.currentFrame = Math.round(timelineState.currentTime * timelineState.fps);
+  if (timelineState.currentFrame >= timelineState.totalFrames) {
+    timelineState.currentFrame = timelineState.totalFrames;
+    timelineState.currentTime = timelineState.duration;
+    stopPlayback();
+    return;
+  }
+  playbackRafId = requestAnimationFrame(playbackLoop);
+}
+
+function togglePlayback() {
+  if (timelineState.playing) {
+    stopPlayback();
+  } else {
+    if (timelineState.currentFrame >= timelineState.totalFrames) {
+      timelineState.currentFrame = 0;
+      timelineState.currentTime = 0;
+    }
+    startPlayback();
+  }
+}
+
+function seekToStart() {
+  stopPlayback();
+  timelineState.currentFrame = 0;
+  timelineState.currentTime = 0;
+}
+
+function seekToEnd() {
+  stopPlayback();
+  timelineState.currentFrame = timelineState.totalFrames;
+  timelineState.currentTime = timelineState.duration;
+}
+
+// ── 一键清除 ──
+function clearAllTimeline() {
+  stopPlayback();
+  timelineState.currentFrame = 0;
+  timelineState.currentTime = 0;
+  for (const track of timelineTracks) {
+    track.clips.splice(0);
+    track.keyframes.splice(0);
+  }
+}
+
+// ── 片段长按拖拽创建 ──
+const clipDragState = reactive({
+  active: false,
+  trackId: null,
+  startFrame: 0,
+  currentFrame: 0,
+});
+
+let longPressTimer = null;
+
+function frameFromEvent(event) {
+  const el = trackContentRef.value;
+  if (!el) return 0;
+  const rect = el.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  return Math.round((x / rect.width) * timelineState.totalFrames);
+}
+
+function onTrackMouseDown(track, event) {
+  if (event.button !== 0) return;
+  // 关键帧轨道：不触发长按拖拽（走 click 添加关键帧）
+  if (track.type === 'keyframe') return;
+  const frame = frameFromEvent(event);
+  longPressTimer = setTimeout(() => {
+    clipDragState.active = true;
+    clipDragState.trackId = track.id;
+    clipDragState.startFrame = frame;
+    clipDragState.currentFrame = frame;
+    longPressTimer = null;
+  }, 300);
+}
+
+function onTrackMouseMove(track, event) {
+  if (!clipDragState.active || clipDragState.trackId !== track.id) return;
+  const frame = frameFromEvent(event);
+  clipDragState.currentFrame = Math.max(0, Math.min(frame, timelineState.totalFrames));
+}
+
+function onTrackMouseUp(track, event) {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+  if (clipDragState.active && clipDragState.trackId === track.id) {
+    const s = clipDragState.startFrame;
+    const e = clipDragState.currentFrame;
+    const start = Math.min(s, e);
+    const end = Math.max(s, e);
+    const duration = end - start;
+    if (duration > 1) {
+      const count = track.clips.filter(c => c.startFrame === start).length + 1;
+      track.clips.push({
+        name: `${track.name}_${track.clips.length + 1}`,
+        startFrame: start,
+        durationFrames: duration,
+      });
+    }
+    clipDragState.active = false;
+    clipDragState.trackId = null;
+  }
+}
+
+function onTrackMouseLeave(track, event) {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+  if (clipDragState.active && clipDragState.trackId === track.id) {
+    // 取消拖拽
+    clipDragState.active = false;
+    clipDragState.trackId = null;
+  }
+}
+
+// ── 关键帧点击添加 ──
+function onTrackClick(track, event) {
+  if (track.type !== 'keyframe') return;
+  // 如果刚结束拖拽，忽略 click
+  const frame = frameFromEvent(event);
+  if (frame < 0 || frame > timelineState.totalFrames) return;
+  track.keyframes.push({
+    frame: frame,
+    value: `key_${frame}`,
+  });
+}
+
+// ── 双击删除 ──
+function deleteClip(track, index) {
+  track.clips.splice(index, 1);
+}
+
+function deleteKeyframe(track, index) {
+  track.keyframes.splice(index, 1);
+}
+
+// ── 标尺点击跳转 ──
+function onRulerClick(event) {
+  stopPlayback();
+  const frame = frameFromEvent(event);
+  timelineState.currentFrame = Math.max(0, Math.min(frame, timelineState.totalFrames));
+  timelineState.currentTime = timelineState.currentFrame / timelineState.fps;
+}
+
+// ── 拖拽预览样式 ──
+const clipDragPreviewStyle = computed(() => {
+  const s = clipDragState.startFrame;
+  const e = clipDragState.currentFrame;
+  const start = Math.min(s, e);
+  const end = Math.max(s, e);
+  return {
+    left: clipTimeToPercent(start) + '%',
+    width: Math.max(clipTimeToPercent(end) - clipTimeToPercent(start), 1) + '%',
+  };
+});
+
+function clipPreviewColor(type) {
+  switch (type) {
+    case 'animation': return 'bg-blue-500/40 border border-dashed border-blue-300/60';
+    case 'audio': return 'bg-green-500/40 border border-dashed border-green-300/60';
+    case 'video': return 'bg-purple-500/40 border border-dashed border-purple-300/60';
+    default: return 'bg-gray-500/40 border border-dashed border-gray-300/60';
+  }
+}
 
 const timelineTicks = computed(() => {
   const ticks = [];
@@ -2102,5 +2264,7 @@ onMounted(async () => {
   setupWindowListener();
 });
 
-onUnmounted(() => {});
+onUnmounted(() => {
+  stopPlayback();
+});
 </script>
