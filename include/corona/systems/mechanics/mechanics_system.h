@@ -1,6 +1,7 @@
 #pragma once
 
 #include <corona/events/mechanics_system_events.h>
+#include <corona/events/scene_system_events.h>
 #include <corona/kernel/event/i_event_bus.h>
 #include <corona/kernel/event/i_event_stream.h>
 #include <corona/kernel/system/system_base.h>
