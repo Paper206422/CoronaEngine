@@ -72,11 +72,6 @@ class MechanicsSystem : public Kernel::SystemBase {
     float m_time_accumulator{0.0f};
     std::chrono::steady_clock::time_point m_last_update_time{};
     bool m_first_update{true};
-    // 通过 EventBus 接收 SceneSystem 的粗筛碰撞候选对
-    Kernel::EventId m_broadphase_subscription_id{0};
-    std::unordered_map<std::uintptr_t,
-                       std::vector<std::pair<std::uintptr_t, std::uintptr_t>>>
-        m_broadphase_cache;
 };
 
 }  // namespace Corona::Systems

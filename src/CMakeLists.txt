@@ -38,11 +38,11 @@ add_library(CoronaEngine STATIC
         ${PROJECT_SOURCE_DIR}/include/corona/engine.h
         ${PROJECT_SOURCE_DIR}/include/corona/shared_data_hub.h
         ${PROJECT_SOURCE_DIR}/include/corona/events/acoustics_system_events.h
-        ${PROJECT_SOURCE_DIR}/include/corona/events/kinematics_system_events.h
         ${PROJECT_SOURCE_DIR}/include/corona/events/display_system_events.h
         ${PROJECT_SOURCE_DIR}/include/corona/events/engine_events.h
         ${PROJECT_SOURCE_DIR}/include/corona/events/geometry_system_events.h
         ${PROJECT_SOURCE_DIR}/include/corona/events/mechanics_system_events.h
+        ${PROJECT_SOURCE_DIR}/include/corona/events/network_system_events.h
         ${PROJECT_SOURCE_DIR}/include/corona/events/optics_system_events.h
         ${PROJECT_SOURCE_DIR}/include/corona/events/script_system_events.h
         ${PROJECT_SOURCE_DIR}/include/corona/events/imgui_system_events.h
@@ -63,8 +63,7 @@ target_link_libraries(CoronaEngine PUBLIC
         corona::system::mechanics
         corona::system::geometry
         corona::system::display
-        corona::system::kinematics
-        corona::system::scene
+        corona::system::network
         corona::system::script
         corona::system::imgui
 )

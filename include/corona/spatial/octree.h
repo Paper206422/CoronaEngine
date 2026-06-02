@@ -16,7 +16,7 @@ namespace Corona::Spatial {
  * @brief 八叉树调参
  *
  * 该结构与 mechanics_system.cpp 中 file-local 实现的常量保持兼容，
- * 便于后续把物理系统的实现迁移到 SceneSystem 时无回归差异。
+ * 便于后续把物理系统的实现迁移到 GeometrySystem 时无回归差异。
  */
 struct OctreeConfig {
     int   max_depth            = 6;       ///< 最大递归深度
@@ -29,7 +29,7 @@ struct OctreeConfig {
  *
  * @tparam TPayload 叶节点存储的载荷类型，要求可拷贝/可移动且可比较（用于 dedupe）。
  *
- * 由 SceneSystem 在 update() 中独占重建（rebuild），其它系统只读查询。
+ * 由 GeometrySystem 在 update() 中独占重建（rebuild），其它系统只读查询。
  * 所有查询接口采用递归剪枝，节点 bounds 不相交时跳过整棵子树。
  */
 template <typename TPayload>

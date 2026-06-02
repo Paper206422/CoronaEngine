@@ -1340,68 +1340,6 @@ Corona::API::Geometry* Corona::API::Acoustics::get_geometry() const {
 }
 
 // ########################
-//       Kinematics
-// ########################
-Corona::API::Kinematics::Kinematics(Geometry& geo)
-    : geometry_(&geo), handle_(0) {
-    handle_ = SharedDataHub::instance().kinematics_storage().allocate();
-}
-
-Corona::API::Kinematics::~Kinematics() {
-    if (handle_ != 0) {
-        SharedDataHub::instance().kinematics_storage().deallocate(handle_);
-    }
-}
-
-void Corona::API::Kinematics::set_animation(std::uint32_t animation_index) {
-    CFW_LOG_WARNING("[Kinematics::set_animation] Not implemented yet");
-}
-
-void Corona::API::Kinematics::play_animation(float speed) {
-    CFW_LOG_WARNING("[Kinematics::play_animation] Not implemented yet");
-}
-
-void Corona::API::Kinematics::stop_animation() {
-    CFW_LOG_WARNING("[Kinematics::stop_animation] Not implemented yet");
-}
-
-void Corona::API::Kinematics::set_animation_enabled(bool enabled) {
-    if (handle_ == 0) {
-        CFW_LOG_WARNING("[Kinematics::set_animation_enabled] Invalid kinematics handle");
-        return;
-    }
-    if (auto accessor = SharedDataHub::instance().kinematics_storage().acquire_write(handle_)) {
-        accessor->animation_enabled = enabled;
-    }
-}
-
-bool Corona::API::Kinematics::get_animation_enabled() const {
-    if (handle_ == 0) return true;
-    if (auto accessor = SharedDataHub::instance().kinematics_storage().try_acquire_read(handle_)) {
-        return accessor->animation_enabled;
-    }
-    return true;
-}
-
-std::uint32_t Corona::API::Kinematics::get_animation_index() const {
-    CFW_LOG_WARNING("[Kinematics::get_animation_index] Not implemented yet");
-    return 0;
-}
-
-float Corona::API::Kinematics::get_current_time() const {
-    CFW_LOG_WARNING("[Kinematics::get_current_time] Not implemented yet");
-    return 0.0f;
-}
-
-std::uintptr_t Corona::API::Kinematics::get_handle() const {
-    return handle_;
-}
-
-Corona::API::Geometry* Corona::API::Kinematics::get_geometry() const {
-    return geometry_;
-}
-
-// ########################
 //          Actor
 // ########################
 Corona::API::Actor::Actor()
@@ -1436,11 +1374,6 @@ Corona::API::Actor::Profile* Corona::API::Actor::add_profile(const Profile& prof
         return nullptr;
     }
 
-    if (profile.kinematics && profile.kinematics->geometry_ != profile.geometry) {
-        CFW_LOG_CRITICAL("[Actor::add_profile] Kinematics references a different Geometry");
-        return nullptr;
-    }
-
     std::uintptr_t profile_handle = next_profile_handle_++;
     profiles_[profile_handle] = profile;
 
@@ -1455,7 +1388,6 @@ Corona::API::Actor::Profile* Corona::API::Actor::add_profile(const Profile& prof
         p->optics_handle = profile.optics ? profile.optics->get_handle() : 0;
         p->acoustics_handle = profile.acoustics ? profile.acoustics->get_handle() : 0;
         p->mechanics_handle = profile.mechanics ? profile.mechanics->get_handle() : 0;
-        p->kinematics_handle = profile.kinematics ? profile.kinematics->get_handle() : 0;
         p->geometry_handle = 0;
     } else {
         CFW_LOG_ERROR("[Actor::add_profile] Failed to acquire write access to profile storage");
@@ -1498,10 +1430,6 @@ void Corona::API::Actor::remove_profile(const Profile* profile) {
     auto it = profiles_.find(profile_handle);
     if (it == profiles_.end()) {
         return;
-    }
-
-    if (it->second.kinematics) {
-        it->second.kinematics->stop_animation();
     }
 
     profiles_.erase(it);

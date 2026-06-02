@@ -4,7 +4,7 @@
 #include <corona/kernel/event/i_event_bus.h>
 #include <corona/kernel/event/i_event_stream.h>
 #include <corona/systems/mechanics/mechanics_system.h>
-#include <corona/systems/scene/scene_system.h>
+#include <corona/systems/geometry/geometry_system.h>
 
 #include <algorithm>      // min,max,clamp,sort,unique
 #include <array>          // std::array（八叉树子节点）
@@ -391,7 +391,7 @@ constexpr float kMoveCallbackMinDistance = 0.1f;
 static std::vector<std::function<void()>> g_deferred_move_callbacks;
 static std::atomic<bool> g_shutdown_requested{false};
 
-// 注意：八叉树实现已迁移到 include/corona/spatial/octree.h，由 SceneSystem 持有并维护。
+// 注意：八叉树实现已迁移到 include/corona/spatial/octree.h，由 GeometrySystem 持有并维护。
 // MechanicsSystem 仅作为消费者使用（宽相候选对生成仍可复用该通用实现）。
 
 // 以下全局变量仅由 MechanicsSystem::update_physics() 访问（单线程）
@@ -768,14 +768,6 @@ bool MechanicsSystem::initialize(Kernel::ISystemContext* ctx) {
     m_ctx = ctx;
     g_shutdown_requested = false;
 
-    // 订阅 SceneSystem 发布的粗筛碰撞候选对（EventBus 同步，同帧内数据就绪）
-    if (m_ctx && m_ctx->event_bus()) {
-        m_broadphase_subscription_id = m_ctx->event_bus()->subscribe<Events::BroadphasePairsEvent>(
-            [this](const Events::BroadphasePairsEvent& e) {
-                m_broadphase_cache[e.scene] = e.pairs;
-            });
-    }
-
     CFW_LOG_INFO("MechanicsSystem initialized");
     return true;
 }
@@ -820,13 +812,6 @@ void MechanicsSystem::stop() {
 void MechanicsSystem::shutdown() {
     // 标记关闭请求，不再接受新的回调任务
     g_shutdown_requested.store(true, std::memory_order_release);
-
-    // 取消事件订阅
-    if (m_ctx && m_ctx->event_bus() && m_broadphase_subscription_id != 0) {
-        m_ctx->event_bus()->unsubscribe(m_broadphase_subscription_id);
-        m_broadphase_subscription_id = 0;
-    }
-    m_broadphase_cache.clear();
 
     // 清空延迟回调队列
     g_deferred_move_callbacks.clear();
@@ -1091,12 +1076,10 @@ void MechanicsSystem::update_physics() {
     // 临时校正表：记录 Phase 5 末轮的位置校正量，在 Phase 6 积分后统一应用
     std::unordered_map<std::uintptr_t, ktm::fvec3> position_correction;
 
-    // 阶段 5：从 EventBus 缓存读取 SceneSystem 发布的粗筛碰撞候选对 → 窄相（AABB 或 OBB+SAT）→ 顺序冲量 + 摩擦 + 末轮位置校正 ---
-    // SceneSystem(priority=88) 先于 MechanicsSystem(priority=75) 执行，
-    // 同帧内 BroadphasePairsEvent 已通过同步 EventBus 缓存就绪
-    // SceneSystem 八叉树 payload 是 actor_handle，返回 (actor_a, actor_b)
-    // 一个 actor 可能挂多个含 mechanics 的 profile，故用 vector 存储所有 mechanics_handle
-    // 转换时展开笛卡尔积；遍历 actor_a 的每个 mechanics vs actor_b 的每个 mechanics
+    // 阶段 5：从 GeometrySystem 获取宽相候选对 → 窄相（AABB 或 OBB+SAT）→ 顺序冲量 + 摩擦 + 末轮位置校正 ---
+    //GeometrySystem 八叉树 payload 是 actor_handle，query_pairs() 返回 (actor_a, actor_b)
+    //一个 actor 可能挂多个含 mechanics 的 profile，故用 vector 存储所有 mechanics_handle
+    //转换时展开笛卡尔积；遍历 actor_a 的每个 mechanics vs actor_b 的每个 mechanics
 
     // 构建 actor_handle → vector<mechanics_handle> 反向映射
     std::unordered_map<std::uintptr_t, std::vector<std::uintptr_t>> actor_to_mech;
@@ -1107,55 +1090,27 @@ void MechanicsSystem::update_physics() {
     std::vector<std::pair<std::uintptr_t, std::uintptr_t>> collision_pairs;
     collision_pairs.reserve(mechanics_data.size() * 4);
 
-    // 从 EventBus 缓存读取 SceneSystem 发布的粗筛碰撞候选对
-    // 宽相阶段由 SceneSystem 维护的八叉树统一服务，MechanicsSystem 不再自建本地 octree
-    bool broadphase_cache_available = false;
-    for (auto sh : scene_handles) {
-        if (g_shutdown_requested.load(std::memory_order_acquire)) {
-            return;
-        }
-        auto it_cache = m_broadphase_cache.find(sh);
-        if (it_cache == m_broadphase_cache.end()) continue;
-        broadphase_cache_available = true;
-        for (const auto& [ah, bh] : it_cache->second) {
+    // 通过 ISystemContext 获取 GeometrySystem 指针，调用其八叉树的 query_pairs()
+    // 宽相阶段由 GeometrySystem 维护的八叉树统一服务，MechanicsSystem 不再自建本地 octree。
+    // GeometrySystem(85) 优先级高于 MechanicsSystem(75)，八叉树在同帧物理前已重建。
+    auto* geometry_sys = dynamic_cast<GeometrySystem*>(m_ctx->get_system("Geometry"));
+    if (geometry_sys) {
+        for (auto sh : scene_handles) {
             if (g_shutdown_requested.load(std::memory_order_acquire)) {
                 return;
             }
-            auto it_a = actor_to_mech.find(ah);
-            auto it_b = actor_to_mech.find(bh);
-            if (it_a == actor_to_mech.end() || it_b == actor_to_mech.end()) continue;
-
-            // 展开一个 actor 挂多个 mechanics 的所有组合（笛卡尔积）
-            for (auto mh_a : it_a->second) {
-                for (auto mh_b : it_b->second) {
-                    collision_pairs.emplace_back(mh_a, mh_b);
-                }
-            }
-        }
-    }
-
-    // 回退路径：若 EventBus 未产生任何碰撞对（缓存为空或只含空列表），
-    // 直接查询 SceneSystem 的八叉树获取碰撞候选对
-    if (collision_pairs.empty() && mechanics_data.size() >= 2 && m_ctx) {
-        auto* scene_sys = dynamic_cast<SceneSystem*>(m_ctx->get_system("Scene"));
-        if (scene_sys) {
-            for (auto sh : scene_handles) {
+            auto actor_pairs = geometry_sys->query_pairs(sh);
+            for (const auto& [ah, bh] : actor_pairs) {
                 if (g_shutdown_requested.load(std::memory_order_acquire)) {
                     return;
                 }
-                auto actor_pairs = scene_sys->query_pairs(sh);
-                for (const auto& [ah, bh] : actor_pairs) {
-                    if (g_shutdown_requested.load(std::memory_order_acquire)) {
-                        return;
-                    }
-                    auto it_a = actor_to_mech.find(ah);
-                    auto it_b = actor_to_mech.find(bh);
-                    if (it_a == actor_to_mech.end() || it_b == actor_to_mech.end()) continue;
+                auto it_a = actor_to_mech.find(ah);
+                auto it_b = actor_to_mech.find(bh);
+                if (it_a == actor_to_mech.end() || it_b == actor_to_mech.end()) continue;
 
-                    for (auto mh_a : it_a->second) {
-                        for (auto mh_b : it_b->second) {
-                            collision_pairs.emplace_back(mh_a, mh_b);
-                        }
+                for (auto mh_a : it_a->second) {
+                    for (auto mh_b : it_b->second) {
+                        collision_pairs.emplace_back(mh_a, mh_b);
                     }
                 }
             }

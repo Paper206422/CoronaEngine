@@ -19,6 +19,7 @@
 
 // CORONA_ENABLE_VISION is controlled by CMake (-DCORONA_ENABLE_VISION).
 
+#define CORONA_VISION_IMPORT_DEMO
 
 #ifdef CORONA_ENABLE_VISION
 #include "base/import/importer.h"
@@ -75,6 +76,42 @@ vision::Device* visionDevicePtr = nullptr;
     pipeline->init();
     return pipeline;
 }
+
+#ifdef CORONA_VISION_IMPORT_DEMO
+// Absolute path to a known-good Vision scene used purely to verify that the
+// Vision backend can produce a picture in isolation (i.e. without the
+// CoronaEngine->Vision scene-building adapters). Change this to point at any
+// local *.json scene. Kept as a constant so it is trivial to edit/relocate.
+constexpr const char* kVisionDemoScenePath =
+    R"(E:\CoronaExample\test_vision\render_scene\cbox\vision_scene.json)";
+
+// Loads the demo scene from disk and brings it to a renderable state, mirroring
+// the reference snippet (import_scene -> init -> prepare -> prepare_view_texture).
+// Returns an empty pointer if the file is missing or import fails so the caller
+// can skip the demo without crashing.
+[[nodiscard]] auto import_vision_demo_pipeline() -> ocarina::SP<vision::Pipeline> {
+    const std::filesystem::path scene_path{kVisionDemoScenePath};
+    std::error_code ec;
+    if (!std::filesystem::exists(scene_path, ec)) {
+        CFW_LOG_ERROR("OpticsSystem: Vision demo scene not found: {}", scene_path.string());
+        return {};
+    }
+    // Resolve relative texture/mesh references against the scene's own folder.
+    vision::Global::instance().set_scene_path(scene_path.parent_path());
+    auto pipeline = vision::Importer::import_scene(scene_path);
+    if (!pipeline) {
+        CFW_LOG_ERROR("OpticsSystem: Vision demo import_scene returned null for {}",
+                      scene_path.string());
+        return {};
+    }
+    pipeline->init();
+    pipeline->prepare();
+    // prepare() does not create FrameBuffer::view_texture_; the render path tone
+    // maps into it and we later read it back, so create it explicitly here.
+    pipeline->frame_buffer()->prepare_view_texture();
+    return pipeline;
+}
+#endif
 #endif
 }  // namespace
 
@@ -1044,6 +1081,20 @@ bool OpticsSystem::init_vision_lazy() {
         visionDevicePtr->init_rtx();
         vision::Global::instance().set_device(visionDevicePtr);
         vision::Global::instance().set_scene_path(std::filesystem::current_path());
+
+#ifdef CORONA_VISION_IMPORT_DEMO
+        // Verification demo: load a known-good scene straight from disk instead of
+        // building the Vision scene from CoronaEngine data. This isolates the
+        // Vision render path so we can confirm it produces a picture at all.
+        renderPipeline = import_vision_demo_pipeline();
+        if (!renderPipeline) {
+            CFW_LOG_ERROR("OpticsSystem: Vision demo pipeline import failed");
+            return false;
+        }
+        vision_initialized_ = true;
+        CFW_LOG_INFO("OpticsSystem: Vision import-scene demo initialized successfully");
+        return true;
+#else
         renderPipeline = create_vision_pipeline();
         if (!renderPipeline) {
             CFW_LOG_ERROR("OpticsSystem: Failed to create Vision pipeline without external scene import");
@@ -1110,6 +1161,7 @@ bool OpticsSystem::init_vision_lazy() {
 
         CFW_LOG_INFO("OpticsSystem: Vision backend initialized successfully");
         return true;
+#endif  // CORONA_VISION_IMPORT_DEMO
     } catch (const std::exception& e) {
         CFW_LOG_ERROR("OpticsSystem: Vision init failed: {}", e.what());
         return false;
@@ -1119,9 +1171,11 @@ bool OpticsSystem::init_vision_lazy() {
 void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
     if (!renderPipeline) return;
 
+#ifndef CORONA_VISION_IMPORT_DEMO
     // Detect and apply dynamic scene changes (object import/export, transform,
     // material params, per-mesh color) before rendering this frame.
     sync_vision_dynamic_scene();
+#endif
 
     // [VDIAG-B0] Entry/loop probe: tells apart "run_vision_frame never iterates a
     // camera" (no enabled scene / empty camera_handles -> nothing rendered -> black)
@@ -1142,11 +1196,23 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 //    CFW_LOG_INFO("OpticsSystem: [VDIAG-B2] frame={} stage=sync_camera cam={}",
                 //                 frame_index, cam_handle);
                 //}
-                Vision::sync_vision_camera(*renderPipeline, *camera);
- /*               if ((frame_index % 120) == 0) {
-                    CFW_LOG_INFO("OpticsSystem: [VDIAG-B2] frame={} stage=render begin", frame_index);
-                }*/
-                renderPipeline->render(1.0 / 60.0);
+                #ifndef CORONA_VISION_IMPORT_DEMO
+                                Vision::sync_vision_camera(*renderPipeline, *camera);
+                #endif
+                 /*               if ((frame_index % 120) == 0) {
+                                    CFW_LOG_INFO("OpticsSystem: [VDIAG-B2] frame={} stage=render begin", frame_index);
+                                }*/
+                                // IMPORTANT: render() only RECORDS commands into the Vision
+                                // stream (the default, non-profiling submit path does NOT
+                                // synchronize/commit). Downloading view_texture() right after a
+                                // bare render() therefore reads stale (black) GPU memory.
+                                // Use the full pipeline lifecycle instead:
+                                //   upload_data() -> display(dt)
+                                // display() runs before_render -> render -> commit_command
+                                // (which performs synchronize() + commit()) -> after_render,
+                                // matching the reference apps (vision-gui / vision-eval).
+                                renderPipeline->upload_data();
+                                renderPipeline->display(1.0 / 60.0);
                 //vdiag_rendered_any = true;
                 //if ((frame_index % 120) == 0) {
                 //    CFW_LOG_INFO("OpticsSystem: [VDIAG-B2] frame={} stage=render done", frame_index);
@@ -1178,32 +1244,9 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 static_assert(sizeof(wbuf[0]) == sizeof(float),
                     "vision_readback_buffer_ must be a flat float buffer (4 floats per pixel)");
 
-                // [DIAG] Probe the just-rendered window buffer so we can tell apart
-                // "integrator produced black" from "upload/display lost the image".
-                // Gating: log the first few frames after every resolution change AND
-                // periodically (every 120 frames). The previous absolute frame_index<5
-                // gate only fired while the scene was still empty (before a project was
-                // opened), so it never captured the loaded-scene frames.
-                //if (frame_index>120) {
-                    for (uint64_t i = 0; i < vision_readback_buffer_.size(); ++i) {
-                    vision_readback_buffer_[i] = 0.5;
-                        //if (vision_readback_buffer_[i] > 1e-8) {
-                        //    CFW_LOG_INFO("OpticsSystem: [DIAG] Vision color: {}", vision_readback_buffer_[i]);
-                        //}
-                    }
-                //}
-
-                //const float* raw = wbuf.data();  // flat RGBA float32, 4 per pixel
-                //const bool uploaded = Vision::VisionOutputBridge::upload_to_hardware_image(
-                //    raw, w, h, hardware_->finalOutputImage, hardware_->executor,
-                //    vision_output_w_, vision_output_h_);
-
+                // Upload the REAL tone-mapped Vision pixels to the display image.
                 hardware_->executor << hardware_->finalOutputImage.copyFrom(vision_readback_buffer_.data())
                                     << hardware_->executor.commit();
-
-                //if (!uploaded) {
-                //    throw std::runtime_error("Vision output upload failed");
-                //}
 
                 last_render_cam_handle_ = cam_handle;
                 consecutive_vision_failures_ = 0;
