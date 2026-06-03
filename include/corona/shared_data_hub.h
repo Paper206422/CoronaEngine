@@ -158,6 +158,7 @@ struct CameraDevice {
     std::uint32_t width{1920};
     std::uint32_t height{1080};
     CameraOutputMode output_mode{CameraOutputMode::FinalColor};
+    std::uintptr_t actor_pick_handle{};
 
     CameraDevice() {
         position.x = 0.0f;
@@ -188,6 +189,16 @@ struct CameraDevice {
     [[nodiscard]] ktm::fmat4x4 compute_view_proj_matrix() const {
         return compute_projection_matrix() * compute_view_matrix();
     }
+};
+
+struct ActorPickDevice {
+    std::uint32_t x{0};
+    std::uint32_t y{0};
+    std::uint32_t result_x{0};
+    std::uint32_t result_y{0};
+    std::uintptr_t actor_handle{0};
+    bool pending{false};
+    bool result_ready{false};
 };
 
 struct EnvironmentDevice {
@@ -252,6 +263,7 @@ class SharedDataHub {
     using ProfileStorage = Kernel::Utils::Storage<ProfileDevice, 128, 2>;
     using ActorStorage = Kernel::Utils::Storage<ActorDevice, 128, 2>;
     using CameraStorage = Kernel::Utils::Storage<CameraDevice, 128, 2>;
+    using ActorPickStorage = Kernel::Utils::Storage<ActorPickDevice, 128, 2>;
     using EnvironmentStorage = Kernel::Utils::Storage<EnvironmentDevice, 128, 2>;
     using SceneStorage = Kernel::Utils::Storage<SceneDevice, 128, 2>;
     using ImageStorage = Kernel::Utils::Storage<ImageDevice, 128, 2>;
@@ -283,6 +295,9 @@ class SharedDataHub {
     CameraStorage& camera_storage();
     const CameraStorage& camera_storage() const;
 
+    ActorPickStorage& actor_pick_storage();
+    const ActorPickStorage& actor_pick_storage() const;
+
     EnvironmentStorage& environment_storage();
     const EnvironmentStorage& environment_storage() const;
 
@@ -303,6 +318,7 @@ class SharedDataHub {
     ActorStorage actor_storage_;
     EnvironmentStorage environment_storage_;
     CameraStorage camera_storage_;
+    ActorPickStorage actor_pick_storage_;
     SceneStorage scene_storage_;
     ImageStorage image_storage_;
 };
