@@ -2,6 +2,16 @@
  * 面板静态注册表 - 替代 Python register_web 装饰器中的 UI 元数据
  * 每个面板的 id 必须与 Python 端 module_name 一致（用于 cefQuery 路由）
  */
+import SceneBar from '@/views/sidebar/SceneBar.vue';
+import ObjectPanel from '@/views/sidebar/Object.vue';
+import Pet from '@/views/tools/Pet.vue';
+import LogView from '@/views/sidebar/LogView.vue';
+import FileManager from '@/views/sidebar/FileManager.vue';
+import ProjectSettings from '@/views/sidebar/ProjectSettings.vue';
+import BlocklyWorkspace from '@/blockly/components/BlocklyWorkspace.vue';
+import AITalkBar from '@/views/sidebar/AITalkBar.vue';
+import EditorSettings from '@/views/sidebar/EditorSettings.vue';
+
 export const PLUGIN_MANIFEST = [
   {
     id: 'SceneTools',
@@ -12,7 +22,7 @@ export const PLUGIN_MANIFEST = [
     defaultWidth: 300,
     defaultHeight: 600,
     autoInit: true,
-    component: () => import('@/views/sidebar/SceneBar.vue'),
+    component: SceneBar,
   },
   {
     id: 'SceneDatas',
@@ -23,7 +33,7 @@ export const PLUGIN_MANIFEST = [
     defaultWidth: 300,
     defaultHeight: 400,
     autoInit: true,
-    component: () => import('@/views/sidebar/Object.vue'),
+    component: ObjectPanel,
   },
   {
     id: 'AITool',
@@ -34,7 +44,7 @@ export const PLUGIN_MANIFEST = [
     defaultWidth: 200,
     defaultHeight: 200,
     autoInit: true,
-    component: () => import('@/views/tools/Pet.vue'),
+    component: Pet,
   },
   {
     id: 'LogTool',
@@ -45,7 +55,7 @@ export const PLUGIN_MANIFEST = [
     defaultWidth: 1100,
     defaultHeight: 200,
     autoInit: true,
-    component: () => import('@/views/sidebar/LogView.vue'),
+    component: LogView,
   },
   {
     id: 'FileManager',
@@ -56,7 +66,7 @@ export const PLUGIN_MANIFEST = [
     defaultWidth: 300,
     defaultHeight: 600,
     autoInit: false,
-    component: () => import('@/views/sidebar/FileManager.vue'),
+    component: FileManager,
   },
   {
     id: 'ProjectSettings',
@@ -67,7 +77,7 @@ export const PLUGIN_MANIFEST = [
     defaultWidth: 600,
     defaultHeight: 800,
     autoInit: false,
-    component: () => import('@/views/sidebar/ProjectSettings.vue'),
+    component: ProjectSettings,
   },
   {
     id: 'ScratchTool',
@@ -78,7 +88,7 @@ export const PLUGIN_MANIFEST = [
     defaultWidth: 600,
     defaultHeight: 500,
     autoInit: false,
-    component: () => import('@/blockly/components/BlocklyWorkspace.vue'),
+    component: BlocklyWorkspace,
   },
   {
     id: 'AITalkBar',
@@ -89,7 +99,7 @@ export const PLUGIN_MANIFEST = [
     defaultWidth: 400,
     defaultHeight: 600,
     autoInit: false,
-    component: () => import('@/views/sidebar/AITalkBar.vue'),
+    component: AITalkBar,
   },
   {
     id: 'EditorSettings',
@@ -100,7 +110,7 @@ export const PLUGIN_MANIFEST = [
     defaultWidth: 450,
     defaultHeight: 550,
     autoInit: false,
-    component: () => import('@/views/sidebar/EditorSettings.vue'),
+    component: EditorSettings,
   },
 ];
 

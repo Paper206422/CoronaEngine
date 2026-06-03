@@ -1876,24 +1876,31 @@ const setupWindowListener = () => {
 
 // ========== 生命周期 ==========
 onMounted(async () => {
-  // 场景默认存在，直接加载场景数据
+  console.log('[Object] mounted, loading scene data...');
   const result = await projectService.OnInit();
   const initData = result?.data ?? result;
   const activeScene = initData?.scenes?.[initData?.active_index ?? 0];
   await loadSceneData(activeScene?.path || DEFAULT_SCENE_NAME);
+  console.log('[Object] scene data loaded, setting up listeners');
 
   setupWindowListener();
 
-  // 事件总线：接收 Python 推送的 actor-change
-  coronaEventBus.on('actor-change', (type, sceneId, actorId, oldPath) => {
+  // 事件总线：接收 Python 推送的 actor-change（保存引用用于 onUnmounted 精准移除）
+  const onActorChange = (type, sceneId, actorId, oldPath) => {
+    console.log('[Object] actor-change received:', { type, sceneId, actorId, oldPath });
     if (window.onActorChange) window.onActorChange(type, sceneId, actorId, oldPath);
-  });
-  coronaEventBus.on('transform-update', (sceneName, actorName, position, rotation, scale, type) => {
+  };
+  const onTransformUpdate = (sceneName, actorName, position, rotation, scale, type) => {
     if (window.onTransformUpdate) window.onTransformUpdate(sceneName, actorName, position, rotation, scale, type);
-  });
+  };
+  coronaEventBus.on('actor-change', onActorChange);
+  coronaEventBus.on('transform-update', onTransformUpdate);
+  console.log('[Object] eventBus listeners registered');
 });
 
 onUnmounted(() => {
+  console.log('[Object] unmounted, removing listeners');
+  // 精准移除：只移除此组件的 handler，不影响其他组件（如 SceneBar）的监听
   coronaEventBus.off('actor-change');
   coronaEventBus.off('transform-update');
 });

@@ -11,19 +11,27 @@ export const coronaEventBus = {
       this._handlers[event] = [];
     }
     this._handlers[event].push(handler);
+    console.log(`[coronaEventBus] +handler for "${event}" (total: ${this._handlers[event].length})`);
   },
 
   off(event, handler) {
     if (!this._handlers[event]) return;
     if (!handler) {
+      console.log(`[coronaEventBus] clear ALL handlers for "${event}"`);
       delete this._handlers[event];
     } else {
+      const before = this._handlers[event].length;
       this._handlers[event] = this._handlers[event].filter((h) => h !== handler);
+      console.log(`[coronaEventBus] -handler for "${event}" (removed: ${before - this._handlers[event].length})`);
     }
   },
 
   emit(event, ...args) {
-    if (!this._handlers[event]) return;
+    if (!this._handlers[event]) {
+      console.warn(`[coronaEventBus] emit "${event}" but NO handlers registered`);
+      return;
+    }
+    console.log(`[coronaEventBus] emit "${event}" → ${this._handlers[event].length} handlers, args:`, args);
     for (const h of this._handlers[event]) {
       try {
         h(...args);
@@ -39,5 +47,6 @@ export const coronaEventBus = {
  * 被 C++ 的 ExecuteJavaScript 或 Python 的 execute_javascript 调用
  */
 window.__coronaEmit = (event, ...args) => {
+  console.log(`[coronaEventBus] __coronaEmit got "${event}" from native`);
   coronaEventBus.emit(event, ...args);
 };

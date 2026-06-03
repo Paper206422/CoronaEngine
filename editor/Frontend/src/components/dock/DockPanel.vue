@@ -8,23 +8,21 @@
       </div>
     </div>
     <div class="dock-panel-body">
-      <Suspense>
-        <component :is="asyncComponent" v-if="asyncComponent" />
-        <div v-else class="dock-panel-loading">加载中...</div>
-      </Suspense>
+      <component :is="component" v-if="component" />
+      <div v-else class="dock-panel-loading">组件未找到: {{ panelId }}</div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { defineAsyncComponent, shallowRef, watch, computed, provide } from 'vue';
+import { computed, provide } from 'vue';
 import { useDockStore } from '@/stores/dockStore.js';
 import { getPluginManifest } from '@/config/pluginManifest.js';
 import { appService } from '@/utils/bridge.js';
 
 const props = defineProps({
   panelId: { type: String, required: true },
-  component: { type: [Function, Object], default: null },
+  component: { type: Object, default: null },
 });
 
 // 向下传递 panelId，子组件可通过 inject('dockPanelId') 获取
@@ -33,15 +31,6 @@ provide('inDock', true);
 
 const dockStore = useDockStore();
 const manifest = computed(() => getPluginManifest(props.panelId));
-const asyncComponent = shallowRef(null);
-
-watch(
-  () => props.component,
-  (comp) => {
-    if (comp) asyncComponent.value = defineAsyncComponent(comp);
-  },
-  { immediate: true }
-);
 
 function handleClose() {
   dockStore.closePanel(props.panelId);
@@ -121,6 +110,6 @@ async function handlePopOut() {
 }
 .dock-panel-loading {
   padding: 1rem;
-  color: #909090;
+  color: #ff6b6b;
 }
 </style>
