@@ -1,4 +1,4 @@
-import json
+﻿import json
 import math
 import os
 import sys
@@ -182,6 +182,12 @@ class CoronaEditor:
         cls._held_keys.discard(key.lower())
         return {"ok": True}
 
+    # 鼠标右键环绕相关
+    _follow_rmb_down = False
+    _follow_prev_mouse = None
+    _follow_orbit_sensitivity = 0.004
+    _follow_cam_look_at = True
+
     _follow_frame_count = 0
     _follow_logged_init = False
 
@@ -236,11 +242,11 @@ class CoronaEditor:
                 elif k == 'd': d_down = 0x8000
 
             if w_down or a_down or s_down or d_down:
-                cam_fwd = cls._normalize(cam.get_forward())
-                cam_up = cam.get_world_up()
-                cam_right = cls._normalize(cls._cross(cam_fwd, cam_up))
-                fwd_xz = cls._normalize([cam_fwd[0], 0.0, cam_fwd[2]])
-                right_xz = cls._normalize([cam_right[0], 0.0, cam_right[2]])
+                # 从 offset 推断相机朝向，确保 WASD 方向与观察方向一致
+                ox, oy, oz = cls._camera_follow_offset
+                look_dir = cls._normalize([-ox, -oy, -oz])
+                fwd_xz = cls._normalize([look_dir[0], 0.0, look_dir[2]])
+                right_xz = cls._normalize(cls._cross([0.0, 1.0, 0.0], fwd_xz))
                 move = [0.0, 0.0, 0.0]
                 step = 0.5
                 if w_down: move[0] += fwd_xz[0] * step; move[2] += fwd_xz[2] * step
@@ -251,8 +257,62 @@ class CoronaEditor:
                 actor.set_position(obj_pos, if_init=True)
                 logger.info("[CAMFOLLOW] WASD move to %s", obj_pos)
 
+            # 鼠标右键拖动物体
+            rmb_down = False
+            try:
+                rmb_down = ctypes.windll.user32.GetAsyncKeyState(0x02) & 0x8000
+            except Exception:
+                pass
+
+            if rmb_down:
+                cur_mouse = None
+                try:
+                    class POINT(ctypes.Structure):
+                        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+                    pt = POINT()
+                    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+                    cur_mouse = (pt.x, pt.y)
+                except Exception:
+                    pass
+
+                if not cls._follow_rmb_down:
+                    cls._follow_rmb_down = True
+                    cls._follow_prev_mouse = cur_mouse
+                else:
+                    if cur_mouse and cls._follow_prev_mouse:
+                        dx = cur_mouse[0] - cls._follow_prev_mouse[0]
+                        dy = cur_mouse[1] - cls._follow_prev_mouse[1]
+                        cls._follow_prev_mouse = cur_mouse
+                        if dx != 0 or dy != 0:
+                            ox, oy, oz = cls._camera_follow_offset
+                            look_dir = cls._normalize([-ox, -oy, -oz])
+                            fwd_xz = cls._normalize([look_dir[0], 0.0, look_dir[2]])
+                            right_xz = cls._normalize(cls._cross([0.0, 1.0, 0.0], fwd_xz))
+                            rmb_speed = 0.02
+                            move = [0.0, 0.0, 0.0]
+                            if dx != 0:
+                                move[0] += right_xz[0] * dx * rmb_speed
+                                move[2] += right_xz[2] * dx * rmb_speed
+                            if dy != 0:
+                                move[0] += fwd_xz[0] * (-dy) * rmb_speed
+                                move[2] += fwd_xz[2] * (-dy) * rmb_speed
+                            obj_pos = [obj_pos[0] + move[0], obj_pos[1] + move[1], obj_pos[2] + move[2]]
+                            actor.set_position(obj_pos, if_init=True)
+                            logger.info("[CAMFOLLOW] RMB move to %s", obj_pos)
+            else:
+                cls._follow_rmb_down = False
+                cls._follow_prev_mouse = None
+
+            # 摄像机跟随（位置 + 注视）
             ox, oy, oz = cls._camera_follow_offset
             cam.set_position([obj_pos[0] + ox, obj_pos[1] + oy, obj_pos[2] + oz])
+
+            # 让摄像机始终注视物体
+            if cls._follow_cam_look_at:
+                look_dir = cls._normalize([-ox, -oy, -oz])
+                cam.set_forward(look_dir)
+                cam.set_world_up([0.0, 1.0, 0.0])
+
         except Exception as e:
             logger.error("[CAMFOLLOW] error: %s", e)
 
