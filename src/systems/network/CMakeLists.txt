@@ -1,11 +1,7 @@
 # ==============================================================================
-# Scene System
+# Network System
 # ==============================================================================
 
-corona_add_system(scene
-    SOURCES
-        scene_system.cpp
-        frustum.cpp
-    DEPENDENCIES
-        Horizon
+corona_add_system(network
+    SOURCES network_system.cpp
 )

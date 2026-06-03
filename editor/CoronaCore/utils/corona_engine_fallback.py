@@ -72,6 +72,8 @@ class Mechanics:
     def get_damping(self): return self._damping
     def set_physics_enabled(self, v): self._physics_enabled = v
     def get_physics_enabled(self): return self._physics_enabled
+    def set_collision_enabled(self, v): self._collision_enabled = v
+    def get_collision_enabled(self): return getattr(self, '_collision_enabled', True)
     def set_collision_callback(self, cb): pass
     def set_on_move_callback(self, cb): pass
 

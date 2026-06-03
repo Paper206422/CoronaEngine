@@ -66,6 +66,20 @@ class Mechanics:
         except Exception as e:
             raise RuntimeError(f"Mechanics.get_physics_enabled 失败: {e}") from e
 
+    def set_collision_enabled(self, enabled: bool):
+        """启用或禁用碰撞检测（关闭后物体不参与碰撞，也不受地板碰撞）"""
+        try:
+            self.engine_obj.set_collision_enabled(enabled)
+        except Exception as e:
+            raise RuntimeError(f"Mechanics.set_collision_enabled 失败: {e}") from e
+
+    def get_collision_enabled(self) -> bool:
+        """获取碰撞检测开关状态"""
+        try:
+            return self.engine_obj.get_collision_enabled()
+        except Exception as e:
+            raise RuntimeError(f"Mechanics.get_collision_enabled 失败: {e}") from e
+
     def set_collision_callback(self, callback):
         """
         设置碰撞回调

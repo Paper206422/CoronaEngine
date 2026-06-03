@@ -185,27 +185,6 @@ void BindAll(nanobind::module_& m) {
              "Get whether audio is enabled for this object");
 
     // ============================================================================
-    // Kinematics: 运动学/动画组件
-    // ============================================================================
-    nb::class_<Kinematics>(m, "Kinematics")
-        .def(nb::init<Geometry&>(), nb::arg("geometry"),
-             "Create a Kinematics component attached to a Geometry")
-        .def("set_animation", &Kinematics::set_animation, nb::arg("animation_index"),
-             "Set active animation by index")
-        .def("play_animation", &Kinematics::play_animation, nb::arg("speed") = 1.0f,
-             "Play the current animation at specified speed")
-        .def("stop_animation", &Kinematics::stop_animation,
-             "Stop the current animation")
-        .def("set_animation_enabled", &Kinematics::set_animation_enabled, nb::arg("enabled"),
-             "Enable or disable animation updates for this object")
-        .def("get_animation_enabled", &Kinematics::get_animation_enabled,
-             "Get whether animation is enabled for this object")
-        .def("get_animation_index", &Kinematics::get_animation_index,
-             "Get current animation index")
-        .def("get_current_time", &Kinematics::get_current_time,
-             "Get current animation time");
-
-    // ============================================================================
     // Actor: OOP 风格的实体类，支持多套组件配置（Profile）
     // ============================================================================
     nb::class_<Actor::Profile>(m, "ActorProfile")
@@ -213,7 +192,6 @@ void BindAll(nanobind::module_& m) {
         .def_rw("optics", &Actor::Profile::optics, "Optics component")
         .def_rw("acoustics", &Actor::Profile::acoustics, "Acoustics component")
         .def_rw("mechanics", &Actor::Profile::mechanics, "Mechanics component")
-        .def_rw("kinematics", &Actor::Profile::kinematics, "Kinematics component")
         .def_rw("geometry", &Actor::Profile::geometry, "Geometry anchor");
 
     nb::class_<Actor>(m, "Actor")

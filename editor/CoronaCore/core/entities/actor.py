@@ -69,7 +69,8 @@ class Actor:
         self.handle = self.engine_obj.get_handle()
         _handle_to_actor[self.handle] = self
 
-        self._enable_collision_callback = True  # 控制是否启用碰撞回调
+        self._enable_collision_callback = True  # 控制是否启用碰撞回调（Python 层回调开关）
+        self._collision_type = 'box'           # 碰撞检测类型：'none'（关闭）/ 'box'（包围盒）/ 'mesh'（网格）
         self._camera_locked_script = None  # CameraLockedObject 脚本引用
         if self.parent:
             self._setup_collision_callback()
@@ -208,8 +209,14 @@ class Actor:
     def set_model(self, route):
         self.model_path = route
         if not hasattr(self, '_geometry'):
+            old_collision_type = getattr(self, '_collision_type', 'box')
             self._geometry = Geometry(self.model_path)
             self._create_and_add_profile()
+            # 恢复碰撞状态，避免切换模型后开关重置
+            self.set_collision_enabled(old_collision_type)
+            # 重新设置碰撞回调（新的 mechanics 需要重新注册回调）
+            self._setup_collision_callback()
+            self._setup_on_move_callback()
         return True
 
     @auto_save
@@ -323,6 +330,21 @@ class Actor:
         if not hasattr(self, '_mechanics'):
             raise RuntimeError("当前 Actor 没有 Mechanics")
         return self._mechanics.get_damping()
+
+    def set_collision_enabled(self, collision_type: str):
+        """
+        设置碰撞检测类型。
+
+        Args:
+            collision_type: 'none'（关闭碰撞检测）, 'box'（包围盒碰撞）, 'mesh'（网格碰撞）
+        """
+        self._collision_type = collision_type
+        if hasattr(self, '_mechanics') and self._mechanics:
+            self._mechanics.set_collision_enabled(collision_type != 'none')
+
+    def get_collision_enabled(self) -> str:
+        """获取碰撞检测类型：'none', 'box', 'mesh'"""
+        return self._collision_type
 
     def _setup_collision_callback(self):
         """设置碰撞回调，使用类方法而非外部函数"""
@@ -440,7 +462,7 @@ class Actor:
             "type": ext.lstrip("."),
             "model": self.model_path,
             "actor_type": self.actor_type,
-            "collision": True,
+            "collision": self.get_collision_enabled(),
             "visible": self.get_visible(),
             "script": self.script_path
         }

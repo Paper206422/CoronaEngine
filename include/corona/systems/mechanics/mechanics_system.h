@@ -1,14 +1,22 @@
 #pragma once
 
 #include <corona/events/mechanics_system_events.h>
+#include <corona/events/scene_system_events.h>
 #include <corona/kernel/event/i_event_bus.h>
 #include <corona/kernel/event/i_event_stream.h>
 #include <corona/kernel/system/system_base.h>
+#include <corona/events/scene_system_events.h>
 
 #include <chrono>
 #include <memory>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace Corona::Systems {
+
+// 前向声明，避免每帧通过 ISystemContext::get_system() 获取
+class GeometrySystem;
 
 /**
  * @brief 力学系统 (Mechanics System)
@@ -64,6 +72,7 @@ class MechanicsSystem : public Kernel::SystemBase {
     void update_physics();
 
     Kernel::ISystemContext* m_ctx = nullptr;
+    GeometrySystem* m_geometry_sys = nullptr;  // 首次 update_physics() 时懒缓存，避免每帧加锁查询
     float m_time_accumulator{0.0f};
     std::chrono::steady_clock::time_point m_last_update_time{};
     bool m_first_update{true};

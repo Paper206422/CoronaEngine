@@ -16,7 +16,7 @@ namespace Corona::Spatial {
  * @brief 八叉树调参
  *
  * 该结构与 mechanics_system.cpp 中 file-local 实现的常量保持兼容，
- * 便于后续把物理系统的实现迁移到 SceneSystem 时无回归差异。
+ * 便于后续把物理系统的实现迁移到 GeometrySystem 时无回归差异。
  */
 struct OctreeConfig {
     int   max_depth            = 6;       ///< 最大递归深度
@@ -29,7 +29,7 @@ struct OctreeConfig {
  *
  * @tparam TPayload 叶节点存储的载荷类型，要求可拷贝/可移动且可比较（用于 dedupe）。
  *
- * 由 SceneSystem 在 update() 中独占重建（rebuild），其它系统只读查询。
+ * 由 GeometrySystem 在 update() 中独占重建（rebuild），其它系统只读查询。
  * 所有查询接口采用递归剪枝，节点 bounds 不相交时跳过整棵子树。
  */
 template <typename TPayload>
@@ -147,7 +147,7 @@ class Octree {
         return (idx_min == idx_max) ? idx_min : -1;
     }
 
-    void subdivide(Node* node) {
+    void subdivide(Node* node, int depth) {
         for (int i = 0; i < 8; ++i) {
             node->children[i] = std::make_unique<Node>();
             node->children[i]->bounds = child_bounds(node->bounds, i);
@@ -164,6 +164,17 @@ class Octree {
                 node->entries.push_back(e);
             }
         }
+        // 递归分裂：检查每个子节点是否需要继续分裂
+        for (int i = 0; i < 8; ++i) {
+            // 条件1：该子节点的条目数 >= 阈值（超容量了）
+            //        static_cast<int> 是把 size_t 转成 int，消除有符号/无符号比较的警告
+            // 条件2：深度还没到上限（还能往下分）
+            if (static_cast<int>(node->children[i]->entries.size()) >= cfg_.max_objects_per_leaf
+                && depth + 1 < cfg_.max_depth) {
+                // 对第 i 个子节点继续分裂，深度 +1
+                subdivide(node->children[i].get(), depth + 1);
+                }
+        }
     }
 
     void insert(Node* node, const Entry& entry, int depth) {
@@ -173,7 +184,7 @@ class Octree {
                 node->entries.push_back(entry);
                 return;
             }
-            subdivide(node);
+            subdivide(node,depth);
         }
 
         int idx = fits_in_one_octant(node->bounds, entry.bounds);
@@ -237,13 +248,74 @@ class Octree {
         }
     }
 
-    static void collect_all_entries(const Node* node, std::vector<const Entry*>& out) {
-        if (!node) return;
-        for (const auto& e : node->entries) out.push_back(&e);
-        for (const auto& child : node->children) {
-            if (child) collect_all_entries(child.get(), out);
+    static void query_straddle_in_subtree(const Entry& straddle, const Node* subtree,
+                                           std::vector<std::pair<TPayload, TPayload>>& out) {
+        if (!straddle.bounds.overlaps(subtree->bounds)) return;
+        for (const auto& e : subtree->entries) {
+            if (straddle.bounds.overlaps(e.bounds)) {
+                auto a = straddle.payload;
+                auto b = e.payload;
+                out.emplace_back(a < b ? a : b, a < b ? b : a);
+            }
+        }
+        if (subtree->is_leaf) return;
+        for (const auto& child : subtree->children) {
+            if (child) query_straddle_in_subtree(straddle, child.get(), out);
         }
     }
+
+    // ============================================================================
+    // compare_subtrees() —— 跨子树碰撞检测
+    // ============================================================================
+    //检查两棵子树的条目之间是否有 AABB 重叠。
+    static void compare_subtrees(const Node* a, const Node* b,
+                                  std::vector<std::pair<TPayload, TPayload>>& out) {
+        if (!a->bounds.overlaps(b->bounds)) return;
+
+        for (const auto& ea : a->entries) {
+            for (const auto& eb : b->entries) {
+                if (ea.bounds.overlaps(eb.bounds)) {
+                    auto pa = ea.payload;
+                    auto pb = eb.payload;
+                    out.emplace_back(pa < pb ? pa : pb, pa < pb ? pb : pa);
+                }
+            }
+        }
+        // A的跨面条目 vs B的深层子节点
+        for (const auto& ea : a->entries) {
+            for (const auto& cb : b->children) {
+                if (cb) query_straddle_in_subtree(ea, cb.get(), out);
+            }
+        }
+        // B的跨面条目 vs A的深层子节点
+        for (const auto& eb : b->entries) {
+            for (const auto& ca : a->children) {
+                if (ca) query_straddle_in_subtree(eb, ca.get(), out);
+            }
+        }
+        if (a->is_leaf && b->is_leaf) return;
+
+        if (!a->is_leaf && !b->is_leaf) {
+            for (const auto& ca : a->children) {
+                if (!ca) continue;
+                for (const auto& cb : b->children) {
+                    if (!cb) continue;
+                    compare_subtrees(ca.get(), cb.get(), out);
+                }
+            }
+        }
+        else if (!a->is_leaf) {
+            for (const auto& ca : a->children) {
+                if (ca) compare_subtrees(ca.get(), b, out);
+            }
+        }
+        else {
+            for (const auto& cb : b->children) {
+                if (cb) compare_subtrees(a, cb.get(), out);
+            }
+        }
+    }
+
 
     static void collect_pairs_impl(const Node* node,
                                    std::vector<std::pair<TPayload, TPayload>>& out) {
@@ -273,41 +345,22 @@ class Octree {
             }
         }
 
-        // 收集每个子树的所有条目
-        std::array<std::vector<const Entry*>, 8> child_entries;
-        for (int c = 0; c < 8; ++c) {
-            if (node->children[c]) {
-                collect_all_entries(node->children[c].get(), child_entries[c]);
-            }
-        }
-
         // 跨分割条目 vs 每个子树的条目
         for (const auto& straddle : node->entries) {
-            for (int c = 0; c < 8; ++c) {
-                for (const auto* e : child_entries[c]) {
-                    if (straddle.bounds.overlaps(e->bounds)) {
-                        auto a = straddle.payload;
-                        auto b = e->payload;
-                        out.emplace_back(a < b ? a : b, a < b ? b : a);
-                    }
+            for (const auto& child : node->children) {
+                if (child) {
+                    query_straddle_in_subtree(straddle, child.get(), out);
                 }
             }
         }
 
         // 不同子树条目之间的对（边界接触）
         for (int ci = 0; ci < 8; ++ci) {
-            if (child_entries[ci].empty()) continue;
+            if (!node->children[ci]) continue;  // 跳过不存在的子节点
             for (int cj = ci + 1; cj < 8; ++cj) {
-                if (child_entries[cj].empty()) continue;
-                for (const auto* ea : child_entries[ci]) {
-                    for (const auto* eb : child_entries[cj]) {
-                        if (ea->bounds.overlaps(eb->bounds)) {
-                            auto a = ea->payload;
-                            auto b = eb->payload;
-                            out.emplace_back(a < b ? a : b, a < b ? b : a);
-                        }
-                    }
-                }
+                if (!node->children[cj]) continue;  // 跳过不存在的子节点
+                // 递归比较两棵子树之间的碰撞对
+                compare_subtrees(node->children[ci].get(), node->children[cj].get(), out);
             }
         }
 

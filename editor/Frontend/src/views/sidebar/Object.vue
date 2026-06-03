@@ -539,6 +539,7 @@
                           type="radio"
                           value="none"
                           class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-[#84a65b]"
+                          @change="updateActorCollision"
                         />
                         <span>无</span>
                       </label>
@@ -548,6 +549,7 @@
                           type="radio"
                           value="box"
                           class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-[#84a65b]"
+                          @change="updateActorCollision"
                         />
                         <span>包围盒</span>
                       </label>
@@ -557,6 +559,7 @@
                           type="radio"
                           value="mesh"
                           class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-[#84a65b]"
+                          @change="updateActorCollision"
                         />
                         <span>网格</span>
                       </label>
@@ -987,6 +990,7 @@
                         type="radio"
                         value="none"
                         class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-[#84a65b]"
+                        @change="updateModelCollision"
                       />
                       <span>无</span>
                     </label>
@@ -996,6 +1000,7 @@
                         type="radio"
                         value="box"
                         class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-[#84a65b]"
+                        @change="updateModelCollision"
                       />
                       <span>包围盒</span>
                     </label>
@@ -1005,6 +1010,7 @@
                         type="radio"
                         value="mesh"
                         class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-[#84a65b]"
+                        @change="updateModelCollision"
                       />
                       <span>网格</span>
                     </label>
@@ -1907,6 +1913,23 @@ const updateActorMechanics = (operationType) => {
   });
 };
 
+// 更新单位碰撞类型
+const updateActorCollision = () => {
+  if (!currentActorFile.value || !actorData.value.parentScene) return;
+  debounced('actor_collision', async () => {
+    try {
+      await sceneService.actorOperation(
+        actorData.value.parentScene,
+        currentActorFile.value,
+        'SetCollision',
+        [actorData.value.collision.type]
+      );
+    } catch (e) {
+      logError('更新单位碰撞类型失败', e);
+    }
+  });
+};
+
 // 更新相机锁定
 const updateCameraLock = () => {
   if (!currentActorFile.value || !actorData.value.parentScene) return;
@@ -2042,6 +2065,23 @@ const updateModelMechanics = (operationType) => {
       );
     } catch (e) {
       logError('更新模型物理属性失败', e);
+    }
+  });
+};
+
+// 更新模型碰撞类型
+const updateModelCollision = () => {
+  if (!currentModelFile.value || !modelData.value.targetScene) return;
+  debounced('model_collision', async () => {
+    try {
+      await sceneService.actorOperation(
+        modelData.value.targetScene,
+        currentModelFile.value,
+        'SetCollision',
+        [modelData.value.collision.type]
+      );
+    } catch (e) {
+      logError('更新模型碰撞类型失败', e);
     }
   });
 };

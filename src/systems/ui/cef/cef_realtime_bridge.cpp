@@ -106,9 +106,6 @@ std::vector<std::uintptr_t> resolve_actor_geometry_handles(std::uintptr_t actor_
             if (auto acoustics = hub.acoustics_storage().try_acquire_read(profile->acoustics_handle)) {
                 append_geometry_handle(geometry_handles, acoustics->geometry_handle);
             }
-            if (auto kinematics = hub.kinematics_storage().try_acquire_read(profile->kinematics_handle)) {
-                append_geometry_handle(geometry_handles, kinematics->geometry_handle);
-            }
         }
     }
 

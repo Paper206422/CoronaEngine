@@ -68,11 +68,6 @@ struct GeometryDevice {
     std::vector<MeshDevice> mesh_handles;
 };
 
-struct KinematicsDevice {
-    std::uintptr_t geometry_handle{};
-    bool animation_enabled{true};
-};
-
 struct MechanicsDevice {
     std::uintptr_t geometry_handle{};
     ktm::fvec3 max_xyz;
@@ -133,7 +128,6 @@ struct ProfileDevice {
     std::uintptr_t optics_handle{};
     std::uintptr_t acoustics_handle{};
     std::uintptr_t mechanics_handle{};
-    std::uintptr_t kinematics_handle{};
     std::uintptr_t geometry_handle{};
 };
 
@@ -263,7 +257,6 @@ class SharedDataHub {
     using ModelResourceStorage = Kernel::Utils::Storage<ModelResource, 128, 2>;
     using ModelTransformStorage = Kernel::Utils::Storage<ModelTransform, 128, 2>;
     using GeometryStorage = Kernel::Utils::Storage<GeometryDevice, 128, 2>;
-    using KinematicsStorage = Kernel::Utils::Storage<KinematicsDevice, 128, 2>;
     using MechanicsStorage = Kernel::Utils::Storage<MechanicsDevice, 128, 2>;
     using AcousticsStorage = Kernel::Utils::Storage<AcousticsDevice, 128, 2>;
     using OpticsStorage = Kernel::Utils::Storage<OpticsDevice, 128, 2>;
@@ -283,9 +276,6 @@ class SharedDataHub {
 
     GeometryStorage& geometry_storage();
     const GeometryStorage& geometry_storage() const;
-
-    KinematicsStorage& kinematics_storage();
-    const KinematicsStorage& kinematics_storage() const;
 
     MechanicsStorage& mechanics_storage();
     const MechanicsStorage& mechanics_storage() const;
@@ -321,7 +311,6 @@ class SharedDataHub {
     ModelResourceStorage model_resource_storage_;
     GeometryStorage geometry_storage_;
     ModelTransformStorage model_transform_storage_;
-    KinematicsStorage kinematics_storage_;
     MechanicsStorage mechanics_storage_;
     OpticsStorage optics_storage_;
     AcousticsStorage acoustics_storage_;
