@@ -1200,7 +1200,6 @@ def tier1_place_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _apply_default_scale(items_to_place)
     _validate_positions(items_to_place, room_size)
     _resolve_tier_overlaps(items_to_place, asset_meta)
-    _dump_layout_result(state, 1, intermediate.get("tier1_retry_count", 0), items_to_place, is_retry)
 
     # 合并: 已锁定的 + 新布局的
     if is_retry:
@@ -1213,6 +1212,10 @@ def tier1_place_node(state: Dict[str, Any]) -> Dict[str, Any]:
     parsed = _run_place_scene(merged, state)
     if parsed is None:
         return {"error": "tier1 place_scene_from_items 失败"}
+
+    # debug dump (必须在 _run_place_scene 之后, scene_json_path 可用)
+    state["intermediate"]["scene_json_path"] = parsed["scene_path"]
+    _dump_layout_result(state, 1, intermediate.get("tier1_retry_count", 0), items_to_place, is_retry)
 
     scene_json_path = parsed["scene_path"]
     actors = parsed.get("actors", [])
