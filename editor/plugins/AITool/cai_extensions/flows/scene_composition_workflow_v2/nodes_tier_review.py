@@ -25,7 +25,7 @@ from ..scene_composition_workflow.helpers import get_tool, parse_review_result
 logger = logging.getLogger(__name__)
 
 MAX_TIER_RETRIES = 2
-_DEFAULT_VIEW_ANGLES = [0, 45, 90, 135, 180, 225, 270, 315]
+_DEFAULT_VIEW_ANGLES = [0, 90, 180, 270]  # 4 角度, 缓解引擎截图卡顿
 _DEFAULT_ELEVATION = 35.0
 
 # VLM issue → solver action 映射 (Week 2: 执行逻辑待接入 solver)
@@ -547,7 +547,7 @@ def _tier_review(state: Dict[str, Any], tier: int) -> Dict[str, Any]:
         raw = review_tool.invoke({
             "output_dir": screenshot_dir,
             "scene_description": scene_desc,
-            "max_images": 8,
+            "max_images": 4,
         })
         parsed = parse_review_result(raw)
     except Exception as e:
