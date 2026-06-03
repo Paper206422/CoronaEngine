@@ -320,7 +320,7 @@ def _call_llm(
 
     def _do_call():
         from Quasar.ai_models.base_pool.registry import get_chat_model
-        kwargs = {"temperature": 0.3, "request_timeout": 60.0}
+        kwargs = {"temperature": 0.3, "request_timeout": 120.0}
         if model_name:
             kwargs["model_name"] = model_name
         llm = get_chat_model(**kwargs)
@@ -972,6 +972,37 @@ def _dump_llm_debug(state, tier, retry_count, sys_prompt, user_prompt, llm_outpu
         logger.warning("llm_debug: dump failed: %s", e)
 
 
+def _dump_raw_llm_output(state, tier, retry_count, raw_text, is_retry):
+    """将 LLM 原始输出文本写入 debug JSON (用于诊断输出格式: 语义关系 vs 坐标)。"""
+    import json as _json
+    from pathlib import Path as _Path
+    from datetime import datetime as _dt
+
+    metadata = state.get("metadata", {})
+    scene_name = metadata.get("scene_name", "test_scene")
+    # 使用和 _dump_review_debug 相同的 output 目录
+    output_dir = metadata.get("output_dir", "")
+    if output_dir and not output_dir.endswith("Scene"):
+        output_dir = str(_Path(output_dir) / "Scene")
+    if not output_dir:
+        return
+    dump_dir = _Path(output_dir)
+    label = "retry" if is_retry else "initial"
+    dump_path = dump_dir / f"llm_raw_t{tier}_{label}.json"
+    try:
+        debug = {
+            "timestamp": _dt.now().isoformat(),
+            "tier": tier,
+            "phase": label,
+            "retry_count": retry_count,
+            "raw_text": raw_text[:8000],
+        }
+        dump_path.write_text(_json.dumps(debug, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("llm_raw: dumped tier%d_%s → %s", tier, label, dump_path)
+    except Exception as e:
+        logger.warning("llm_raw: dump failed: %s", e)
+
+
 def _dump_layout_result(state, tier, retry_count, items, is_retry):
     """将 LLM 输出的坐标写入 debug JSON。"""
     import json as _json
@@ -1030,7 +1061,7 @@ def _place_with_absolute_coords(
         room_h=room_size[2] if len(room_size) > 2 else 3,
     )
 
-    text = _call_llm(TIER3_PLACE_PROMPT, user_prompt, timeout=60.0)
+    text = _call_llm(TIER3_PLACE_PROMPT, user_prompt, timeout=120.0)
     if text is None:
         return {"error": f"tier{tier} 回退绝对坐标 LLM 调用失败"}
 
@@ -1096,7 +1127,7 @@ def _place_fallback_absolute(
 [{{"object_id": "...", "pos": [x,y,z], "rot": [rx,ry,rz], "scale": [sx,sy,sz], "reason": "..."}}]"""
 
     fallback_sys = "你是室内设计师。为物体生成绝对坐标。只输出 JSON 数组，不要其他文字。"
-    text = _call_llm(fallback_sys, prompt, timeout=60.0)
+    text = _call_llm(fallback_sys, prompt, timeout=120.0)
     if text is None:
         return None
 
@@ -1188,6 +1219,9 @@ def tier1_place_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if relations is None:
         return {"error": "tier1 LLM 输出解析失败"}
 
+    # 保存原始 LLM 输出文本, 稍后 dump
+    _llm_raw_text = text
+
     asset_meta = intermediate.get("asset_metadata", {})
     if is_retry:
         # retry: LLM 输出坐标, 直接应用 (后续会被 corrections 机制替换)
@@ -1216,6 +1250,7 @@ def tier1_place_node(state: Dict[str, Any]) -> Dict[str, Any]:
     # debug dump (必须在 _run_place_scene 之后, scene_json_path 可用)
     state["intermediate"]["scene_json_path"] = parsed["scene_path"]
     _dump_layout_result(state, 1, intermediate.get("tier1_retry_count", 0), items_to_place, is_retry)
+    _dump_raw_llm_output(state, 1, intermediate.get("tier1_retry_count", 0), _llm_raw_text, is_retry)
 
     scene_json_path = parsed["scene_path"]
     actors = parsed.get("actors", [])
@@ -1294,7 +1329,7 @@ def tier2_place_node(state: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     sys_prompt2 = TIER2_RETRY_PROMPT if is_retry else TIER2_PLACE_PROMPT
-    text = _call_llm(sys_prompt2, user_prompt, timeout=60.0)
+    text = _call_llm(sys_prompt2, user_prompt, timeout=120.0)
     if is_retry and text:
         _dump_llm_debug(state, 2, intermediate.get("tier2_retry_count", 0), sys_prompt2, user_prompt, text)
     if text is None:
@@ -1442,7 +1477,7 @@ def tier3_place_node(state: Dict[str, Any]) -> Dict[str, Any]:
         items_to_place = tier3_items
 
     sys_prompt3 = TIER3_RETRY_PROMPT if is_retry else TIER3_PLACE_PROMPT
-    text = _call_llm(sys_prompt3, user_prompt, timeout=60.0)
+    text = _call_llm(sys_prompt3, user_prompt, timeout=120.0)
     if is_retry and text:
         _dump_llm_debug(state, 3, intermediate.get("tier3_retry_count", 0), sys_prompt3, user_prompt, text)
     if text is None:
