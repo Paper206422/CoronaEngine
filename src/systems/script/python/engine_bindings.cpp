@@ -259,8 +259,12 @@ void BindAll(nanobind::module_& m) {
         .def(nb::init<>(), "Create an Environment")
         .def("set_sun_direction", &Environment::set_sun_direction, nb::arg("direction"),
              "Set sun light direction [x, y, z]")
+        .def("get_sun_direction", &Environment::get_sun_direction,
+             "Get sun light direction [x, y, z]")
         .def("set_floor_grid", &Environment::set_floor_grid, nb::arg("enabled"),
              "Enable or disable floor grid rendering")
+        .def("get_floor_grid", &Environment::get_floor_grid,
+             "Get floor grid rendering state")
         .def("set_gravity", &Environment::set_gravity, nb::arg("gravity"),
              "Set gravity vector [x, y, z]")
         .def("get_gravity", &Environment::get_gravity,

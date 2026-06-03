@@ -381,6 +381,14 @@ void Corona::API::Environment::set_sun_direction(const std::array<float, 3>& dir
     }
 }
 
+std::array<float, 3> Corona::API::Environment::get_sun_direction() const {
+    if (handle_ == 0) return {1.0f, 1.0f, 1.0f};
+    if (auto accessor = SharedDataHub::instance().environment_storage().try_acquire_read(handle_)) {
+        return {accessor->sun_position.x, accessor->sun_position.y, accessor->sun_position.z};
+    }
+    return {1.0f, 1.0f, 1.0f};
+}
+
 void Corona::API::Environment::set_floor_grid(bool enabled) const {
     if (handle_ == 0) {
         CFW_LOG_WARNING("[Environment::set_floor_grid] Invalid environment handle");
@@ -392,6 +400,14 @@ void Corona::API::Environment::set_floor_grid(bool enabled) const {
     } else {
         CFW_LOG_ERROR("[Environment::set_floor_grid] Failed to acquire write access to environment storage");
     }
+}
+
+bool Corona::API::Environment::get_floor_grid() const {
+    if (handle_ == 0) return true;
+    if (auto accessor = SharedDataHub::instance().environment_storage().try_acquire_read(handle_)) {
+        return accessor->floor_grid_enabled;
+    }
+    return true;
 }
 
 std::uintptr_t Corona::API::Environment::get_handle() const {
