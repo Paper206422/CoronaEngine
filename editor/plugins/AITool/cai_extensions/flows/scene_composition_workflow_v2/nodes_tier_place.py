@@ -978,15 +978,11 @@ def _dump_raw_llm_output(state, tier, retry_count, raw_text, is_retry):
     from pathlib import Path as _Path
     from datetime import datetime as _dt
 
-    metadata = state.get("metadata", {})
-    scene_name = metadata.get("scene_name", "test_scene")
-    # 使用和 _dump_review_debug 相同的 output 目录
-    output_dir = metadata.get("output_dir", "")
-    if output_dir and not output_dir.endswith("Scene"):
-        output_dir = str(_Path(output_dir) / "Scene")
-    if not output_dir:
+    intermediate = state.get("intermediate", {})
+    scene_path = intermediate.get("scene_json_path", "")
+    if not scene_path:
         return
-    dump_dir = _Path(output_dir)
+    dump_dir = _Path(scene_path).parent
     label = "retry" if is_retry else "initial"
     dump_path = dump_dir / f"llm_raw_t{tier}_{label}.json"
     try:
