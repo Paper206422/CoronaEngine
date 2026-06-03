@@ -18,6 +18,9 @@ layout(push_constant) uniform PushConsts
     uint materialTableBufferIndex;
     uint vpBufferIndex;
     uint outputImageIndex;
+    uint actorPickEnabled;
+    uvec2 actorPickPixel;
+    uint actorPickImageIndex;
     uint debugMode;         // 0=BaseColor, 1=Normal, 2=WorldPosition, 3=ObjectID, 4=VisibilityBuffer
 } pushConsts;
 
@@ -207,6 +210,13 @@ void main()
     uvec4 vis = imageLoad(imagesRGBA32UI[pushConsts.visibilityImageIndex], pixel);
     uint instanceID_1based = vis.r;
     uint primitiveID = vis.g;
+
+    if (pushConsts.actorPickEnabled != 0u &&
+        uvec2(gl_GlobalInvocationID.xy) == pushConsts.actorPickPixel)
+    {
+        imageStore(imagesRGBA32UI[pushConsts.actorPickImageIndex], ivec2(0, 0),
+                   uvec4(instanceID_1based, 0u, 0u, 0u));
+    }
 
     // --- VisibilityBuffer mode: raw pseudo-color without full decode ---
     if (pushConsts.debugMode == 4u)

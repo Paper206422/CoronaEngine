@@ -17,7 +17,6 @@ using uint = uint32_t;
 #include GLSL(../../../assets/shaders/sky.comp.glsl)
 #include GLSL(../../../assets/shaders/tonemap.comp.glsl)
 #include GLSL(../../../assets/shaders/debug_resolve.comp.glsl)
-#include GLSL(../../../assets/shaders/actor_pick.comp.glsl)
 // clang-format on
 
 struct Hardware {
@@ -27,6 +26,8 @@ struct Hardware {
 
     // === Final composited output ===
     HardwareImage finalOutputImage;
+    HardwareImage actorPickImage;  // 1x1 RGBA32_UINT: R=visibility instanceID
+    HardwareBuffer actorPickReadbackBuffer;
     HardwareExecutor executor;
 
     // === Uniform buffers ===
@@ -36,7 +37,6 @@ struct Hardware {
     // === Instance & Material tables (uploaded per frame) ===
     HardwareBuffer instanceInfoBuffer;
     HardwareBuffer materialTableBuffer;
-    HardwareBuffer actorPickBuffer;
 
     // === Shader pipelines ===
     bool shaderHasInit = false;
@@ -45,7 +45,6 @@ struct Hardware {
     std::optional<ComputePipeline<sky_comp_glsl>> skyPipeline;
     std::optional<ComputePipeline<tonemap_comp_glsl>> tonemapPipeline;
     std::optional<ComputePipeline<debug_resolve_comp_glsl>> debugResolvePipeline;
-    std::optional<ComputePipeline<actor_pick_comp_glsl>> actorPickPipeline;
 
     // === CPU-side uniform data ===
     struct UniformBufferObject {

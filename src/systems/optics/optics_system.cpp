@@ -166,8 +166,9 @@ bool OpticsSystem::initialize_hardware_resources() {
         hardware_->materialTableBuffer = HardwareBuffer(
             kMaxMaterials * static_cast<uint32_t>(sizeof(Hardware::MaterialInfo)),
             BufferUsage::StorageBuffer);
-        hardware_->actorPickBuffer = HardwareBuffer(sizeof(std::uint32_t), BufferUsage::StorageBuffer);
 
+        hardware_->actorPickImage = HardwareImage(1, 1, ImageFormat::RGBA32_UINT, ImageUsage::StorageImage);
+        hardware_->actorPickReadbackBuffer = HardwareBuffer(4 * sizeof(uint32_t), BufferUsage::StorageBuffer);
         hardware_->finalOutputImage = HardwareImage(w, h, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
     } catch (const std::exception&) {
         CFW_LOG_CRITICAL("OpticsSystem: Failed to initialize hardware resources");
@@ -184,7 +185,6 @@ bool OpticsSystem::initialize_render_pipelines() {
         hardware_->skyPipeline.emplace();
         hardware_->tonemapPipeline.emplace();
         hardware_->debugResolvePipeline.emplace();
-        hardware_->actorPickPipeline.emplace();
         hardware_->shaderHasInit = true;
         CFW_LOG_INFO(
             "OpticsSystem: VBuffer pipelines created successfully "
@@ -237,6 +237,17 @@ bool OpticsSystem::initialize(Kernel::ISystemContext* ctx) {
                 (void)event;
                 CFW_LOG_WARNING("OpticsSystem: Backend switch ignored (CORONA_ENABLE_VISION not defined)");
 #endif
+            });
+        actor_pick_request_sub_id_ = event_bus->subscribe<Events::ActorPickRequestEvent>(
+            [this](const Events::ActorPickRequestEvent& event) {
+                if (event.camera_handle == 0) {
+                    if (event.completion_promise) {
+                        event.completion_promise->set_value({0, 0});
+                    }
+                    return;
+                }
+                std::lock_guard<std::mutex> lock(actor_pick_mutex_);
+                pending_actor_picks_.push_back(event);
             });
     }
 
@@ -523,6 +534,21 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                                                    ? offscreen_image_
                                                    : hardware_->finalOutputImage;
                 const uint32_t finalOutputDescriptor = render_target.storeDescriptor();
+                Events::ActorPickRequestEvent actor_pick_request{};
+                bool actor_pick_enabled = take_pending_actor_pick(cam_handle, actor_pick_request);
+                if (actor_pick_enabled &&
+                    (actor_pick_request.x < 0 || actor_pick_request.y < 0 ||
+                     static_cast<uint32_t>(actor_pick_request.x) >= hardware_->gbufferSize.x ||
+                     static_cast<uint32_t>(actor_pick_request.y) >= hardware_->gbufferSize.y)) {
+                    if (actor_pick_request.completion_promise) {
+                        actor_pick_request.completion_promise->set_value({0, 0});
+                    }
+                    actor_pick_enabled = false;
+                }
+                const uint32_t actorPickEnabled = actor_pick_enabled ? 1u : 0u;
+                const uint32_t actorPickImageDescriptor = actorPickEnabled
+                                                              ? hardware_->actorPickImage.storeDescriptor()
+                                                              : 0u;
 
                 // ================================================================
                 // 5. Lighting pass: VBuffer decode + PBR direct illumination
@@ -539,6 +565,13 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                     hardware_->vpUniformBuffer.storeDescriptor();
                 lighting.pushConsts.finalOutputImage = finalOutputDescriptor;
                 lighting.pushConsts.uniformBufferIndex = uboDescriptor;
+                lighting.pushConsts.actorPickEnabled = actorPickEnabled;
+                lighting.pushConsts.actorPickPixel = actor_pick_enabled
+                                                         ? ktm::uvec2{
+                                                               static_cast<uint32_t>(actor_pick_request.x),
+                                                               static_cast<uint32_t>(actor_pick_request.y)}
+                                                         : ktm::uvec2{0u, 0u};
+                lighting.pushConsts.actorPickImageIndex = actorPickImageDescriptor;
                 lighting.pushConsts.sun_dir = sun_dir;
                 {
                     ktm::fvec3 lightColor;
@@ -582,16 +615,6 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                 const uint32_t dispatchY = hardware_->gbufferSize.y / 8;
 
                 const bool is_debug_mode = camera->output_mode != CameraOutputMode::FinalColor;
-                const auto actor_pick_request = take_pending_actor_pick(cam_handle);
-
-                if (actor_pick_request) {
-                    auto& actorPick = *hardware_->actorPickPipeline;
-                    actorPick.pushConsts.pixel = ktm::uvec2{actor_pick_request->x, actor_pick_request->y};
-                    actorPick.pushConsts.visibilityImageIndex =
-                        hardware_->visibilityImage.storeDescriptor();
-                    actorPick.pushConsts.outputBufferIndex =
-                        hardware_->actorPickBuffer.storeDescriptor();
-                }
 
                 if (is_debug_mode) {
                     // ============================================================
@@ -610,6 +633,13 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                     debugResolve.pushConsts.vpBufferIndex =
                         hardware_->vpUniformBuffer.storeDescriptor();
                     debugResolve.pushConsts.outputImageIndex = finalOutputDescriptor;
+                    debugResolve.pushConsts.actorPickEnabled = actorPickEnabled;
+                    debugResolve.pushConsts.actorPickPixel = actor_pick_enabled
+                                                                 ? ktm::uvec2{
+                                                                       static_cast<uint32_t>(actor_pick_request.x),
+                                                                       static_cast<uint32_t>(actor_pick_request.y)}
+                                                                 : ktm::uvec2{0u, 0u};
+                    debugResolve.pushConsts.actorPickImageIndex = actorPickImageDescriptor;
 
                     // Map CameraOutputMode to debugMode uint
                     uint32_t debugMode = 0;
@@ -647,14 +677,10 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                                         << tonemap(dispatchX, dispatchY, 1);
                 }
 
-                if (actor_pick_request) {
-                    hardware_->executor << (*hardware_->actorPickPipeline)(1, 1, 1);
-                }
-
                 hardware_->executor << hardware_->executor.commit();
 
-                if (actor_pick_request) {
-                    complete_actor_pick(*actor_pick_request);
+                if (actor_pick_enabled) {
+                    complete_actor_pick(actor_pick_request);
                 }
 
                 if (image_handle_ != 0) {
@@ -705,44 +731,37 @@ float half_to_float(uint16_t h) {
 
 }  // namespace
 
-std::optional<OpticsSystem::ActorPickRequest> OpticsSystem::take_pending_actor_pick(std::uintptr_t camera_handle) {
-    std::uintptr_t pick_handle = 0;
-    if (auto camera = SharedDataHub::instance().camera_storage().try_acquire_read(camera_handle)) {
-        pick_handle = camera->actor_pick_handle;
-    }
-    if (pick_handle == 0) {
-        return std::nullopt;
-    }
+bool OpticsSystem::take_pending_actor_pick(std::uintptr_t camera_handle,
+                                           Events::ActorPickRequestEvent& request) {
+    std::lock_guard<std::mutex> lock(actor_pick_mutex_);
+    for (auto it = pending_actor_picks_.begin(); it != pending_actor_picks_.end(); ++it) {
+        if (it->camera_handle != camera_handle) {
+            continue;
+        }
 
-    auto pick = SharedDataHub::instance().actor_pick_storage().try_acquire_write(pick_handle);
-    if (!pick || !pick->pending) {
-        return std::nullopt;
+        request = std::move(*it);
+        pending_actor_picks_.erase(it);
+        return true;
     }
-
-    ActorPickRequest request;
-    request.pick_handle = pick_handle;
-    request.x = pick->x;
-    request.y = pick->y;
-    pick->pending = false;
-
-    if (request.x >= hardware_->gbufferSize.x || request.y >= hardware_->gbufferSize.y) {
-        pick->actor_handle = 0;
-        pick->result_x = request.x;
-        pick->result_y = request.y;
-        pick->result_ready = true;
-        return std::nullopt;
-    }
-
-    pick->result_ready = false;
-    return request;
+    return false;
 }
 
-void OpticsSystem::complete_actor_pick(const ActorPickRequest& request) {
-    std::uint32_t instance_id = 0;
-    if (!hardware_->actorPickBuffer.copyToData(&instance_id, sizeof(instance_id))) {
-        CFW_LOG_ERROR("OpticsSystem: Failed to read actor pick result from GPU");
+void OpticsSystem::complete_actor_pick(const Events::ActorPickRequestEvent& request) {
+    if (!request.completion_promise) {
+        return;
     }
 
+    hardware_->executor << hardware_->actorPickImage.copyTo(hardware_->actorPickReadbackBuffer)
+                        << hardware_->executor.commit();
+
+    uint32_t pick_data[4]{};
+    if (!hardware_->actorPickReadbackBuffer.copyToData(pick_data, sizeof(pick_data))) {
+        CFW_LOG_ERROR("OpticsSystem: Failed to read actor pick result from GPU");
+        request.completion_promise->set_value({0, 0});
+        return;
+    }
+
+    const uint32_t instance_id = pick_data[0];
     std::uintptr_t actor_handle = 0;
     if (instance_id > 0) {
         const auto instance_index = static_cast<std::size_t>(instance_id - 1);
@@ -751,12 +770,12 @@ void OpticsSystem::complete_actor_pick(const ActorPickRequest& request) {
         }
     }
 
-    if (auto pick = SharedDataHub::instance().actor_pick_storage().try_acquire_write(request.pick_handle)) {
-        pick->actor_handle = actor_handle;
-        pick->result_x = request.x;
-        pick->result_y = request.y;
-        pick->result_ready = true;
+    if (actor_handle != 0 &&
+        !SharedDataHub::instance().actor_storage().acquire_read(actor_handle)) {
+        actor_handle = 0;
     }
+
+    request.completion_promise->set_value({actor_handle, actor_handle});
 }
 
 void OpticsSystem::process_pending_screenshots(std::uintptr_t camera_handle, HardwareImage& render_target) {
@@ -847,6 +866,19 @@ void OpticsSystem::shutdown() {
         if (backend_switch_sub_id_ != 0) {
             event_bus->unsubscribe(backend_switch_sub_id_);
         }
+        if (actor_pick_request_sub_id_ != 0) {
+            event_bus->unsubscribe(actor_pick_request_sub_id_);
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(actor_pick_mutex_);
+        for (const auto& request : pending_actor_picks_) {
+            if (request.completion_promise) {
+                request.completion_promise->set_value({0, 0});
+            }
+        }
+        pending_actor_picks_.clear();
     }
 
     if (image_handle_ != 0) {

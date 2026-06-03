@@ -243,7 +243,8 @@ void BindAll(nanobind::module_& m) {
         .def("remove_image_effects", &Camera::remove_image_effects, "Remove image effects from this camera")
         .def("set_size", &Camera::set_size, nb::arg("width"), nb::arg("height"), "Set camera render dimensions")
         .def("set_viewport_rect", &Camera::set_viewport_rect, nb::arg("x"), nb::arg("y"), nb::arg("width"), nb::arg("height"), "Set viewport rectangle")
-        .def("pick_actor_at_pixel", &Camera::pick_actor_at_pixel, nb::arg("x"), nb::arg("y"), "Pick actor at pixel coordinates");
+        .def("pick_actor_at_pixel", &Camera::pick_actor_at_pixel, nb::arg("x"), nb::arg("y"),
+             "Pick actor at pixel coordinates. Returns (actor_handle, actor_id).");
 
     // ============================================================================
     // ImageEffects: 图像效果类

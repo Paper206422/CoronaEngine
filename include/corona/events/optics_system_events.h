@@ -2,6 +2,7 @@
 
 #include <corona/kernel/utils/storage.h>
 
+#include <array>
 #include <future>
 #include <memory>
 #include <string>
@@ -55,6 +56,16 @@ struct ScreenshotRequestEvent {
  */
 struct RenderBackendSwitchEvent {
     int backend = 0;
+};
+
+/**
+ * @brief Actor picking request (published by Camera API, consumed by OpticsSystem)
+ */
+struct ActorPickRequestEvent {
+    std::uintptr_t camera_handle = 0;
+    int x = 0;
+    int y = 0;
+    std::shared_ptr<std::promise<std::array<std::uintptr_t, 2>>> completion_promise;
 };
 
 }  // namespace Corona::Events

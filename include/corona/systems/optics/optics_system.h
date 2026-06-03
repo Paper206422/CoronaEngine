@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -103,13 +102,8 @@ class OpticsSystem : public Kernel::SystemBase {
     /// 去抖检测：若签名变化则触发（延迟）重建，覆盖导入/导出/参数调整等动态操作。
     void sync_vision_dynamic_scene();
 #endif  // CORONA_ENABLE_VISION
-    struct ActorPickRequest {
-        std::uintptr_t pick_handle{0};
-        std::uint32_t x{0};
-        std::uint32_t y{0};
-    };
-    std::optional<ActorPickRequest> take_pending_actor_pick(std::uintptr_t camera_handle);
-    void complete_actor_pick(const ActorPickRequest& request);
+    bool take_pending_actor_pick(std::uintptr_t camera_handle, Events::ActorPickRequestEvent& request);
+    void complete_actor_pick(const Events::ActorPickRequestEvent& request);
 
     std::unique_ptr<Hardware> hardware_;
     std::uintptr_t image_handle_{};
@@ -167,6 +161,10 @@ class OpticsSystem : public Kernel::SystemBase {
     std::mutex screenshot_mutex_;
     Kernel::EventId screenshot_request_sub_id_ = 0;
     Kernel::EventId backend_switch_sub_id_ = 0;
+
+    std::vector<Events::ActorPickRequestEvent> pending_actor_picks_;
+    std::mutex actor_pick_mutex_;
+    Kernel::EventId actor_pick_request_sub_id_ = 0;
 };
 
 }  // namespace Corona::Systems

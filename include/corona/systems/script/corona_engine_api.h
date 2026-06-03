@@ -251,7 +251,7 @@ class Camera {
 
     void set_size(int width, int height);
     void set_viewport_rect(int x, int y, int width, int height);
-    [[nodiscard]] std::uintptr_t pick_actor_at_pixel(int x, int y) const;
+    [[nodiscard]] std::array<std::uintptr_t, 2> pick_actor_at_pixel(int x, int y) const;
 
    private:
     friend class Scene;

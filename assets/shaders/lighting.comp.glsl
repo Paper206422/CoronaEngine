@@ -19,7 +19,9 @@ layout(push_constant) uniform PushConsts
     uint vpBufferIndex;
     uint finalOutputImage;
     uint uniformBufferIndex;
-    uint padding0;
+    uint actorPickEnabled;
+    uvec2 actorPickPixel;
+    uint actorPickImageIndex;
     vec3 lightColor;
     float ambientIntensity;
     vec3 sun_dir;
@@ -325,6 +327,18 @@ void main()
 
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
 
+    // --- Read visibility buffer ---
+    uvec4 vis = imageLoad(imagesRGBA32UI[pushConsts.visibilityImageIndex], pixel);
+    uint instanceID_1based = vis.r;
+    uint primitiveID = vis.g;
+
+    if (pushConsts.actorPickEnabled != 0u &&
+        uvec2(gl_GlobalInvocationID.xy) == pushConsts.actorPickPixel)
+    {
+        imageStore(imagesRGBA32UI[pushConsts.actorPickImageIndex], ivec2(0, 0),
+                   uvec4(instanceID_1based, 0u, 0u, 0u));
+    }
+
     // --- Read depth: skip background pixels ---
     vec2 screenUV = vec2(float(pixel.x) / float(pushConsts.gbufferSize.x),
                          float(pixel.y) / float(pushConsts.gbufferSize.y));
@@ -335,11 +349,6 @@ void main()
         imageStore(imagesRGBA16[pushConsts.finalOutputImage], pixel, vec4(0.0));
         return;
     }
-
-    // --- Read visibility buffer ---
-    uvec4 vis = imageLoad(imagesRGBA32UI[pushConsts.visibilityImageIndex], pixel);
-    uint instanceID_1based = vis.r;
-    uint primitiveID = vis.g;
 
     if (instanceID_1based == 0u)
     {

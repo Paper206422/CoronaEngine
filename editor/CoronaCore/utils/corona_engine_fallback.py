@@ -315,7 +315,7 @@ class Camera:
 
     def pick_actor_at_pixel(self, x: int, y: int):
         print(f"[Fallback][Camera.pick_actor_at_pixel] x={x}, y={y}")
-        return 0
+        return (0, 0)
 
 
 class ImageEffects:
