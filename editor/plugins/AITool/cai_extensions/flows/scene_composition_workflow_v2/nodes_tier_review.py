@@ -600,6 +600,7 @@ def _tier_review(state: Dict[str, Any], tier: int) -> Dict[str, Any]:
     # 4a. 优先 VLM corrections: 直接设置坐标, 不再删除+重导入
     room_size = state.get("metadata", {}).get("room_size", [5, 3, 3])
     corrections_raw = parsed.get("corrections", []) or []
+    corrections_from_vlm = bool(corrections_raw)  # VLM 直接输出的 correction
     corrections_applied = 0
 
     # VLM 未输出 corrections 但有问题反馈时, 用文本 LLM 生成 corrections
@@ -614,12 +615,19 @@ def _tier_review(state: Dict[str, Any], tier: int) -> Dict[str, Any]:
         )
         if corrections_raw:
             parsed["corrections"] = corrections_raw
+            corrections_from_vlm = False  # 文本 LLM 生成, 非 VLM 直接输出
 
     if corrections_raw and overall != "PASS":
         corrections_applied = _apply_corrections(state, tier, corrections_raw, room_size)
         if corrections_applied > 0:
-            logger.info("tier%d_review: corrections 成功 %d 个, 跳过 retry", tier, corrections_applied)
-            overall = "PASS"  # 修正成功 → 视为通过
+            if corrections_from_vlm:
+                # VLM 有视觉, 直接修正可信 → 跳过 retry
+                logger.info("tier%d_review: VLM corrections 成功 %d 个, 跳过 retry", tier, corrections_applied)
+                overall = "PASS"
+            else:
+                # 文本 LLM 猜坐标不可靠 → 仍执行 semantic retry
+                logger.info("tier%d_review: text LLM corrections 应用 %d 个 (位置可能不准), 仍执行 retry", tier, corrections_applied)
+                # overall 保持 NEEDS_IMPROVEMENT → retry 触发 → solver 算正确位置
 
     if overall in ("PASS", "SKIPPED", "ERROR") or exceeded:
         decision = "pass"

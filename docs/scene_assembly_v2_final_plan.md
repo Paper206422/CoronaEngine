@@ -244,10 +244,11 @@ def apply_corrections(review_result, scene):
 
 | 问题 | 原因 | 修复 |
 |------|------|------|
-| **Retry 退化到 Z=-1.0** | merge 用 tier1_items (无 pos) 而非 locked_actors (有 pos) | ✅ 已修复 |
-| **Tier3 不执行** | retry 卡住导致 chain 断裂 | 待 retry 修复后验证 |
+| **Retry 退化到 Z=-1.0** | merge 用 tier1_items (无 pos) | ✅ merge 已修复 |
+| **Corrections 猜错坐标** | 文本 LLM 猜位置不可靠但跳过 retry | ✅ text LLM corrections 不再跳过 retry |
+| **Tier3 不执行** | retry 卡住导致 chain 断裂 | ✅ 三层已跑通 (12:36 session) |
 | **截图偶发中断** | 引擎线程修复后连续截图不稳定 | 8→4 角度缓解 |
-| **评分 62-68 < 目标 75** | 布局 X 分散不够，retry 未改善 | 待 retry 修复后重评 |
+| **评分 62-68 < 目标 75** | 布局 X 分散不够 + corrections 猜错位置 | 待 retry 修复后重评 |
 
 ### ⚠️ 中期待办
 
