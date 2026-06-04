@@ -43,14 +43,29 @@ class SceneTools(PluginBase):
 
     @staticmethod
     def remove_actor(scene_name: str, actor_name: str) -> dict:
-        """从场景移除 Actor"""
-        scene = scene_manager.get(scene_name)
-        actor = scene.find_actor(actor_name)
-        if actor is None:
-            raise ValueError(f"Actor '{actor_name}' not found")
-        scene.remove_actor(actor)
-        logger.info("Actor %s removed from %s", actor_name, scene_name)
-        return {"scene": scene_name, "actor": actor_name}
+        """从场景移除 Actor
+
+        B-1 修复:不再 raise ValueError,改为返回 error dict
+        与同模块其他方法(focus_actor / camera_move 等)保持一致,
+        前端可统一通过 success===false / status==='error' 判定失败。
+        """
+        try:
+            scene = scene_manager.get(scene_name)
+            if scene is None:
+                return {"status": "error",
+                        "message": f"Scene '{scene_name}' not found",
+                        "code": "scene_not_found"}
+            actor = scene.find_actor(actor_name)
+            if actor is None:
+                return {"status": "error",
+                        "message": f"Actor '{actor_name}' not found",
+                        "code": "actor_not_found"}
+            scene.remove_actor(actor)
+            logger.info("Actor %s removed from %s", actor_name, scene_name)
+            return {"status": "success", "scene": scene_name, "actor": actor_name}
+        except Exception as exc:
+            logger.exception("remove_actor 失败")
+            return {"status": "error", "message": str(exc), "code": "internal_error"}
 
     @staticmethod
     def camera_move(scene_name, position=None, forward=None, up=None, fov: float = None) -> dict:
