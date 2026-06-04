@@ -10,6 +10,12 @@ logger = logging.getLogger(__name__)
 class LogTool(PluginBase):
     ready = False
 
+    @staticmethod
+    def log_from_js(message: str):
+        """从 JavaScript 接收日志消息并写入 Python 日志"""
+        logger.info(message)
+        return {"status": "ok"}
+
     @classmethod
     def show_log(cls):
         if cls.ready:

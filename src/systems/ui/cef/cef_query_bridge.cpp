@@ -219,10 +219,10 @@ bool BrowserSideJSHandler::OnQuery(CefRefPtr<CefBrowser> browser,
 
             callback->Failure(1, "Unknown __cross_tab__ function: " + func);
             return true;
+            }
+        } catch (const nlohmann::json::parse_error&) {
+            // 不是合法 JSON 或非 __cross_tab__，继续走 Python 路径
         }
-    } catch (const nlohmann::json::parse_error&) {
-        // 不是合法 JSON 或非 __cross_tab__，继续走 Python 路径
-    }
     }
 
     if (!Py_IsInitialized()) {

@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 def reimport():
     """
-    遍历plugins目录下的文件夹，并导入文件夹中的plugins.py模块
+    遍历plugins目录下的文件夹，并导入文件夹中的main.py模块
     """
     plugins_path = core_path.plugins_dir
 
@@ -29,16 +29,16 @@ def reimport():
         if item.name.startswith('.'):
             continue
 
-        # 检查是否存在plugins.py文件
+        # 检查是否存在main.py文件
         plugin_file = item / "main.py"
         if not plugin_file.exists():
-            logger.debug(f"插件目录 {item.name} main.py文件，跳过")
+            logger.debug(f"插件目录 {item.name} 缺少main.py文件，跳过")
             continue
 
-        # 尝试导入plugins.py模块
+        # 尝试导入main.py模块
         try:
             # 构建模块名
-            module_name = f"plugins.{item.name}.plugins"
+            module_name = f"plugins.{item.name}.main"
 
             # 如果模块已经导入，先重新加载
             if module_name in sys.modules:
