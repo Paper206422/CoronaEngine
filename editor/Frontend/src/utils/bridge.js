@@ -294,16 +294,29 @@ export const logService = {
  * - list_types / rebuild_index / get_stats: 索引元操作
  * - focus_actor: 搜索结果"定位"按钮 → 桥接 SceneTools
  */
+// 当前模块的"调用方"标识(必须出现在后端 ALLOWED_CALLERS 白名单内)
+// 任何后端接口调用都会自动附带此标识,供权限控制
+const CURRENT_CALLER = 'SceneBar';
+
 export const resourceService = {
   fuzzySearch: (query, topK = 20, typeFilter = null) =>
-    Bridge.callCEF('ResourceSearch', 'fuzzy_search', [query, topK, typeFilter]),
+    Bridge.callCEF('ResourceSearch', 'fuzzy_search',
+      [query, topK, typeFilter, CURRENT_CALLER]),
   imageSearch: (imageB64, topK = 20, threshold = 10) =>
-    Bridge.callCEF('ResourceSearch', 'image_search', [imageB64, topK, threshold]),
-  listTypes: () => Bridge.callCEF('ResourceSearch', 'list_types', []),
-  rebuildIndex: () => Bridge.callCEF('ResourceSearch', 'rebuild_index', []),
-  getStats: () => Bridge.callCEF('ResourceSearch', 'get_stats', []),
+    Bridge.callCEF('ResourceSearch', 'image_search',
+      [imageB64, topK, threshold, CURRENT_CALLER]),
+  listTypes: () =>
+    Bridge.callCEF('ResourceSearch', 'list_types', [CURRENT_CALLER]),
+  rebuildIndex: () =>
+    Bridge.callCEF('ResourceSearch', 'rebuild_index', [CURRENT_CALLER]),
+  getStats: () =>
+    Bridge.callCEF('ResourceSearch', 'get_stats', [CURRENT_CALLER]),
+  markIndexDirty: (reason = 'frontend') =>
+    Bridge.callCEF('ResourceSearch', 'mark_index_dirty',
+      [reason, CURRENT_CALLER]),
   focusActor: (sceneName, actorName) =>
-    Bridge.callCEF('ResourceSearch', 'focus_actor', [sceneName, actorName]),
+    Bridge.callCEF('ResourceSearch', 'focus_actor',
+      [sceneName, actorName, CURRENT_CALLER]),
 };
 
 export const projectSettingsService = {
