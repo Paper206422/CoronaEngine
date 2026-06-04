@@ -15,10 +15,9 @@ class VisionOutputBridge {
 public:
     // Upload float4 RGBA32F pixel data to a RGBA16F HardwareImage via executor.
     // Recreates out_image only when it is null or when the requested dimensions
-    // differ from the caller-tracked last_width/last_height. Tracking state is
-    // owned by the caller (not a function-local static) so distinct output images
-    // never share size state and a resolution change can never silently rebuild a
-    // shared image that another system is still referencing.
+    // differ from the caller-tracked last_width/last_height. The caller must wait
+    // for any consumer of out_image before invoking this helper; after that, the
+    // image can be a shared output such as OpticsSystem::finalOutputImage.
     // The copy command is submitted to executor immediately.
     static bool upload_to_hardware_image(
         const float* rgba32f_data,

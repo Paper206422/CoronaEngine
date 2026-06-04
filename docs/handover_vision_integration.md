@@ -43,13 +43,13 @@
 
 新增文件 `src/systems/optics/vision/vision_output_bridge.h/.cpp`：
 
-- `VisionOutputBridge::upload_to_hardware_image()`：将 Vision `FrameBuffer` 输出的 `float4 RGBA32F` 逐通道转换为 `RGBA16F`，调用 `HardwareExecutor` 上传到 `HardwareImage`，写回 `SharedDataHub::image_storage`，并发布 `OpticsFrameReadyEvent`。
+- `VisionOutputBridge::upload_to_hardware_image()`：保留为通用 helper，可将 Vision `FrameBuffer` 输出的 `float4 RGBA32F` 逐通道转换为 `RGBA16F` 并上传到 `HardwareImage`。当前 `run_vision_frame()` 为便于调试直接下载 `FrameBuffer::view_texture()`，在 `optics_system.cpp` 内完成同样的 float32→half 转换后写回复用的 `finalOutputImage`。
 - `VisionOutputBridge::float_to_half()`：完整 IEEE 754 float32 → float16 转换，含 NaN / Inf / 次正规数处理。
 - `run_vision_frame()` 中加入 `static_assert` 校验 `float4` 大小，保证 `reinterpret_cast` 安全。
 
-### 2.4 阶段 C：相机适配（update_vision_camera）
+### 2.4 阶段 C：相机适配（sync_vision_camera）
 
-`update_vision_camera()` 从 `CameraDevice` 构造完整的列主序相机到世界矩阵（c2w），调用 Vision `sensor.set_mat()` + `sensor.set_fov_y()` + `sensor.update_device_data()`，每帧同步相机位置与朝向。矩阵列定义：`col[0]=right, col[1]=up, col[2]=-forward, col[3]=position`，与 `ocarina::float4x4` 约定一致。
+`sync_vision_camera()` 从 `CameraDevice` 同步位置、朝向、FOV 与尺寸。相机朝向使用 Vision 自身的 yaw/pitch/position 模型：由 Corona `forward` 计算 `pitch = asin(fy)`、`yaw = atan2(fx, -fz)`，再调用 `sensor.set_yaw()` / `sensor.set_pitch()` / `sensor.set_position()` / `sensor.set_fov_y()` / `sensor.update_device_data()`。当 `camera.width` / `camera.height` 变化时，调用 `pipeline.change_resolution()` 并重建 `FrameBuffer::view_texture()`，保证 Vision 输出分辨率跟随当前相机。
 
 ### 2.5 阶段 D：后端自动切换（无 Python 接口）
 
@@ -163,8 +163,8 @@
 ### 4.2 阶段 B 完成后需补充的联调工作
 
 1. **init_vision_lazy() 补全**：当前 `init_vision_lazy()` 只打印日志，需调用几何/光源/材质三个适配器，真正填充 Vision 场景。
-2. **run_vision_frame() 补全**：当前已调用 `Pipeline::render()` 并读取 `window_buffer_`，输出桥接已实现，需确认 `window_buffer_` 的像素格式和分辨率与预期一致。
-3. **相机变化触发累积帧清空**：`update_vision_camera()` 已同步相机参数，但需要在检测到相机变化时调用 Vision 的累积帧清空接口（如 `pipeline.reset_accumulation()`）。
+2. **run_vision_frame() 联调**：当前调用 `Pipeline::display()` 并直接下载 `FrameBuffer::view_texture()`；输出桥接已在 `optics_system.cpp` 内完成，需继续验证 `view_texture()` 的像素格式、色彩空间和相机分辨率一致性。
+3. **相机变化触发累积帧清空**：`sync_vision_camera()` 已同步相机参数和分辨率，并在变化时调用 `pipeline.invalidate()`；后续如 Vision 暴露更细粒度接口，可替换为专用累积清空调用。
 4. **Viewport resize 处理**：当 CoronaEngine 窗口尺寸变化时，Vision 输出分辨率需跟随重建（`HardwareImage` 重建、`pipeline` 输出尺寸更新）。
 5. **场景变化增量检测**（阶段 E，非首版阻塞）：首版允许全量重建，但如性能不可接受，需对 mesh/material 加缓存键，做增量更新。
 

@@ -55,14 +55,11 @@ bool VisionOutputBridge::upload_to_hardware_image(
     // used to create out_image via last_width/last_height. The image must be
     // (re)created whenever it is null or when the requested dimensions differ from
     // the last created ones; otherwise copyFrom() would upload width*height*4 halfs
-    // into an image of a different size, producing a black or garbled frame.
-    //
-    // IMPORTANT: out_image must be an image OWNED by the caller (e.g. a dedicated
-    // Vision output image), never a shared image such as the display pipeline's
-    // finalOutputImage. Recreating a shared image here would release the underlying
-    // resource while another system still references it -> black screen.
+    // into an image of a different size, producing a black or garbled frame. The
+    // caller is responsible for waiting on any consumer before allowing this helper
+    // to recreate a shared output image.
     if (!out_image || width != last_width || height != last_height) {
-        //out_image = HardwareImage(width, height, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
+        out_image = HardwareImage(width, height, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
         last_width = width;
         last_height = height;
     }
