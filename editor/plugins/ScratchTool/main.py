@@ -132,9 +132,7 @@ class ScratchTool(PluginBase):
             target_info = f", target={scene_name}/{actor_name}" if scene_name and actor_name else ""
             logger.info(f"[ScratchTool] 脚本保存完成: {elapsed_save:.1f}ms -> {filepath}{target_info}")
 
-            # 5. 清除 Backend 命名空间包的所有缓存模块
-            #    Backend/ 和 Backend/script/ 没有 __init__.py，是命名空间包
-            #    必须连命名空间包本身一起清除，否则子模块 import 会使用过期缓存
+            # 5. 清除 Backend 命名空间包的所有缓存模块 + .pyc 字节码
             import importlib
             modules_to_clear = [
                 name for name in sys.modules.keys()
@@ -145,6 +143,25 @@ class ScratchTool(PluginBase):
                     del sys.modules[mod_name]
                 except KeyError:
                     pass
+
+            # 同时删除 __pycache__ 中的 .pyc 防止字节码缓存
+            import glob as _glob
+            pycache_dirs = [
+                os.path.join(cls.script_dir, '__pycache__'),
+                core_path.repo_root / 'Backend' / '__pycache__',
+            ]
+            for pc_dir in pycache_dirs:
+                if os.path.isdir(pc_dir):
+                    for pyc_file in _glob.glob(os.path.join(pc_dir, 'blockly_code*')):
+                        try:
+                            os.remove(pyc_file)
+                        except Exception:
+                            pass
+                    for pyc_file in _glob.glob(os.path.join(pc_dir, 'runScript*')):
+                        try:
+                            os.remove(pyc_file)
+                        except Exception:
+                            pass
 
             backend_root = str(core_path.repo_root)
             if backend_root not in sys.path:

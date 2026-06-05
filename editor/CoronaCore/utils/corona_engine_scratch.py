@@ -57,6 +57,9 @@ _external_target = False
 # 脚本执行停止标志（线程安全）
 _stop_requested = False
 
+# 运行计数器（用于诊断"只能运行一次"的问题）
+_run_count = 0
+
 # 键盘/鼠标事件处理器注册表（由生成的积木代码 register）
 _key_handler = None
 _mouse_handler = None
@@ -227,7 +230,17 @@ def _init_external_target():
             scl = _target_actor.get_scale()
             global _size_val
             _size_val = float(scl[0]) * 100.0
-            print(f"[ScratchWrapper] 初始scale={scl}, _size_val={_size_val}", flush=True)
+        except Exception:
+            pass
+
+        # 旋转状态：读取 C++ 当前值并同步到内部状态
+        # 不做 reset-to-zero，因为和后续 rotateX 在同一帧会导致视觉不变
+        try:
+            if hasattr(_target_actor, 'get_rotation'):
+                cpp_rot = _target_actor.get_rotation()
+                global _rot_x, _rot_y, _rot_z
+                _rot_x, _rot_y, _rot_z = float(cpp_rot[0]), float(cpp_rot[1]), float(cpp_rot[2])
+                print(f"[ScratchWrapper] 同步C++ rotation=({_rot_x:.1f},{_rot_y:.1f},{_rot_z:.1f})", flush=True)
         except Exception:
             pass
 
@@ -276,35 +289,30 @@ def move(steps):
 
 
 def _apply_rotation():
-    """将内部旋转状态同步到引擎
-    优先走 kinematics 增量旋转（与物理系统兼容），
-    其次走 geometry/actor 绝对设置。
-    """
+    """将内部旋转状态同步到引擎"""
     check_stop()
     rot = [_rot_x, _rot_y, _rot_z]
+    kine_ok = geo_ok = actor_ok = False
     with _engine_lock:
-        # 1. 优先：kinematics set_rotation 绝对设置
         if _kinematics is not None and hasattr(_kinematics, 'set_rotation'):
             try:
                 _kinematics.set_rotation(rot)
-                return
-            except Exception:
-                pass
-        # 2. geometry 绝对设置
+                kine_ok = True
+            except Exception as e:
+                print(f"[ROT-DIAG] _apply_rotation: kine.set FAILED: {e}", flush=True)
         if _geometry is not None:
             try:
                 _geometry.set_rotation(rot)
-                return
-            except Exception:
-                pass
-        # 3. actor 绝对设置
+                geo_ok = True
+            except Exception as e:
+                print(f"[ROT-DIAG] _apply_rotation: geo.set FAILED: {e}", flush=True)
         if _actor is not None and hasattr(_actor, 'set_rotation'):
             try:
                 _actor.set_rotation(rot)
-                return
-            except Exception:
-                pass
-    # 独立模式：仅追踪内部状态
+                actor_ok = True
+            except Exception as e:
+                print(f"[ROT-DIAG] _apply_rotation: actor.set FAILED: {e}", flush=True)
+    print(f"[ROT-DIAG] _apply_rotation #{_run_count}: rot={rot} kine_ok={kine_ok} geo_ok={geo_ok} actor_ok={actor_ok}", flush=True)
 
 
 def rotateX(angle):
@@ -312,14 +320,14 @@ def rotateX(angle):
     _init_engine()
     global _rot_x
     _rot_x += float(angle)
-    # 优先走 kinematics 增量旋转（与物理系统兼容）
+    # 优先 kinematics 增量旋转（物理系统兼容），再同步 geometry（视觉更新）
     if _kinematics is not None and hasattr(_kinematics, 'rotate_x'):
         try:
             _kinematics.rotate_x(float(angle))
         except Exception:
-            _apply_rotation()
-    else:
-        _apply_rotation()
+            pass
+    # 始终同步 geometry（渲染器读 geometry，不同步则视觉不变）
+    _apply_rotation()
     _logger.debug(f"[ScratchWrapper] rotateX({angle}) -> rot_x={_rot_x:.1f}")
 
 
@@ -332,9 +340,8 @@ def rotateY(angle):
         try:
             _kinematics.rotate_y(float(angle))
         except Exception:
-            _apply_rotation()
-    else:
-        _apply_rotation()
+            pass
+    _apply_rotation()
     _logger.debug(f"[ScratchWrapper] rotateY({angle}) -> rot_y={_rot_y:.1f}")
 
 
@@ -342,15 +349,18 @@ def rotateZ(angle):
     """绕Z轴旋转（2D平面旋转）"""
     _init_engine()
     global _rot_z
+    old = _rot_z
     _rot_z += float(angle)
-    if _kinematics is not None and hasattr(_kinematics, 'rotate_z'):
+    has_kine = _kinematics is not None and hasattr(_kinematics, 'rotate_z')
+    has_geo = _geometry is not None
+    print(f"[ROT-DIAG] rotateZ({angle}) #{_run_count}: _rot_z {old:.1f}->{_rot_z:.1f} has_kine={has_kine} has_geo={has_geo}", flush=True)
+    if has_kine:
         try:
             _kinematics.rotate_z(float(angle))
-        except Exception:
-            _apply_rotation()
-    else:
-        _apply_rotation()
-    _logger.debug(f"[ScratchWrapper] rotateZ({angle}) -> rot_z={_rot_z:.1f}")
+            print(f"[ROT-DIAG] rotateZ: kinematics.rotate_z OK", flush=True)
+        except Exception as e:
+            print(f"[ROT-DIAG] rotateZ: kinematics.rotate_z FAILED: {e}", flush=True)
+    _apply_rotation()
 
 
 def face(direction):
@@ -898,7 +908,9 @@ def reset_state():
     _scene = None
     _key_handler = None
     _mouse_handler = None
-    _logger.info("[ScratchWrapper] 状态已重置")
+    global _run_count
+    _run_count += 1
+    print(f"[ROT-DIAG] reset_state #{_run_count}: _rot_z={_rot_z:.1f} _initialized={_initialized} _geometry={_geometry is not None} _kinematics={_kinematics is not None}", flush=True)
 
 
 def request_stop():
