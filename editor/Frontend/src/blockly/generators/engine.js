@@ -16,6 +16,11 @@ export const defineEngineGenerators = () => {
     return `CoronaEngine.rotateY(${angle})\n`;
   };
 
+  pythonGenerator.forBlock['engine_rotateZ'] = function (block) {
+    const angle = block.getFieldValue('ANGLE');
+    return `CoronaEngine.rotateZ(${angle})\n`;
+  };
+
   pythonGenerator.forBlock['engine_face'] = function (block) {
     const direction = block.getFieldValue('DIRECTION');
     return `CoronaEngine.face(${direction})\n`;

@@ -46,6 +46,21 @@ export const defineEngineBlocks = (actorname) => {
     },
   };
 
+  Blockly.Blocks['engine_rotateZ'] = {
+    init: function () {
+      this.appendDummyInput()
+        .appendField('旋转')
+        .appendField(new Blockly.FieldNumber(15, -Infinity), 'ANGLE')
+        .appendField('度');
+      this.setInputsInline(true);
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour('#5631E4');
+      this.setTooltip('让角色绕 Z 轴旋转指定角度（2D平面旋转）');
+      this.setHelpUrl('');
+    },
+  };
+
   Blockly.Blocks['engine_face'] = {
     init: function () {
       this.appendDummyInput()

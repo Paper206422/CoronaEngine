@@ -24,6 +24,18 @@
             <div class="text-sm text-gray-400">Blockly 工作区加载中...</div>
           </div>
         </div>
+        <!-- 状态栏 -->
+        <div
+          id="blockly-status-bar"
+          class="absolute bottom-0 left-0 right-0 z-10 flex items-center justify-between px-3 py-1 text-xs select-none"
+          style="background: rgba(30,30,30,0.85); border-top: 1px solid rgba(255,255,255,0.08);"
+        >
+          <span class="text-gray-500">{{ autoSaveLabel }}</span>
+          <span
+            v-if="orphanCount > 0"
+            class="text-yellow-500/80"
+          >{{ orphanCount }} 个积木未连接事件，不会执行</span>
+        </div>
       </div>
 
       <div
@@ -73,6 +85,12 @@ let currentActorNameVar = '';
 
 /** 脚本状态轮询定时器 */
 let pollTimer = null;
+
+/** 自动保存防抖定时器 */
+let autoSaveTimer = null;
+
+/** 自动保存间隔（毫秒） */
+const AUTO_SAVE_DELAY = 3000;
 </script>
 
 <script setup>
@@ -105,6 +123,8 @@ const blockdiv = ref(null);
 const store = useStore();
 const generatedCode = ref('');
 const codeRunning = ref(false);
+const autoSaveLabel = ref('');
+const orphanCount = ref(0);
 
 // 标题栏显示的当前编辑目标
 const editingTarget = ref('');
@@ -171,6 +191,55 @@ function teardownCefFieldInputFix() {
   }
 }
 
+// ============================================================
+// 积木键盘事件转发：将按键发送到 Python handle()
+// ============================================================
+let scriptKeyHandler = null;
+let scriptKeyUpHandler = null;
+
+function setupScriptKeyForwarding() {
+  scriptKeyHandler = (e) => {
+    // 焦点在输入框时跳过（不干扰文字输入）
+    const activeEl = document.activeElement;
+    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+      return;
+    }
+
+    const code = e.code || e.key;
+    const displayKey = e.key || code;
+    const mods = [];
+    if (e.ctrlKey || e.metaKey) mods.push('Ctrl');
+    if (e.shiftKey) mods.push('Shift');
+    if (e.altKey) mods.push('Alt');
+
+    // 发送 code(物理码,如KeyA/Digit0/BracketRight) + key(显示字符,如a/0/])
+    scriptingService.sendKeyEvent(code, mods.join(','), displayKey).catch(() => {});
+  };
+
+  scriptKeyUpHandler = (e) => {
+    const activeEl = document.activeElement;
+    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+      return;
+    }
+    // 通知 Python 按键已释放（同时发送 code 和 display key）
+    scriptingService.sendKeyUpEvent(e.code || e.key, e.key || e.code).catch(() => {});
+  };
+
+  document.addEventListener('keydown', scriptKeyHandler, true);
+  document.addEventListener('keyup', scriptKeyUpHandler, true);
+}
+
+function teardownScriptKeyForwarding() {
+  if (scriptKeyHandler) {
+    document.removeEventListener('keydown', scriptKeyHandler, true);
+    scriptKeyHandler = null;
+  }
+  if (scriptKeyUpHandler) {
+    document.removeEventListener('keyup', scriptKeyUpHandler, true);
+    scriptKeyUpHandler = null;
+  }
+}
+
 async function updateGeneratedCode() {
   if (!workspace || !pythonGenerator) {
     generatedCode.value = '';
@@ -225,8 +294,9 @@ async function handleToggleRun() {
       scene,
       actor,
     );
-    if (result?.status === 'error') {
-      alert('代码执行出错：' + (result.message || '未知错误'));
+    const execResult = result?.data ?? result;
+    if (execResult?.status === 'error') {
+      alert('代码执行出错：' + (execResult.message || '未知错误'));
       codeRunning.value = false;
     } else {
       // 脚本已在后台线程启动，开始轮询状态
@@ -247,16 +317,28 @@ function clearPollTimer() {
 
 function startPollTimer() {
   clearPollTimer();
+  const startTime = Date.now();
+  const MAX_RUNTIME = 30000; // 30秒强制超时
+
   const poll = async () => {
     if (!codeRunning.value) return;
+
+    // 安全超时：超过30秒强制重置
+    if (Date.now() - startTime > MAX_RUNTIME) {
+      console.warn('[Blockly] 脚本执行超时，强制停止');
+      try { await scriptingService.stopScriptExecution(); } catch (_) {}
+      codeRunning.value = false;
+      return;
+    }
+
     try {
       const status = await scriptingService.getScriptStatus();
-      if (status?.status === 'idle') {
+      const pollResult = status?.data ?? status;
+      if (pollResult?.status === 'idle') {
         codeRunning.value = false;
         return;
       }
     } catch (e) {
-      // 状态查询失败时也停止轮询并恢复按钮
       console.warn('[Blockly] 脚本状态查询失败:', e);
       codeRunning.value = false;
       return;
@@ -290,11 +372,79 @@ function saveCurrentWorkspace() {
   try {
     const state = BlocklyLib.serialization.workspaces.save(workspace);
     workspaceStates.set(loadedActorKey, state);
-    // 持久化到 localStorage，使积木数据在页面刷新后不丢失
     try { localStorage.setItem(LS_WS_PREFIX + loadedActorKey, JSON.stringify(state)); } catch (_) {}
+    const now = new Date();
+    const ts = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    autoSaveLabel.value = `已自动保存 ${ts}`;
   } catch (e) {
     logError('保存工作区状态失败', e);
+    autoSaveLabel.value = '保存失败';
   }
+}
+
+/** 防抖自动保存 */
+function scheduleAutoSave() {
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(() => {
+    saveCurrentWorkspace();
+    autoSaveTimer = null;
+  }, AUTO_SAVE_DELAY);
+}
+
+/** 立即保存 */
+function flushAutoSave() {
+  if (autoSaveTimer) {
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = null;
+    saveCurrentWorkspace();
+  }
+}
+
+/** 标记孤立积木：未连接事件积木(Hat)的块变灰 */
+function markOrphanBlocks() {
+  if (!workspace || !BlocklyLib) return;
+  try {
+    const allBlocks = workspace.getAllBlocks(false);
+    const topBlocks = workspace.getTopBlocks(true);
+
+    // 收集 hat block 及其所有后代
+    const reachable = new Set();
+    for (const top of topBlocks) {
+      if (!top.previousConnection) {
+        reachable.add(top.id);
+        const descendants = top.getDescendants(false);
+        for (const desc of descendants) reachable.add(desc.id);
+      }
+    }
+
+    // 应用可见性
+    let orphanCnt = 0;
+    for (const block of allBlocks) {
+      const svgRoot = block.getSvgRoot();
+      if (!svgRoot) continue;
+      const isHat = !block.previousConnection && topBlocks.includes(block);
+      const isReachable = reachable.has(block.id);
+      if (!isHat && !isReachable) {
+        svgRoot.style.opacity = '0.35';
+        svgRoot.style.filter = 'grayscale(0.8)';
+        svgRoot.setAttribute('data-orphan', 'true');
+        orphanCnt++;
+      } else {
+        svgRoot.style.opacity = '';
+        svgRoot.style.filter = '';
+        svgRoot.removeAttribute('data-orphan');
+      }
+    }
+    orphanCount.value = orphanCnt;
+  } catch (e) { /* 静默 */ }
+}
+
+/** 工作区变更统一回调 */
+function onWorkspaceChange() {
+  updateGeneratedCode();
+  scheduleAutoSave();
+  markOrphanBlocks();
+  if (loadedActorKey) autoSaveLabel.value = '未保存的更改...';
 }
 
 /**
@@ -308,8 +458,8 @@ function switchToActor(sceneName, actorName) {
   const newKey = sceneName && actorName ? `${sceneName}/${actorName}` : '';
   if (newKey === loadedActorKey) return;
 
-  // 1. 保存当前工作区
-  saveCurrentWorkspace();
+  // 1. 保存当前工作区（立即刷新防抖）
+  flushAutoSave();
 
   // 2. 清空工作区（保留变量等全局数据）
   try {
@@ -426,6 +576,10 @@ const initBlocklyAndGenerators = async () => {
       defineVariableGenerators();
       defineListGenerators();
 
+      // 加载自定义 workspaceToCode（hat过滤、handler路由、prelude等）
+      // 必须在所有 forBlock 生成器注册之后加载
+      await import('@/blockly/generators/index.js');
+
       blocksRegistered = true;
     } catch (e) {
       logError('注册积木/生成器失败', e);
@@ -469,6 +623,8 @@ const initBlockly = async () => {
   store.workspace.value = workspace;
   store.workspaceSvg.value = workspace.workspaceSvg || workspace;
 
+  // 积木键盘事件转发到 Python（必须在 setupCefFieldInputFix 之前注册）
+  setupScriptKeyForwarding();
   // CEF OSR 键盘转发修复
   setupCefFieldInputFix();
 
@@ -501,7 +657,7 @@ const initBlockly = async () => {
   pythonGenerator = pyGen;
   updateGeneratedCode();
 
-  workspace.addChangeListener(() => { updateGeneratedCode(); });
+  workspace.addChangeListener(onWorkspaceChange);
 
   hideOverlay();
   resizeBlockly();
@@ -538,7 +694,7 @@ function handleNewCanvas() {
   if (!workspace || !BlocklyLib) return;
 
   // 1. 先保存当前状态（用户可能做了修改但还没切换）
-  saveCurrentWorkspace();
+  flushAutoSave();
 
   // 2. 清除当前 Actor 的持久化状态
   if (loadedActorKey) {
@@ -601,10 +757,14 @@ onUnmounted(() => {
   if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
   // 清理 CEF 键盘转发
   teardownCefFieldInputFix();
+  // 清理积木键盘转发
+  teardownScriptKeyForwarding();
   // 清理状态轮询
   clearPollTimer();
-  // 销毁前保存当前工作区状态
-  saveCurrentWorkspace();
+  // 清理自动保存定时器
+  if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
+  // 销毁前立即保存当前工作区状态
+  flushAutoSave();
   if (workspace) {
     try { workspace.dispose(); } catch {}
     workspace = null;

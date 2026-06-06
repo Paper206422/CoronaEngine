@@ -20,12 +20,32 @@ export const defineEventGenerators = () => {
   };
 
   pythonGenerator.forBlock['event_keyboard'] = function (block) {
-    // 当使用键盘事件积木时，需要键盘前置片段
     need('keyboard');
-    const key = block.getFieldValue('x') || '';
+    const keyCode = block.getFieldValue('x') || '';  // e.code 值: 'KeyA', 'Digit0' 等
+    // 同时获取下拉框显示文本，用于非美式键盘兜底 (e.key 值: 'a', '0' 等)
+    const field = block.getField('x');
+    const displayKey = (field && field.getText) ? field.getText() : keyCode;
     let branch = pythonGenerator.statementToCode(block, 'DO');
     if (!branch) branch = pythonGenerator.INDENT + 'pass\n';
-    return `if key == '${key}':\n` + indent(branch);
+    // 双路匹配: e.code (美式键盘) 或 _key_state (非美式键盘的 e.key)
+    return (
+      `if key == '${keyCode}' or _CE.keyboard('${displayKey}'):\n` + indent(branch)
+    );
+  };
+
+  pythonGenerator.forBlock['event_keyboard_combo'] = function (block) {
+    need('keyboard');
+    var combo = block.getFieldValue('combo') || 'Ctrl+Alt+K';
+    let branch = pythonGenerator.statementToCode(block, 'DO');
+    if (!branch) branch = pythonGenerator.INDENT + 'pass\n';
+    const parts = combo.split('+').map(s => s.trim());
+    const keyPart = parts[parts.length - 1];  // 用户输入的最后一段
+    const checks = parts.map(p => `'${p}' in (_mods or [])`).join(' and ');
+    // 双路匹配: e.code 或 _key_state (兼容非美式键盘)
+    return (
+      `if (key == '${keyPart}' or _CE.keyboard('${keyPart}')) and ${checks}:\n` +
+      indent(branch)
+    );
   };
 
   pythonGenerator.forBlock['event_RB'] = function (block) {
@@ -43,29 +63,40 @@ export const defineEventGenerators = () => {
     return `CoronaEngine.broadcastWait("${x}")\n`;
   };
 
-  pythonGenerator.forBlock['event_keyboard_combo'] = function (block) {
-    // 组合键事件：同样路由到 handler
-    need('keyboard');
-    var combo = block.getFieldValue('combo') || '';
-    return `# 组合键事件: ${combo}\n`;
-  };
+  // ============================================================
+  // 鼠标事件生成器（输出到 handle_mouse 函数）
+  // ============================================================
 
-  // 鼠标点击事件
   pythonGenerator.forBlock['event_mouse_click'] = function (block) {
+    need('mouse');
     const button = block.getFieldValue('button');
-    const buttonMap = { left: '左键', right: '右键', middle: '中键' };
-    return `# 鼠标${buttonMap[button] || button}点击事件\n`;
+    const buttonMap = { left: 'LeftButton', right: 'RightButton', middle: 'MiddleButton' };
+    let branch = pythonGenerator.statementToCode(block, 'DO');
+    if (!branch) branch = pythonGenerator.INDENT + 'pass\n';
+    return (
+      `if _event_type == 'click' and _button == '${buttonMap[button] || button}':\n` +
+      indent(branch)
+    );
   };
 
-  pythonGenerator.forBlock['event_mouse_move'] = function () {
-    return '# 鼠标移动事件\n';
+  pythonGenerator.forBlock['event_mouse_move'] = function (block) {
+    need('mouse');
+    let branch = pythonGenerator.statementToCode(block, 'DO');
+    if (!branch) branch = pythonGenerator.INDENT + 'pass\n';
+    return `if _event_type == 'move':\n` + indent(branch);
   };
 
-  pythonGenerator.forBlock['event_mouse_wheel'] = function () {
-    return '# 鼠标滚轮事件\n';
+  pythonGenerator.forBlock['event_mouse_wheel'] = function (block) {
+    need('mouse');
+    let branch = pythonGenerator.statementToCode(block, 'DO');
+    if (!branch) branch = pythonGenerator.INDENT + 'pass\n';
+    return `if _event_type == 'wheel':\n` + indent(branch);
   };
 
-  pythonGenerator.forBlock['event_mouse_contextmenu'] = function () {
-    return '# 鼠标右键菜单事件\n';
+  pythonGenerator.forBlock['event_mouse_contextmenu'] = function (block) {
+    need('mouse');
+    let branch = pythonGenerator.statementToCode(block, 'DO');
+    if (!branch) branch = pythonGenerator.INDENT + 'pass\n';
+    return `if _event_type == 'contextmenu':\n` + indent(branch);
   };
 };

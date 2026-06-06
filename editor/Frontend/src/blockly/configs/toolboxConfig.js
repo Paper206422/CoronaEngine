@@ -11,6 +11,7 @@ export const TOOLBOX_CONFIG = {
         { kind: 'block', type: 'engine_move' },
         { kind: 'block', type: 'engine_rotateX' },
         { kind: 'block', type: 'engine_rotateY' },
+        { kind: 'block', type: 'engine_rotateZ' },
         { kind: 'block', type: 'engine_face' },
         { kind: 'block', type: 'engine_moveto' },
         { kind: 'block', type: 'engine_movetoXYZ' },

@@ -158,11 +158,11 @@ export const defineEventBlocks = (actorname, broadcastList, createNewBroadcast) 
   // 键盘组合键事件积木块
   Blockly.Blocks['event_keyboard_combo'] = {
     init: function () {
-      // 中文注释：用于捕捉组合键（如Ctrl+Alt+K）
       this.appendDummyInput()
         .appendField('当按下组合键')
         .appendField(new Blockly.FieldTextInput('Ctrl+Alt+K'), 'combo')
         .appendField('时');
+      this.appendStatementInput('DO').setCheck(null);
       this.setInputsInline(true);
       this.setPreviousStatement(false, null);
       this.setNextStatement(true, null);
@@ -174,7 +174,6 @@ export const defineEventBlocks = (actorname, broadcastList, createNewBroadcast) 
   // 鼠标点击事件积木块
   Blockly.Blocks['event_mouse_click'] = {
     init: function () {
-      // 中文注释：用于捕捉鼠标点击事件
       this.appendDummyInput()
         .appendField('当鼠标点击')
         .appendField(
@@ -186,6 +185,7 @@ export const defineEventBlocks = (actorname, broadcastList, createNewBroadcast) 
           'button'
         )
         .appendField('时');
+      this.appendStatementInput('DO').setCheck(null);
       this.setInputsInline(true);
       this.setPreviousStatement(false, null);
       this.setNextStatement(true, null);
@@ -197,8 +197,8 @@ export const defineEventBlocks = (actorname, broadcastList, createNewBroadcast) 
   // 鼠标移动事件积木块
   Blockly.Blocks['event_mouse_move'] = {
     init: function () {
-      // 中文注释：用于捕捉鼠标移动事件
       this.appendDummyInput().appendField('当鼠标移动时');
+      this.appendStatementInput('DO').setCheck(null);
       this.setInputsInline(true);
       this.setPreviousStatement(false, null);
       this.setNextStatement(true, null);
@@ -210,8 +210,8 @@ export const defineEventBlocks = (actorname, broadcastList, createNewBroadcast) 
   // 鼠标滚轮事件积木块
   Blockly.Blocks['event_mouse_wheel'] = {
     init: function () {
-      // 中文注释：用于捕捉鼠标滚轮事件
       this.appendDummyInput().appendField('当鼠标滚轮滚动时');
+      this.appendStatementInput('DO').setCheck(null);
       this.setInputsInline(true);
       this.setPreviousStatement(false, null);
       this.setNextStatement(true, null);
@@ -223,8 +223,8 @@ export const defineEventBlocks = (actorname, broadcastList, createNewBroadcast) 
   // 鼠标右键菜单事件积木块
   Blockly.Blocks['event_mouse_contextmenu'] = {
     init: function () {
-      // 中文注释：用于捕捉鼠标右键菜单事件
       this.appendDummyInput().appendField('当鼠标右键菜单时');
+      this.appendStatementInput('DO').setCheck(null);
       this.setInputsInline(true);
       this.setPreviousStatement(false, null);
       this.setNextStatement(true, null);

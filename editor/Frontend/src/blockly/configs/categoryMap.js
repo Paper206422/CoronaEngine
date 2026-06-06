@@ -2,6 +2,7 @@ export const BLOCK_CATEGORY_MAP = {
   engine_move: '引擎',
   engine_rotateX: '引擎',
   engine_rotateY: '引擎',
+  engine_rotateZ: '引擎',
   engine_face: '引擎',
   engine_moveto: '引擎',
   engine_movetoXYZ: '引擎',
