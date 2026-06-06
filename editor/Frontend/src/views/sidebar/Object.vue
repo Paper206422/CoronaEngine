@@ -574,6 +574,19 @@
                   class="bg-[#3c3c3c]/50 p-2 rounded border-l-2 border-purple-600"
                 >
                   <label class="text-[#e0e0e0] font-medium block mb-1 text-[10px]">物理</label>
+                  <!-- 启用物理开关 -->
+                  <div class="mb-1 flex items-center justify-between">
+                    <span class="text-[#909090] text-[10px]">启用物理</span>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        v-model="actorData.mechanics.physics_enabled"
+                        class="sr-only peer"
+                        @change="() => updateActorMechanics('SetPhysicsEnabled')"
+                      />
+                      <div class="w-7 h-4 bg-[#1a1a1a] rounded-full peer-checked:bg-[#84a65b]/60 peer-checked:after:bg-[#84a65b] after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-[#555] after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-3"></div>
+                    </label>
+                  </div>
                   <!-- 质量 -->
                   <div class="mb-1">
                     <div class="text-[#909090] text-[10px] mb-0.5">质量</div>
@@ -1022,6 +1035,19 @@
               <!-- 物理属性 -->
               <div class="bg-[#3c3c3c]/50 p-2 rounded border-l-2 border-purple-600">
                 <label class="text-[#e0e0e0] font-medium block mb-1 text-[10px]">物理</label>
+                <!-- 启用物理开关 -->
+                <div class="mb-1 flex items-center justify-between">
+                  <span class="text-[#909090] text-[10px]">启用物理</span>
+                  <label class="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      v-model="modelData.mechanics.physics_enabled"
+                      class="sr-only peer"
+                      @change="() => updateModelMechanics('SetPhysicsEnabled')"
+                    />
+                    <div class="w-7 h-4 bg-[#1a1a1a] rounded-full peer-checked:bg-[#84a65b]/60 peer-checked:after:bg-[#84a65b] after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-[#555] after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-3"></div>
+                  </label>
+                </div>
                 <!-- 质量 -->
                 <div class="mb-1">
                   <div class="text-[#909090] text-[10px] mb-0.5">质量</div>
@@ -1449,6 +1475,7 @@ const actorData = ref({
     mass: 1.0,
     restitution: 0.8,
     damping: 0.99,
+    physics_enabled: true,
   },
   script: {
     path: '',
@@ -1478,6 +1505,7 @@ const modelData = ref({
     mass: 1.0,
     restitution: 0.8,
     damping: 0.99,
+    physics_enabled: true,
   },
 });
 
@@ -1609,6 +1637,7 @@ const loadActorData = async (sceneId, actorId) => {
         actorData.value.mechanics.mass = data.mechanics.mass ?? 1.0;
         actorData.value.mechanics.restitution = data.mechanics.restitution ?? 0.8;
         actorData.value.mechanics.damping = data.mechanics.damping ?? 0.99;
+        actorData.value.mechanics.physics_enabled = data.mechanics.physics_enabled ?? true;
       } else {
         actorData.value.hasMechanics = false;
       }
@@ -1656,6 +1685,7 @@ const loadModelData = async (sceneId, modelId) => {
         modelData.value.mechanics.mass = data.mechanics.mass ?? 1.0;
         modelData.value.mechanics.restitution = data.mechanics.restitution ?? 0.8;
         modelData.value.mechanics.damping = data.mechanics.damping ?? 0.99;
+        modelData.value.mechanics.physics_enabled = data.mechanics.physics_enabled ?? true;
       }
     }
   } catch (e) {
@@ -1851,34 +1881,14 @@ const updateModelTransformFast = (operationType, axis = null, value = null) => {
   });
 };
 
-// 更新单位变换
+// 更新单位变换——快速通道已写入 SharedDataHub，此处仅触发写盘
 const updateActorTransform = (operationType) => {
   if (!currentActorFile.value || !actorData.value.parentScene) return;
   debounced(`actor_transform_${operationType}`, async () => {
     try {
-      let operation = '';
-      const vector = getActorTransformVector(operationType);
-      if (!vector) return;
-
-      switch (operationType) {
-        case 'Move':
-          operation = 'Move';
-          break;
-        case 'Rotate':
-          operation = 'Rotate';
-          break;
-        case 'Scale':
-          operation = 'Scale';
-          break;
-        default:
-          return;
-      }
-
-      await sceneService.actorOperation(
+      await sceneService.saveActor(
         actorData.value.parentScene,
-        currentActorFile.value,
-        operation,
-        vector
+        currentActorFile.value
       );
     } catch (e) {
       logError('更新单位变换失败', e);
@@ -1901,6 +1911,9 @@ const updateActorMechanics = (operationType) => {
           break;
         case 'SetDamping':
           value = actorData.value.mechanics.damping;
+          break;
+        case 'SetPhysicsEnabled':
+          value = actorData.value.mechanics.physics_enabled;
           break;
         default:
           return;
@@ -1993,48 +2006,14 @@ const updateCameraLockRotation = () => {
   });
 };
 
-// 更新模型变换
+// 更新模型变换——快速通道已写入 SharedDataHub，此处仅触发写盘
 const updateModelTransform = (operationType) => {
   if (!currentModelFile.value || !modelData.value.targetScene) return;
   debounced(`model_transform_${operationType}`, async () => {
     try {
-      let vector = [];
-      let operation = '';
-
-      switch (operationType) {
-        case 'Move':
-          vector = [
-            Number(modelData.value.defaultTransform.position.x),
-            Number(modelData.value.defaultTransform.position.y),
-            Number(modelData.value.defaultTransform.position.z),
-          ];
-          operation = 'Move';
-          break;
-        case 'Rotate':
-          vector = [
-            Number(modelData.value.defaultTransform.rotation.x),
-            Number(modelData.value.defaultTransform.rotation.y),
-            Number(modelData.value.defaultTransform.rotation.z),
-          ];
-          operation = 'Rotate';
-          break;
-        case 'Scale':
-          vector = [
-            Number(modelData.value.defaultTransform.scale.x),
-            Number(modelData.value.defaultTransform.scale.y),
-            Number(modelData.value.defaultTransform.scale.z),
-          ];
-          operation = 'Scale';
-          break;
-        default:
-          return;
-      }
-
-      await sceneService.actorOperation(
+      await sceneService.saveActor(
         modelData.value.targetScene,
-        currentModelFile.value,
-        operation,
-        vector
+        currentModelFile.value
       );
     } catch (e) {
       logError('更新模型变换失败', e);
@@ -2057,6 +2036,9 @@ const updateModelMechanics = (operationType) => {
           break;
         case 'SetDamping':
           value = modelData.value.mechanics.damping;
+          break;
+        case 'SetPhysicsEnabled':
+          value = modelData.value.mechanics.physics_enabled;
           break;
         default:
           return;

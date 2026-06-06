@@ -478,9 +478,6 @@ const cameraBindingState = ref({
   cameraHandle: null,
 });
 
-// 摄像头更新请求序列号，用于丢弃过时的响应
-let cameraUpdateSeq = 0;
-
 // 摄像头移动速度（可调节）
 const cameraSpeed = ref(0.2);
 const mouseSensitivity = ref(0.15);
@@ -508,7 +505,8 @@ const scheduleCameraUpdate = () => {
     if (cameraDirty) {
       cameraDirty = false;
       if (!sendCameraUpdateFast()) {
-        sendCameraUpdate();
+        const sceneId = tabs.value[activeTab.value]?.id || DEFAULT_SCENE_NAME;
+        syncSceneCameraBinding(sceneId);
       }
     }
   });
@@ -757,7 +755,7 @@ const handleKeyUp = (event) => {
     movementKeys[key] = false;
     if (!hasActiveMovementKeys()) {
       stopMoveLoop();
-      sendCameraUpdate();
+      scheduleCameraUpdate();
     }
   }
 };
@@ -1032,7 +1030,8 @@ const onMouseUp = (event) => {
   if (event.button === 2 && mouseRotate.active) {
     mouseRotate.active = false;
     if (!sendCameraUpdateFast()) {
-      sendCameraUpdate();
+      const sceneId = tabs.value[activeTab.value]?.id || DEFAULT_SCENE_NAME;
+      syncSceneCameraBinding(sceneId);
     }
   }
 };
@@ -1045,7 +1044,16 @@ const sendCameraUpdateFast = () => {
   const handle = cameraBindingState.value.cameraHandle;
   if (!handle) return false;
   const bridge = window.coronaBridge;
-  if (!bridge || typeof bridge.cameraMove !== 'function') return false;
+  if (!bridge || typeof bridge.cameraMove !== 'function') {
+    if (!window._coronaBridgeWarned) {
+      window._coronaBridgeWarned = true;
+      console.warn(
+        '[Camera] coronaBridge 缺失或 cameraMove 不可用，' +
+        'CEF 子进程可能未运行。快速通道摄像头更新已禁用。'
+      );
+    }
+    return false;
+  }
   try {
     bridge.cameraMove(
       handle,
@@ -1060,31 +1068,9 @@ const sendCameraUpdateFast = () => {
   }
 };
 
-/** 发送当前 cameraState 到引擎 */
-const sendCameraUpdate = async () => {
-  const sceneId = tabs.value[activeTab.value]?.id || DEFAULT_SCENE_NAME;
-  const seq = ++cameraUpdateSeq;
-  try {
-    const result = await sceneService.cameraMove({
-      schema_version: 2,
-      scene_id: sceneId,
-      scene_name: sceneId,
-      camera_name: cameraBindingState.value.cameraName,
-      position: [...cameraState.value.position],
-      forward: [...cameraState.value.forward],
-      world_up: [...cameraState.value.up],
-      fov: cameraState.value.fov,
-    });
-    // 只应用最新请求的响应，丢弃过时的
-    if (seq === cameraUpdateSeq) {
-      applySceneSnapshot(sceneId, result);
-    }
-  } catch (e) {
-    logError('Camera update failed', e);
-  }
-};
+/** 发送当前 cameraState 到引擎——已移除，全部走快速通道 */
 
-const handleCameraMove = async (direction) => {
+const handleCameraMove = (direction) => {
   const speed = cameraSpeed.value;
   const { position, forward, up } = cameraState.value;
 
@@ -1132,7 +1118,7 @@ const handleCameraMove = async (direction) => {
       break;
   }
 
-  await sendCameraUpdate();
+  scheduleCameraUpdate();
 };
 
 const handleApplyPhysics = async () => {

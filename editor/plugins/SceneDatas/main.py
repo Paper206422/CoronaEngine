@@ -37,6 +37,22 @@ class SceneDatas(PluginBase):
             timer.start()
 
     @staticmethod
+    def save_actor(scene_name: str, actor_name: str) -> dict:
+        """仅触发写盘：Transform 数据已由 C++ 快速通道写入 SharedDataHub，
+        此方法仅负责将数据持久化到 .ini 文件。"""
+        if scene_name:
+            scene = scene_manager.get(scene_name)
+            actor = scene.find_actor(actor_name)
+        else:
+            actor = scene_manager.find_actor(actor_name)
+        if actor is None:
+            raise ValueError(f"Actor '{actor_name}' not found")
+
+        actor.save_data()
+        logger.info("Saved actor '%s' to disk", actor_name)
+        return {"status": "success", "scene": scene_name, "actor": actor_name}
+
+    @staticmethod
     def get_scene(scene_name: str) -> dict:
         scene = scene_manager.get(scene_name)
         return scene.to_dict()
@@ -92,6 +108,8 @@ class SceneDatas(PluginBase):
             actor.set_camera_lock_rotation_offset(vector)
         elif operation == "SetCollision":
             actor.set_collision_enabled(str(vector[0]))
+        elif operation == "SetPhysicsEnabled":
+            actor.set_physics_enabled(bool(vector[0]))
         else:
             raise ValueError(f"Unsupported operation '{operation}'")
 

@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <memory>
 
+#include <SDL3/SDL.h>
+
 namespace nb = nanobind;
 using namespace Corona::API;
 
@@ -379,6 +381,17 @@ void BindAll(nanobind::module_& m) {
           "Request a render backend switch. mode: 'native' or 'vision'. Only effective when Vision is available.");
     m.def("get_render_backend", &get_render_backend,
           "Get the currently requested render backend as 'native' or 'vision'");
+
+    // ============================================================================
+    // Engine lifecycle
+    // ============================================================================
+    m.def("request_engine_exit", []() {
+        SDL_Event quit_event;
+        SDL_zero(quit_event);
+        quit_event.type = SDL_EVENT_QUIT;
+        SDL_PushEvent(&quit_event);
+    }, "Request graceful engine shutdown. "
+       "Pushes an SDL_QUIT event, same as clicking the window close button.");
 
 }
 

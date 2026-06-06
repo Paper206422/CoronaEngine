@@ -331,6 +331,18 @@ class Actor:
             raise RuntimeError("当前 Actor 没有 Mechanics")
         return self._mechanics.get_damping()
 
+    def set_physics_enabled(self, enabled: bool):
+        """启用或禁用该 Actor 的物理模拟（关闭后物体不参与力学模拟，但仍保留数据）"""
+        if not hasattr(self, '_mechanics') or self._mechanics is None:
+            raise RuntimeError("当前 Actor 没有 Mechanics")
+        self._mechanics.set_physics_enabled(enabled)
+
+    def get_physics_enabled(self) -> bool:
+        """获取物理模拟开关状态"""
+        if not hasattr(self, '_mechanics') or self._mechanics is None:
+            raise RuntimeError("当前 Actor 没有 Mechanics")
+        return self._mechanics.get_physics_enabled()
+
     def set_collision_enabled(self, collision_type: str):
         """
         设置碰撞检测类型。
@@ -480,6 +492,7 @@ class Actor:
                     "mass": self.get_mass(),
                     "restitution": self.get_restitution(),
                     "damping": self.get_damping(),
+                    "physics_enabled": self.get_physics_enabled(),
                 }
             except Exception:
                 pass

@@ -107,7 +107,9 @@ class CoronaEditor:
 
     @classmethod
     def close_process(cls) -> None:
-        os._exit(0)
+        """请求引擎优雅退出（与点击 SDL 窗口关闭按钮走完全相同的路径）"""
+        import CoronaEngine
+        CoronaEngine.request_engine_exit()
 
     # ================================================================
     # 摄像机跟随

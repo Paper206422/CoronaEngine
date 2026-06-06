@@ -54,49 +54,6 @@ export const sceneService = {
     Bridge.callCEF('SceneTools', 'remove_actor', [sceneName, actorName]),
   createScene: (sceneName) => Bridge.callCEF('SceneTools', 'create_scene', [sceneName]),
 
-  cameraMove: (sceneNameOrPayload, position, forward, up, fov) => {
-    if (
-      typeof sceneNameOrPayload === 'object' &&
-      sceneNameOrPayload !== null &&
-      !Array.isArray(sceneNameOrPayload)
-    ) {
-      const payload = sceneNameOrPayload;
-      const sceneId =
-        payload.scene_id ??
-        payload.sceneId ??
-        payload.id ??
-        payload.scene_name ??
-        payload.sceneName;
-      const cameraName =
-        payload.camera_name ??
-        payload.cameraName ??
-        payload.active_camera_name ??
-        payload.activeCameraName;
-      const worldUp = payload.world_up ?? payload.worldUp ?? payload.up;
-
-      return Bridge.callCEF('SceneTools', 'camera_move', [
-        {
-          schema_version: payload.schema_version ?? 2,
-          scene_id: sceneId,
-          scene_name: payload.scene_name ?? payload.sceneName ?? sceneId,
-          camera_name: cameraName,
-          position: payload.position,
-          forward: payload.forward,
-          world_up: worldUp,
-          up: worldUp,
-          fov: payload.fov,
-        },
-      ]);
-    }
-
-    return Bridge.callCEF('SceneTools', 'camera_move', [
-      sceneNameOrPayload,
-      position,
-      forward,
-      up,
-      fov,
-    ]);
-  },
   sunDirection: (sceneName, enable, direction) =>
     Bridge.callCEF('SceneTools', 'sun_direction', [sceneName, enable, direction]),
   floorGrid: (sceneName, enabled) =>
@@ -132,6 +89,9 @@ export const sceneService = {
   getActor: (sceneId, actorId) => Bridge.callCEF('SceneDatas', 'get_actor', [sceneId, actorId]),
   actorOperation: (scene_name, actor_name, operation, vector) =>
     Bridge.callCEF('SceneDatas', 'actor_operation', [scene_name, actor_name, operation, vector]),
+  /** 仅触发写盘：Transform 已由快速通道写入 SharedDataHub */
+  saveActor: (sceneName, actorName) =>
+    Bridge.callCEF('SceneDatas', 'save_actor', [sceneName, actorName]),
   selectModelFileDialog: (sceneId, actorId, fileType) =>
     Bridge.callCEF('SceneDatas', 'select_model_file', [sceneId, actorId, fileType]),
   setCameraLock: (sceneName, actorName, enabled) =>
