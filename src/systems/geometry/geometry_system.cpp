@@ -873,59 +873,63 @@ void GeometrySystem::process_async_tasks() {
 
     //卸载失败重试
     if (!failed_unloads.empty()) {
-        std::unique_lock lock(impl_->mtx);
-        for (const auto& task : failed_unloads) {
-            auto scene_it = impl_->scenes.find(task.scene_handle);
-            if (scene_it == impl_->scenes.end()) {
-                continue;
-            }
-            auto& scene_state = scene_it->second;
+        std::vector<Events::ActorUnloadCompletedEvent> deferred_events;
+        {
+            std::unique_lock lock(impl_->mtx);
+            for (const auto& task : failed_unloads) {
+                auto scene_it = impl_->scenes.find(task.scene_handle);
+                if (scene_it == impl_->scenes.end()) {
+                    continue;
+                }
+                auto& scene_state = scene_it->second;
 
-            auto state_it = scene_state.actor_load_states.find(task.actor);
-            if (state_it == scene_state.actor_load_states.end()) {
-                continue;
-            }
+                auto state_it = scene_state.actor_load_states.find(task.actor);
+                if (state_it == scene_state.actor_load_states.end()) {
+                    continue;
+                }
 
-            int& retry_count = scene_state.unload_retry_counts[task.actor];
-            CFW_LOG_WARNING("[SceneSystem] Actor 0x%lx unload delayed (resource in use), retry %d/10",
-                           (unsigned long)task.actor, retry_count + 1);
+                int& retry_count = scene_state.unload_retry_counts[task.actor];
+                CFW_LOG_WARNING("[SceneSystem] Actor 0x%lx unload delayed (resource in use), retry %d/10",
+                               (unsigned long)task.actor, retry_count + 1);
 
-            if (++retry_count >= 10) {
-                CFW_LOG_ERROR("[SceneSystem] Actor 0x%lx unload failed after 10 retries, resource is permanently in use",
-                             (unsigned long)task.actor);
-                scene_state.unload_retry_counts.erase(task.actor);
-                // 不强制设为Loaded，保留Unloading状态，由业务层处理
-                // 同时不发布任何事件，避免状态混乱
-            } else {
-                auto actor_read = actor_storage.try_acquire_read(task.actor);
-                if (actor_read.valid()) {
-                    if (!actor_read->model_path.empty()) {
-                        auto normalized = actor_read->model_path.is_relative()
-                            ? std::filesystem::absolute(actor_read->model_path)
-                            : actor_read->model_path;
-                        std::error_code ec;
-                        normalized = std::filesystem::weakly_canonical(normalized, ec);
-                        if (ec) normalized = actor_read->model_path;
-                        auto rid = Resource::IResource::generate_uid(normalized);
-                        scene_state.unloading_tasks[task.actor] =
-                            Resource::ResourceManager::get_instance().remove_cache_async(rid);
+                if (++retry_count >= 10) {
+                    CFW_LOG_ERROR("[SceneSystem] Actor 0x%lx unload failed after 10 retries, resource is permanently in use",
+                                 (unsigned long)task.actor);
+                    scene_state.unload_retry_counts.erase(task.actor);
+                    // 不强制设为Loaded，保留Unloading状态，由业务层处理
+                    // 同时不发布任何事件，避免状态混乱
+                } else {
+                    auto actor_read = actor_storage.try_acquire_read(task.actor);
+                    if (actor_read.valid()) {
+                        if (!actor_read->model_path.empty()) {
+                            auto normalized = actor_read->model_path.is_relative()
+                                ? std::filesystem::absolute(actor_read->model_path)
+                                : actor_read->model_path;
+                            std::error_code ec;
+                            normalized = std::filesystem::weakly_canonical(normalized, ec);
+                            if (ec) normalized = actor_read->model_path;
+                            auto rid = Resource::IResource::generate_uid(normalized);
+                            scene_state.unloading_tasks[task.actor] =
+                                Resource::ResourceManager::get_instance().remove_cache_async(rid);
+                        } else {
+                            CFW_LOG_WARNING("[SceneSystem] Actor 0x%lx model path empty, mark as unloaded",
+                                           (unsigned long)task.actor);
+                            scene_state.unload_retry_counts.erase(task.actor);
+                            scene_state.actor_load_states[task.actor] = ActorLoadState::Unloaded;
+                            deferred_events.push_back({task.scene_handle, task.actor});
+                        }
                     } else {
-                        CFW_LOG_WARNING("[SceneSystem] Actor 0x%lx model path empty, mark as unloaded",
+                        CFW_LOG_WARNING("[SceneSystem] Actor 0x%lx handle invalid, clean up all states",
                                        (unsigned long)task.actor);
                         scene_state.unload_retry_counts.erase(task.actor);
-                        scene_state.actor_load_states[task.actor] = ActorLoadState::Unloaded;
-                        lock.unlock();
-                        impl_->ctx->event_bus()->publish(Events::ActorUnloadCompletedEvent{task.scene_handle, task.actor});
-                        lock.lock();
+                        scene_state.actor_load_states.erase(task.actor);
+                        impl_->offline_actors.erase(task.actor);
                     }
-                } else {
-                    CFW_LOG_WARNING("[SceneSystem] Actor 0x%lx handle invalid, clean up all states",
-                                   (unsigned long)task.actor);
-                    scene_state.unload_retry_counts.erase(task.actor);
-                    scene_state.actor_load_states.erase(task.actor);
-                    impl_->offline_actors.erase(task.actor);
                 }
             }
+        }
+        for (const auto& evt : deferred_events) {
+            impl_->ctx->event_bus()->publish(evt);
         }
     }
 }
@@ -934,6 +938,9 @@ void GeometrySystem::process_async_tasks() {
 // 资源请求事件处理
 // ============================================================================
 
+// 锁顺序: impl_->mtx → Storage 槽位锁 (try_acquire_read)。
+// 不要在持有 Storage ReadHandle/WriteHandle 的作用域内获取 impl_->mtx，
+// 否则会与 update() 中的 Storage→释放→impl_->mtx 路径形成死锁环。
 void GeometrySystem::on_load_requested(const Events::ActorLoadRequestedEvent& e) {
     std::unique_lock lock(impl_->mtx);
     auto scene_it = impl_->scenes.find(e.scene);
@@ -961,6 +968,7 @@ void GeometrySystem::on_load_requested(const Events::ActorLoadRequestedEvent& e)
     scene_state.loading_tasks[e.actor] = Resource::ResourceManager::get_instance().import_async(actor_read->model_path);
 }
 
+// 锁顺序同 on_load_requested: impl_->mtx → Storage。
 void GeometrySystem::on_unload_requested(const Events::ActorUnloadRequestedEvent& e) {
     std::unique_lock lock(impl_->mtx);
     auto scene_it = impl_->scenes.find(e.scene);

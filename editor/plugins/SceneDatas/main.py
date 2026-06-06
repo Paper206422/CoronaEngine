@@ -1,5 +1,5 @@
 from CoronaCore.core.corona_editor import CoronaEditor
-from CoronaCore.core.managers import scene_manager, actor_manager
+from CoronaCore.core.managers import scene_manager
 from CoronaCore.utils.file_handler import FileHandler, _FILE_TYPE_CONFIG
 from CoronaPlugin.core.corona_plugin_base import PluginBase
 import logging
@@ -8,7 +8,7 @@ import threading
 logger = logging.getLogger(__name__)
 
 
-@PluginBase.register_web("SceneDatas", "/Object", "详情工具", 0, "right_bottom", 300, 400, False, True)
+@PluginBase.register_web("SceneDatas")
 class SceneDatas(PluginBase):
 
     _save_timers = {}
@@ -37,6 +37,22 @@ class SceneDatas(PluginBase):
             timer.start()
 
     @staticmethod
+    def save_actor(scene_name: str, actor_name: str) -> dict:
+        """仅触发写盘：Transform 数据已由 C++ 快速通道写入 SharedDataHub，
+        此方法仅负责将数据持久化到 .ini 文件。"""
+        if scene_name:
+            scene = scene_manager.get(scene_name)
+            actor = scene.find_actor(actor_name)
+        else:
+            actor = scene_manager.find_actor(actor_name)
+        if actor is None:
+            raise ValueError(f"Actor '{actor_name}' not found")
+
+        actor.save_data()
+        logger.info("Saved actor '%s' to disk", actor_name)
+        return {"status": "success", "scene": scene_name, "actor": actor_name}
+
+    @staticmethod
     def get_scene(scene_name: str) -> dict:
         scene = scene_manager.get(scene_name)
         return scene.to_dict()
@@ -53,7 +69,7 @@ class SceneDatas(PluginBase):
             scene = scene_manager.get(scene_name)
             actor = scene.get_actor(actor_name)
         else:
-            actor = actor_manager.get(actor_name)
+            actor = scene_manager.find_actor(actor_name)
         return actor.to_dict()
 
     @staticmethod
@@ -63,7 +79,7 @@ class SceneDatas(PluginBase):
             scene = scene_manager.get(scene_name)
             actor = scene.find_actor(actor_name)
         else:
-            actor = actor_manager.get(actor_name)
+            actor = scene_manager.find_actor(actor_name)
         if actor is None:
             raise ValueError(f"Actor '{actor_name}' not found")
 
@@ -117,7 +133,7 @@ class SceneDatas(PluginBase):
         if scene:
             actor = scene.get_actor(actor_name)
         else:
-            actor = actor_manager.get(actor_name)
+            actor = scene_manager.find_actor(actor_name)
         if file_type == "model":
             if actor:
                 actor.set_model(file_path)

@@ -1,6 +1,7 @@
 <template>
-  <div class="rounded-lg overflow-hidden min-h-screen relative bg-[#282828]/70">
+  <div class="rounded-lg overflow-hidden flex flex-col flex-1 min-h-0 w-full relative bg-[#282828]/70">
     <DockTitleBar
+      v-if="!isDocked"
       title="场景管理"
       extraClass="bg-[#84A65B] rounded-t-md"
       routePath="/SceneBar"
@@ -8,7 +9,7 @@
     />
 
     <!-- 主内容区域 -->
-    <div class="flex flex-col" style="height: calc(100vh - 48px)">
+    <div class="flex flex-col flex-1 min-h-0">
       <div class="flex items-center gap-2 p-2 bg-[#1a1a1a]/50 border-b border-[#333]">
         <div class="text-[10px] text-gray-400 truncate flex-1">
           <span class="text-[#84a65b] font-bold">{{ currentSceneName }}</span>
@@ -431,6 +432,10 @@ import { appService, sceneService, projectService } from '@/utils/bridge.js';
 import { DEFAULT_SCENE_NAME } from '@/utils/constants.js';
 import { useErrorHandler } from '@/composables/useErrorHandler.js';
 import { setActorContext } from '@/blockly/composables/useActorContext.js';
+import { coronaEventBus } from '@/utils/eventBus.js';
+import { useDockPanel } from '@/composables/useDockPanel.js';
+
+const { closePanel: closeDockPanel, isDocked } = useDockPanel();
 
 const { error: logError, warn: logWarn } = useErrorHandler('SceneBar');
 
@@ -744,6 +749,12 @@ const addActorToList = async (actor) => {
 };
 
 const HandleFileImport = async () => {
+  // 测试 window.cefQuery 是否存在
+  if (typeof window.cefQuery === 'undefined') {
+    alert('错误：window.cefQuery 未定义！CEF bridge 未初始化。');
+    return;
+  }
+
   ShowModelDropdown.value = false;
   await appService.callDockFunction('', 'showLoading', ['加载中', '请稍候...', 0]);
   try {
@@ -754,6 +765,7 @@ const HandleFileImport = async () => {
     }
   } catch (e) {
     logError('File import failed', e);
+    alert('导入失败：' + e.message);
   }
   await appService.callDockFunction('', 'hideLoading', []);
 };
@@ -833,11 +845,8 @@ const DeleteActor = async (scene) => {
 };
 
 const CloseFloat = async () => {
-  try {
-    await appService.removeDockWidget('SceneTools');
-  } catch (e) {
-    logError('Failed to close dock', e);
-  }
+  if (closeDockPanel) { closeDockPanel(); return; }
+  await appService.removeDockWidget('SceneTools');
 };
 
 const setupFragmentListener = () => {
@@ -901,12 +910,37 @@ onMounted(async () => {
   const result = await projectService.OnInit();
   const queryString = window.location.hash?.split('?')[1] || window.location.search?.slice(1);
   const urlSceneName = queryString ? new URLSearchParams(queryString).get('sceneName') : null;
-  currentSceneName.value = urlSceneName || result.data.path || DEFAULT_SCENE_NAME;
+
+  // 从 OnInit 返回值中取活跃场景：scenes 数组 + active_index
+  const initData = result?.data ?? result;
+  const activeScene = initData?.scenes?.[initData?.active_index ?? 0];
+  currentSceneName.value = urlSceneName || activeScene?.path || DEFAULT_SCENE_NAME;
 
   setupFragmentListener();
   await OnInitObjTree();
   await RefreshRenderBackendState();
+
+  // 监听 Python 推送的 actor-change：场景切换/物体变化时重新加载场景树
+  coronaEventBus.on('actor-change', onActorChangeEvent);
+  coronaEventBus.on('scene-tree-changed', onSceneTreeChangedEvent);
 });
 
-onUnmounted(() => {});
+// 场景切换或 actor 变化时刷新当前场景树
+const onActorChangeEvent = (type, sceneId /*, actorId, oldPath */) => {
+  if (type === 'scene' && sceneId) {
+    currentSceneName.value = sceneId;
+  }
+  OnInitObjTree();
+};
+
+const onSceneTreeChangedEvent = (sceneName) => {
+  if (!sceneName || sceneName === currentSceneName.value) {
+    OnInitObjTree();
+  }
+};
+
+onUnmounted(() => {
+  coronaEventBus.off('actor-change', onActorChangeEvent);
+  coronaEventBus.off('scene-tree-changed', onSceneTreeChangedEvent);
+});
 </script>

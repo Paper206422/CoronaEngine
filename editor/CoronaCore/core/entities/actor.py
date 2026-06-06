@@ -390,7 +390,7 @@ class Actor:
         """
         移动回调方法，子类可重写此方法以实现自定义行为。
         """
-        CoronaEditor.js_call_func("/Object", "onTransformUpdate",
+        CoronaEditor.js_call_func("transform-update",
                                   [self.parent.route if self.parent else "", self.name, self.get_position(),
                                    self.get_rotation(), self.get_scale(), self.actor_type])
         self.save_data()

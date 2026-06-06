@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-@PluginBase.register_web("SceneTools", "/SceneBar", "场景工具", 0, "right_top", 300, 600, False, True)
+@PluginBase.register_web("SceneTools")
 class SceneTools(PluginBase):
 
     @staticmethod
@@ -51,64 +51,6 @@ class SceneTools(PluginBase):
         scene.remove_actor(actor)
         logger.info("Actor %s removed from %s", actor_name, scene_name)
         return {"scene": scene_name, "actor": actor_name}
-
-    @staticmethod
-    def camera_move(scene_name, position=None, forward=None, up=None, fov: float = None) -> dict:
-        try:
-            camera_name = None
-            scene_id = None
-
-            if isinstance(scene_name, dict):
-                payload = scene_name
-                scene_id = payload.get("scene_id") or payload.get("sceneId") or payload.get("id")
-                scene_name = scene_id or payload.get("scene_name") or payload.get("sceneName")
-                position = payload.get("position", position)
-                forward = payload.get("forward", forward)
-                up = payload.get("up", payload.get("world_up", payload.get("worldUp", up)))
-                fov = payload.get("fov", fov)
-                camera_name = payload.get("camera_name") or payload.get("cameraName") or payload.get("active_camera_name")
-                # backward compat: accept old viewport_name keys as camera_name
-                if not camera_name:
-                    camera_name = payload.get("viewport_name") or payload.get("viewportName") or payload.get("active_viewport_name")
-
-            if not scene_name:
-                raise ValueError("scene_name is required")
-
-            missing_args = [
-                name for name, value in {
-                    "position": position,
-                    "forward": forward,
-                    "up": up,
-                    "fov": fov,
-                }.items() if value is None
-            ]
-            if missing_args:
-                raise ValueError(f"Missing camera arguments: {', '.join(missing_args)}")
-
-            scene = scene_manager.get(scene_name)
-            if scene is None:
-                raise ValueError(f"Scene '{scene_name}' not found")
-
-            updated = False
-            if hasattr(scene, "set_camera"):
-                updated = scene.set_camera(position, forward, up, fov,
-                                           camera_name=camera_name)
-
-            if not updated:
-                raise RuntimeError(f"Failed to update camera in scene '{scene_name}'")
-
-            snapshot = scene.to_dict() if hasattr(scene, "to_dict") else {"scene_id": scene_name}
-            logger.info("Camera updated in %s camera=%s",
-                        scene_name,
-                        snapshot.get("active_camera_name") or camera_name)
-            return {
-                "status": "success",
-                "scene_id": snapshot.get("scene_id", scene_id or scene_name),
-                "camera_name": snapshot.get("active_camera_name") or camera_name,
-                "scene": snapshot,
-            }
-        except Exception as exc:
-            return {"status": "error", "message": str(exc)}
 
     @staticmethod
     def sun_direction(scene_name: str, if_enable: bool, direction: list[float]) -> dict:
@@ -380,7 +322,7 @@ class SceneTools(PluginBase):
             if actor is None:
                 logger.error(f"open_actor: actor '{actor_name}' not found in scene '{scene_name}'")
                 return False
-            CoronaEditor.js_call_func("/Object", "onActorChange", [actor.actor_type, scene_name, actor_name])
+            CoronaEditor.js_call_func("actor-change", [actor.actor_type, scene_name, actor_name])
             return True
         except Exception as e:
             logger.error(f"open actor error: {e}")

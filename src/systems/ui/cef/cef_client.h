@@ -8,6 +8,7 @@
 #include <wrapper/cef_helpers.h>
 #include <wrapper/cef_message_router.h>
 
+#include <atomic>
 #include <iostream>
 
 #include "corona/kernel/core/i_logger.h"
@@ -28,7 +29,7 @@ extern CefMessageRouterConfig message_router_config;
 
 class OffscreenRenderHandler : public CefRenderHandler {
    public:
-    BrowserTab* tab = nullptr;
+    std::atomic<BrowserTab*> tab{nullptr};
 
     void GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) override;
     void OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,

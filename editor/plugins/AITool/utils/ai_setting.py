@@ -22,13 +22,13 @@ try:
                 "name": "deepseek",
                 "type": "openai-compatible",
                 "base_url": "https://api.deepseek.com/v1",
-                "api_key": "sk-68a6647098a84721bc532e6c327a1401",
+                "api_key": "sk-461a028fe76242ad80a4eee53b9b2e35",
             },
             {
                 "name": "grsai_image",
                 "type": "grsai",
                 "base_url": "https://grsai.dakka.com.cn/v1/api/generate",
-                "api_key": "sk-bfe3d4ab3e2a4d58b232a6f711802059",
+                "api_key": "sk-02c743a4e5394a2ea4934f2132449eb9",
             },
         ]
 
@@ -45,7 +45,7 @@ try:
     def HUNYUAN_3D_SETTINGS() -> Dict[str, Any]:
         return {
             "enable": True,
-            "api_key": "sk-S9Nf0bVYBYp4FrAqSbbjqn7viE4790PaEwx9xgwaHCpwEqMh",
+            "api_key": "sk-YhvNa3WK8BydiBvq24u25MKe78gTG85ooOmpeFp748loExDJ",
             "region": "ap-guangzhou",
             "endpoint": "api.ai3d.cloud.tencent.com",
             "version": "pro",
@@ -57,7 +57,7 @@ try:
             "request_timeout": 300.0,
             "poll_interval": 3.0,
             "poll_timeout": 600.0,
-            "max_concurrent_generations": 3,
+            "max_concurrent_generations": 2,
         }
 
     reload_ai_config()

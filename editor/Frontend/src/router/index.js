@@ -1,6 +1,17 @@
 // 路由文件
 import { createRouter, createWebHashHistory } from 'vue-router';
 
+// dock 面板组件（已在 pluginManifest.js 中静态导入，此处复用避免双模式 import 警告）
+import SceneBar from '../views/sidebar/SceneBar.vue';
+import ObjectPanel from '../views/sidebar/Object.vue';
+import LogView from '../views/sidebar/LogView.vue';
+import FileManager from '../views/sidebar/FileManager.vue';
+import AITalkBar from '../views/sidebar/AITalkBar.vue';
+import Pet from '../views/tools/Pet.vue';
+import ProjectSettings from '../views/sidebar/ProjectSettings.vue';
+import BlocklyWorkspace from '../blockly/components/BlocklyWorkspace.vue';
+import EditorSettings from '../views/sidebar/EditorSettings.vue';
+
 const routes = [
   {
     path: '/',
@@ -35,47 +46,47 @@ const routes = [
   {
     path: '/AITalkBar',
     name: 'AITalkBar',
-    component: () => import('../views/sidebar/AITalkBar.vue'),
+    component: AITalkBar,
   },
   {
     path: '/SceneBar',
     name: 'SceneBar',
-    component: () => import('../views/sidebar/SceneBar.vue'),
+    component: SceneBar,
   },
   {
     path: '/Object',
     name: 'Object',
-    component: () => import('../views/sidebar/Object.vue'),
+    component: ObjectPanel,
   },
   {
     path: '/Pet',
     name: 'Pet',
-    component: () => import('../views/tools/Pet.vue'),
+    component: Pet,
   },
   {
     path: '/LogView',
     name: 'LogView',
-    component: () => import('../views/sidebar/LogView.vue'),
+    component: LogView,
   },
   {
     path: '/FileManager',
     name: 'FileManager',
-    component: () => import('../views/sidebar/FileManager.vue'),
+    component: FileManager,
   },
   {
     path: '/SetUp',
     name: 'SetUp',
-    component: () => import('../views/sidebar/EditorSettings.vue'),
+    component: EditorSettings,
   },
   {
     path: '/ProjectSettings',
     name: 'ProjectSettings',
-    component: () => import('../views/sidebar/ProjectSettings.vue'),
+    component: ProjectSettings,
   },
   {
     path: '/ScratchTool',
     name: 'ScratchTool',
-    component: () => import('../blockly/components/BlocklyWorkspace.vue'),
+    component: BlocklyWorkspace,
   },
 ];
 

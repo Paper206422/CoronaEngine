@@ -260,7 +260,7 @@ class Scene:
         """通知 SceneBar 前端刷新场景树"""
         try:
             scene_name = getattr(self, 'route', '') or getattr(self, 'name', '')
-            CoronaEditor.js_call_func("/SceneBar", "onSceneTreeChanged", [scene_name])
+            CoronaEditor.js_call_func("scene-tree-changed", [scene_name])
         except Exception:
             pass
 
@@ -557,6 +557,13 @@ class Scene:
         for candidate in self.get_actors():
             if _normalize_actor_name(candidate.name) == normalized:
                 return candidate
+        return None
+
+    def find_actor_by_route(self, route: str):
+        """按文件路径查找 Actor"""
+        for actor in self._actors:
+            if actor.route == route:
+                return actor
         return None
 
     def _build_actor_json(self, actors_section: configparser.SectionProxy, actor_name: str) -> Dict[str, Any]:

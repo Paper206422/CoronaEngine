@@ -2,7 +2,7 @@
 全流程一键 Pipeline 工作流（LangGraph DAG）
 
 将三个独立子工作流串联为单次调用：
-  run_multi_scene → run_model_retrieval → run_scene_composition → END
+  classify_terrain → run_multi_scene → run_model_retrieval → run_scene_composition → END
 
 用户只需发送一条 /full_pipeline 指令，即可完成：
   1. 设计方案分析与参考图生成（integrated_multi_scene_workflow）
@@ -26,6 +26,7 @@ from Quasar.ai_workflow.state import WorkflowState
 
 from .constants import FULL_PIPELINE_FUNCTION_ID
 from .nodes import (
+    classify_and_generate_terrain_node,
     run_multi_scene_node,
     run_model_retrieval_node,
     run_scene_composition_node,
@@ -44,11 +45,13 @@ def build_full_pipeline_workflow() -> "CompiledStateGraph":
     """构建全流程一键 Pipeline LangGraph DAG。"""
     graph = StateGraph(WorkflowState)
 
+    graph.add_node("classify_terrain", classify_and_generate_terrain_node)
     graph.add_node("multi_scene", run_multi_scene_node)
     graph.add_node("model_retrieval", run_model_retrieval_node)
     graph.add_node("scene_composition", run_scene_composition_node)
 
-    graph.add_edge(START, "multi_scene")
+    graph.add_edge(START, "classify_terrain")
+    graph.add_edge("classify_terrain", "multi_scene")
     graph.add_edge("multi_scene", "model_retrieval")
     graph.add_edge("model_retrieval", "scene_composition")
     graph.add_edge("scene_composition", END)
@@ -67,7 +70,7 @@ WORKFLOW_COMMANDS: Dict[str, int] = {
 
 register_workflow_checkpoints(
     FULL_PIPELINE_FUNCTION_ID,
-    {"multi_scene", "model_retrieval", "scene_composition"},
+    {"classify_terrain", "multi_scene", "model_retrieval", "scene_composition"},
 )
 
 __all__ = [

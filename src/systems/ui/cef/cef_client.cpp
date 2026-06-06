@@ -17,8 +17,9 @@ namespace Corona::Systems::UI {
 // ============================================================================
 
 void OffscreenRenderHandler::GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) {
-    if (tab) {
-        rect = CefRect(0, 0, tab->width, tab->height);
+    BrowserTab* t = tab;
+    if (t) {
+        rect = CefRect(0, 0, t->width, t->height);
     } else {
         rect = CefRect(0, 0, 800, 600);
     }
@@ -27,19 +28,21 @@ void OffscreenRenderHandler::GetViewRect(CefRefPtr<CefBrowser> browser, CefRect&
 void OffscreenRenderHandler::OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
                                      const RectList& dirty_rects, const void* buffer,
                                      int width, int height) {
-    if (tab && type == PET_VIEW) {
-        size_t bufferSize = width * height * 4;
-        std::lock_guard<std::mutex> lock(tab->mutex);
-        tab->pixel_buffer.resize(bufferSize);
-        std::memcpy(tab->pixel_buffer.data(), buffer, bufferSize);
+    // 捕获 tab 指针到局部变量，避免 remove_tab 在回调期间将其置空导致的竞争
+    BrowserTab* t = tab;
+    if (t && type == PET_VIEW && buffer && width > 0 && height > 0) {
+        size_t bufferSize = static_cast<size_t>(width) * height * 4;
+        std::lock_guard<std::mutex> lock(t->mutex);
+        t->pixel_buffer.resize(bufferSize);
+        std::memcpy(t->pixel_buffer.data(), buffer, bufferSize);
 
         // CEF outputs BGRA on Windows; convert to RGBA for Vulkan RGBA8 textures.
-        auto* pixels = tab->pixel_buffer.data();
+        auto* pixels = t->pixel_buffer.data();
         for (size_t i = 0; i < bufferSize; i += 4) {
             std::swap(pixels[i], pixels[i + 2]);
         }
 
-        tab->buffer_dirty = true;
+        t->buffer_dirty = true;
     }
 }
 

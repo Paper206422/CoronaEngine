@@ -437,7 +437,7 @@ const handleOpenProject = async (path) => {
     const success = await projectLauncherService.openProject(path);
     if (success.data) {
       await appService.start_engine();
-      closeFloat();
+      router.push('/');
     }
   } catch (error) {
     console.error('打开项目失败:', error);

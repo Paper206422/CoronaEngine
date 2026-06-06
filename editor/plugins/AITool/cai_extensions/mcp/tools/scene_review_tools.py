@@ -133,6 +133,11 @@ def _build_scene_rationality_review_tool() -> StructuredTool:
                 "{\n"
                 '  "overall": "PASS" | "NEEDS_IMPROVEMENT" | "FAIL",\n'
                 '  "score": <0-100的整数>,\n'
+                '  "problem_actors": [\n'
+                '    {"actor": "物体名称(场景中的actor名)",\n'
+                '     "issue": "问题标签(如 too_far_left, too_close, overlap, floating, wrong_scale)",\n'
+                '     "reason": "问题描述(中文, 一句话说明为什么需要调整)"}\n'
+                "  ],\n"
                 '  "issues": ["发现的问题1", "发现的问题2"],\n'
                 '  "suggestions": ["改进建议1", "改进建议2"],\n'
                 '  "details": {\n'
@@ -141,7 +146,10 @@ def _build_scene_rationality_review_tool() -> StructuredTool:
                 '    "style": "风格一致性评价",\n'
                 '    "aesthetics": "整体美观性评价"\n'
                 "  }\n"
-                "}"
+                "}\n\n"
+                "【重要】problem_actors 必须列出每个有问题的物体，actor 字段要使用场景中的实际名称。\n"
+                "不要输出数值偏移量（如 offset/suggested_position），只需描述问题。\n"
+                "overall=PASS 时 problem_actors 为空数组 []。"
             )
 
             logger.info(

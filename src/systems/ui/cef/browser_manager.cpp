@@ -170,8 +170,13 @@ void BrowserManager::remove_tab(int tab_id) {
     if (!tabs_.contains(tab_id)) return;
 
     BrowserTab* tab = tabs_[tab_id].get();
-    if (tab->client && tab->client->GetBrowser()) {
-        tab->client->GetBrowser()->GetHost()->CloseBrowser(true);
+    // 先断开 render handler 对 BrowserTab 的引用，避免 CloseBrowser 之后
+    // 仍有在途的 OnPaint 回调访问已释放的 tab（use-after-free 崩溃）。
+    if (tab->client) {
+        tab->client->SetTab(nullptr);
+        if (tab->client->GetBrowser()) {
+            tab->client->GetBrowser()->GetHost()->CloseBrowser(true);
+        }
     }
 
     destroy_tab_texture(tab);

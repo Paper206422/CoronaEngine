@@ -1,6 +1,7 @@
 <template>
-  <div class="rounded-lg overflow-hidden relative bg-[#282828]/70 min-h-screen flex flex-col">
+  <div class="rounded-lg overflow-hidden relative bg-[#282828]/70 flex-1 min-h-0 w-full flex flex-col">
     <DockTitleBar
+      v-if="!isDocked"
       title="详情"
       extraClass="bg-[#84A65B] rounded-t-md text-sm"
       routePath="/Object"
@@ -50,6 +51,18 @@
           @click="switchMainTab('model')"
         >
           <span class="select-none font-medium">模型</span>
+        </div>
+
+        <!-- 时间轴标签 -->
+        <div
+          class="flex-1 px-4 py-2 cursor-pointer transition-all duration-200 ease-in-out text-center text-xs"
+          :class="{
+            'bg-[#264f78]/60 text-white border-b-2 border-[#84a65b]': mainActiveTab === 'timeline',
+            'hover:bg-[#545454] text-[#e0e0e0]': mainActiveTab !== 'timeline',
+          }"
+          @click="switchMainTab('timeline')"
+        >
+          <span class="select-none font-medium">时间轴</span>
         </div>
       </div>
     </div>
@@ -650,6 +663,156 @@
             </div>
           </template>
 
+          <!-- ===== 时间轴内容 ===== -->
+          <template v-else-if="mainActiveTab === 'timeline'">
+            <div class="flex flex-col h-full bg-[#1e1e1e]">
+              <!-- 播放控制栏 -->
+              <div class="flex items-center gap-1 px-2 py-1.5 bg-[#383838] border-b border-[#555] shrink-0">
+                <div class="flex items-center gap-0.5">
+                  <button class="w-6 h-6 flex items-center justify-center rounded hover:bg-[#4a4a4a] text-[#ccc] hover:text-white transition-colors" title="跳到开始" @click="seekToStart">
+                    <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+                  </button>
+                  <button
+                    class="w-7 h-7 flex items-center justify-center rounded-full transition-colors mx-0.5"
+                    :class="timelineState.playing ? 'bg-red-500 hover:bg-red-400' : 'bg-[#84a65b] hover:bg-[#9bc46d]'"
+                    :title="timelineState.playing ? '停止' : '播放'"
+                    @click="togglePlayback"
+                  >
+                    <svg v-if="!timelineState.playing" class="w-3.5 h-3.5 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                    <svg v-else class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+                  </button>
+                  <button class="w-6 h-6 flex items-center justify-center rounded hover:bg-[#4a4a4a] text-[#ccc] hover:text-white transition-colors" title="跳到结尾" @click="seekToEnd">
+                    <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+                  </button>
+                </div>
+                <div class="w-px h-5 bg-[#555] mx-1"></div>
+                <div class="flex items-center gap-1 text-xs">
+                  <span class="text-[#909090] text-[10px]">时间</span>
+                  <input type="text" :value="formatTimelineTime(timelineState.currentTime)" readonly
+                    class="w-20 bg-[#2d2d2d] text-[#e0e0e0] text-xs text-center rounded px-1 py-0.5 border border-[#555] font-mono" />
+                </div>
+                <div class="flex items-center gap-1 text-xs ml-2">
+                  <span class="text-[#909090] text-[10px]">帧</span>
+                  <input type="text" :value="timelineState.currentFrame" readonly
+                    class="w-14 bg-[#2d2d2d] text-[#e0e0e0] text-xs text-center rounded px-1 py-0.5 border border-[#555] font-mono" />
+                </div>
+                <div class="flex-1"></div>
+                <button
+                  class="px-2 py-1 text-[10px] text-red-400 hover:bg-red-500/20 hover:text-red-300 rounded transition-colors flex items-center gap-1"
+                  title="一键清除所有内容"
+                  @click="clearAllTimeline"
+                >
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                  清除
+                </button>
+                <div class="w-px h-5 bg-[#555] mx-1"></div>
+                <div class="flex items-center gap-1 text-xs">
+                  <span class="text-[#909090] text-[10px]">FPS</span>
+                  <select v-model="timelineState.fps"
+                    class="bg-[#2d2d2d] text-[#e0e0e0] text-xs rounded px-1 py-0.5 border border-[#555]">
+                    <option :value="24">24</option>
+                    <option :value="30">30</option>
+                    <option :value="60">60</option>
+                    <option :value="120">120</option>
+                  </select>
+                </div>
+                <div class="flex items-center gap-1 text-xs ml-2">
+                  <span class="text-[#909090] text-[10px]">总帧</span>
+                  <input type="text" :value="timelineState.totalFrames" readonly
+                    class="w-14 bg-[#2d2d2d] text-[#e0e0e0] text-xs text-center rounded px-1 py-0.5 border border-[#555] font-mono" />
+                </div>
+              </div>
+
+              <!-- 时间标尺行 -->
+              <div class="flex shrink-0 border-b border-[#444]">
+                <div class="w-32 shrink-0 bg-[#2d2d2d] border-r border-[#444] px-2 py-1">
+                  <div class="h-5"></div>
+                </div>
+                <div class="flex-1 relative bg-[#2a2a2a] h-5 overflow-hidden" ref="timelineRulerRef"
+                  @click="onRulerClick">
+                  <div class="absolute inset-0 flex items-end pointer-events-none">
+                    <div v-for="tick in timelineTicks" :key="tick.time"
+                      class="absolute bottom-0 flex flex-col items-center"
+                      :style="{ left: tick.left + '%' }">
+                      <div class="h-2 w-px" :class="tick.major ? 'bg-[#888]' : 'bg-[#555]'"></div>
+                      <span v-if="tick.major" class="text-[9px] text-[#999] mt-0.5 font-mono select-none">{{ tick.label }}</span>
+                    </div>
+                  </div>
+                  <div class="absolute top-0 bottom-0 w-0.5 bg-red-500 z-10 pointer-events-none"
+                    :style="{ left: playheadPosition + '%' }">
+                    <div class="w-0 h-0 border-l-[5px] border-r-[5px] border-t-[6px] border-l-transparent border-r-transparent border-t-red-500 -ml-[4.5px]"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 轨道区域 -->
+              <div class="flex-1 flex overflow-auto">
+                <div class="w-32 shrink-0 bg-[#2d2d2d] border-r border-[#444]">
+                  <div v-for="track in timelineTracks" :key="track.id"
+                    class="h-10 flex items-center px-2 border-b border-[#3a3a3a] cursor-pointer hover:bg-[#3a3a3a] transition-colors select-none"
+                    :class="{ 'bg-[#3a3a3a]': timelineState.selectedTrack === track.id }"
+                    @click="timelineState.selectedTrack = track.id">
+                    <span class="text-xs mr-1.5">{{ track.icon }}</span>
+                    <span class="text-[10px] text-[#888] mr-1">{{ track.expanded ? '▼' : '▶' }}</span>
+                    <span class="text-[11px] text-[#ccc] truncate">{{ track.name }}</span>
+                  </div>
+                </div>
+                <div class="flex-1 relative bg-[#1e1e1e]" ref="trackContentRef">
+                  <div v-for="tick in timelineTicks" :key="'g'+tick.time"
+                    class="absolute top-0 bottom-0 pointer-events-none"
+                    :class="tick.major ? 'border-l border-[#333]' : 'border-l border-[#2a2a2a]'"
+                    :style="{ left: tick.left + '%' }"></div>
+                  <div v-for="track in timelineTracks" :key="track.id"
+                    class="h-10 relative border-b border-[#2a2a2a] cursor-crosshair"
+                    :class="{ 'bg-[#252525]': timelineState.selectedTrack === track.id }"
+                    @mousedown="onTrackMouseDown(track, $event)"
+                    @mousemove="onTrackMouseMove(track, $event)"
+                    @mouseup="onTrackMouseUp(track, $event)"
+                    @mouseleave="onTrackMouseLeave(track, $event)"
+                    @click="onTrackClick(track, $event)">
+                    <!-- 已添加的片段 -->
+                    <div v-for="(clip, ci) in track.clips" :key="ci"
+                      class="absolute top-1 bottom-1 rounded-sm cursor-pointer group"
+                      :class="clipColorClass(track.type)"
+                      :style="{ left: clipTimeToPercent(clip.startFrame) + '%', width: Math.max(clipTimeToPercent(clip.durationFrames) - clipTimeToPercent(0), 1.5) + '%' }"
+                      :title="clip.name + ' (' + clip.startFrame + '-' + (clip.startFrame+clip.durationFrames) + ')'"
+                      @mousedown.stop
+                      @dblclick.stop="deleteClip(track, ci)">
+                      <span class="text-[9px] text-white/90 truncate px-1 leading-6 select-none block pointer-events-none">{{ clip.name }}</span>
+                    </div>
+                    <!-- 已添加的关键帧 -->
+                    <div v-for="(kf, ki) in track.keyframes" :key="'kf'+ki"
+                      class="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 cursor-pointer z-10 hover:scale-125 transition-transform"
+                      :class="keyframeColorClass(track.type)"
+                      :style="{ left: 'calc(' + clipTimeToPercent(kf.frame) + '% - 5px)' }"
+                      :title="'帧 ' + kf.frame + ': ' + (kf.value || '')"
+                      @mousedown.stop
+                      @dblclick.stop="deleteKeyframe(track, ki)"></div>
+                    <!-- 长按拖拽中的预览条 -->
+                    <div v-if="clipDragState.active && clipDragState.trackId === track.id"
+                      class="absolute top-1 bottom-1 rounded-sm z-20 pointer-events-none"
+                      :class="clipPreviewColor(track.type)"
+                      :style="clipDragPreviewStyle"></div>
+                  </div>
+                  <!-- 播放头 -->
+                  <div class="absolute top-0 bottom-0 w-0.5 bg-red-500 z-20 pointer-events-none"
+                    :style="{ left: playheadPosition + '%' }"></div>
+                </div>
+              </div>
+
+              <!-- 底部状态栏 -->
+              <div class="flex items-center gap-3 px-2 py-1 bg-[#383838] border-t border-[#555] text-[10px] text-[#888] shrink-0">
+                <span>时长: {{ formatTimelineTime(timelineState.duration) }}</span>
+                <span class="w-px h-3 bg-[#555]"></span>
+                <span>帧范围: 0 - {{ timelineState.totalFrames }}</span>
+                <span class="w-px h-3 bg-[#555]"></span>
+                <span>提示: <span class="text-[#999]">长按拖拽添加片段 · 点击添加关键帧 · 双击删除</span></span>
+                <span class="flex-1"></span>
+                <span class="text-[#84a65b]">{{ timelineState.playing ? '▶ 播放中' : '' }}</span>
+              </div>
+            </div>
+          </template>
+
           <!-- ===== 模型内容 ===== -->
           <template v-else-if="mainActiveTab === 'model'">
             <!-- 模型 - 基础信息 -->
@@ -922,7 +1085,7 @@
 
 <script setup>
 import NumberInputWithSlider from '@/components/ui/NumberInputWithSlider.vue';
-import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue';
+import { ref, reactive, onMounted, onUnmounted, computed, watch, nextTick } from 'vue';
 import { useRoute } from 'vue-router';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
 import BlocklyWorkspace from '@/blockly/components/BlocklyWorkspace.vue';
@@ -930,6 +1093,10 @@ import { appService, sceneService, projectService } from '@/utils/bridge.js';
 import { DEFAULT_SCENE_NAME } from '@/utils/constants.js';
 import { useErrorHandler } from '@/composables/useErrorHandler.js';
 import { setActorContext } from '@/blockly/composables/useActorContext.js';
+import { coronaEventBus } from '@/utils/eventBus.js';
+import { useDockPanel } from '@/composables/useDockPanel.js';
+
+const { closePanel: closeDockPanel, isDocked } = useDockPanel();
 
 const { error: logError, warn: logWarn } = useErrorHandler('Object');
 
@@ -966,6 +1133,269 @@ const modelTabs = [
   { id: 'Model', label: '模型' },
   { id: 'Blockly', label: '积木' },
 ];
+
+// ========== 时间轴状态 ==========
+const timelineRulerRef = ref(null);
+const trackContentRef = ref(null);
+
+const timelineState = reactive({
+  playing: false,
+  currentTime: 0,
+  currentFrame: 0,
+  totalFrames: 300,
+  duration: 10.0,
+  fps: 30,
+  selectedTrack: 'track-anim',
+});
+
+const timelineTracks = reactive([
+  { id: 'track-anim', name: '动画轨道', type: 'animation', icon: '🎬', expanded: true, clips: [], keyframes: [] },
+  { id: 'track-audio', name: '音频轨道', type: 'audio', icon: '🔊', expanded: true, clips: [], keyframes: [] },
+  { id: 'track-video', name: '视频轨道', type: 'video', icon: '🎥', expanded: false, clips: [], keyframes: [] },
+  { id: 'track-keyframe', name: '关键帧轨道', type: 'keyframe', icon: '🔑', expanded: true, clips: [], keyframes: [] },
+]);
+
+// ── 播放控制 ──
+let playbackRafId = null;
+let lastPlaybackTime = 0;
+
+function startPlayback() {
+  timelineState.playing = true;
+  lastPlaybackTime = performance.now();
+  playbackRafId = requestAnimationFrame(playbackLoop);
+}
+
+function stopPlayback() {
+  timelineState.playing = false;
+  if (playbackRafId != null) {
+    cancelAnimationFrame(playbackRafId);
+    playbackRafId = null;
+  }
+}
+
+function playbackLoop(now) {
+  if (!timelineState.playing) return;
+  const dt = (now - lastPlaybackTime) / 1000;
+  lastPlaybackTime = now;
+  timelineState.currentTime += dt;
+  timelineState.currentFrame = Math.round(timelineState.currentTime * timelineState.fps);
+  if (timelineState.currentFrame >= timelineState.totalFrames) {
+    timelineState.currentFrame = timelineState.totalFrames;
+    timelineState.currentTime = timelineState.duration;
+    stopPlayback();
+    return;
+  }
+  playbackRafId = requestAnimationFrame(playbackLoop);
+}
+
+function togglePlayback() {
+  if (timelineState.playing) {
+    stopPlayback();
+  } else {
+    if (timelineState.currentFrame >= timelineState.totalFrames) {
+      timelineState.currentFrame = 0;
+      timelineState.currentTime = 0;
+    }
+    startPlayback();
+  }
+}
+
+function seekToStart() {
+  stopPlayback();
+  timelineState.currentFrame = 0;
+  timelineState.currentTime = 0;
+}
+
+function seekToEnd() {
+  stopPlayback();
+  timelineState.currentFrame = timelineState.totalFrames;
+  timelineState.currentTime = timelineState.duration;
+}
+
+// ── 一键清除 ──
+function clearAllTimeline() {
+  stopPlayback();
+  timelineState.currentFrame = 0;
+  timelineState.currentTime = 0;
+  for (const track of timelineTracks) {
+    track.clips.splice(0);
+    track.keyframes.splice(0);
+  }
+}
+
+// ── 片段长按拖拽创建 ──
+const clipDragState = reactive({
+  active: false,
+  trackId: null,
+  startFrame: 0,
+  currentFrame: 0,
+});
+
+let longPressTimer = null;
+
+function frameFromEvent(event) {
+  const el = trackContentRef.value;
+  if (!el) return 0;
+  const rect = el.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  return Math.round((x / rect.width) * timelineState.totalFrames);
+}
+
+function onTrackMouseDown(track, event) {
+  if (event.button !== 0) return;
+  // 关键帧轨道：不触发长按拖拽（走 click 添加关键帧）
+  if (track.type === 'keyframe') return;
+  const frame = frameFromEvent(event);
+  longPressTimer = setTimeout(() => {
+    clipDragState.active = true;
+    clipDragState.trackId = track.id;
+    clipDragState.startFrame = frame;
+    clipDragState.currentFrame = frame;
+    longPressTimer = null;
+  }, 300);
+}
+
+function onTrackMouseMove(track, event) {
+  if (!clipDragState.active || clipDragState.trackId !== track.id) return;
+  const frame = frameFromEvent(event);
+  clipDragState.currentFrame = Math.max(0, Math.min(frame, timelineState.totalFrames));
+}
+
+function onTrackMouseUp(track, event) {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+  if (clipDragState.active && clipDragState.trackId === track.id) {
+    const s = clipDragState.startFrame;
+    const e = clipDragState.currentFrame;
+    const start = Math.min(s, e);
+    const end = Math.max(s, e);
+    const duration = end - start;
+    if (duration > 1) {
+      const count = track.clips.filter(c => c.startFrame === start).length + 1;
+      track.clips.push({
+        name: `${track.name}_${track.clips.length + 1}`,
+        startFrame: start,
+        durationFrames: duration,
+      });
+    }
+    clipDragState.active = false;
+    clipDragState.trackId = null;
+  }
+}
+
+function onTrackMouseLeave(track, event) {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+  if (clipDragState.active && clipDragState.trackId === track.id) {
+    // 取消拖拽
+    clipDragState.active = false;
+    clipDragState.trackId = null;
+  }
+}
+
+// ── 关键帧点击添加 ──
+function onTrackClick(track, event) {
+  if (track.type !== 'keyframe') return;
+  // 如果刚结束拖拽，忽略 click
+  const frame = frameFromEvent(event);
+  if (frame < 0 || frame > timelineState.totalFrames) return;
+  track.keyframes.push({
+    frame: frame,
+    value: `key_${frame}`,
+  });
+}
+
+// ── 双击删除 ──
+function deleteClip(track, index) {
+  track.clips.splice(index, 1);
+}
+
+function deleteKeyframe(track, index) {
+  track.keyframes.splice(index, 1);
+}
+
+// ── 标尺点击跳转 ──
+function onRulerClick(event) {
+  stopPlayback();
+  const frame = frameFromEvent(event);
+  timelineState.currentFrame = Math.max(0, Math.min(frame, timelineState.totalFrames));
+  timelineState.currentTime = timelineState.currentFrame / timelineState.fps;
+}
+
+// ── 拖拽预览样式 ──
+const clipDragPreviewStyle = computed(() => {
+  const s = clipDragState.startFrame;
+  const e = clipDragState.currentFrame;
+  const start = Math.min(s, e);
+  const end = Math.max(s, e);
+  return {
+    left: clipTimeToPercent(start) + '%',
+    width: Math.max(clipTimeToPercent(end) - clipTimeToPercent(start), 1) + '%',
+  };
+});
+
+function clipPreviewColor(type) {
+  switch (type) {
+    case 'animation': return 'bg-blue-500/40 border border-dashed border-blue-300/60';
+    case 'audio': return 'bg-green-500/40 border border-dashed border-green-300/60';
+    case 'video': return 'bg-purple-500/40 border border-dashed border-purple-300/60';
+    default: return 'bg-gray-500/40 border border-dashed border-gray-300/60';
+  }
+}
+
+const timelineTicks = computed(() => {
+  const ticks = [];
+  const totalFrames = timelineState.totalFrames;
+  const fps = timelineState.fps;
+  const totalSeconds = totalFrames / fps;
+  for (let t = 0; t <= totalSeconds + 0.001; t += 0.5) {
+    const isMajor = Math.abs(Math.round(t) - t) < 0.001;
+    ticks.push({ time: t, left: (t / totalSeconds) * 100, major: isMajor, label: isMajor ? formatTimelineTime(t) : '' });
+  }
+  return ticks;
+});
+
+const playheadPosition = computed(() => {
+  if (timelineState.totalFrames <= 0) return 0;
+  return (timelineState.currentFrame / timelineState.totalFrames) * 100;
+});
+
+function formatTimelineTime(seconds) {
+  const t = Math.max(0, seconds);
+  const m = Math.floor(t / 60);
+  const s = Math.floor(t % 60);
+  const ms = Math.floor((t % 1) * 1000);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+}
+
+function clipTimeToPercent(frame) {
+  if (timelineState.totalFrames <= 0) return 0;
+  return (frame / timelineState.totalFrames) * 100;
+}
+
+function clipColorClass(type) {
+  switch (type) {
+    case 'animation': return 'bg-blue-600/70 border border-blue-400/50 hover:bg-blue-500/80';
+    case 'audio': return 'bg-green-700/70 border border-green-500/50 hover:bg-green-600/80';
+    case 'video': return 'bg-purple-700/70 border border-purple-500/50 hover:bg-purple-600/80';
+    case 'keyframe': return 'bg-yellow-600/50 border border-yellow-500/30 hover:bg-yellow-500/60';
+    default: return 'bg-gray-600/70 border border-gray-500/50';
+  }
+}
+
+function keyframeColorClass(type) {
+  switch (type) {
+    case 'animation': return 'bg-blue-400 border border-blue-200';
+    case 'audio': return 'bg-green-400 border border-green-200';
+    case 'video': return 'bg-purple-400 border border-purple-200';
+    case 'keyframe': return 'bg-yellow-400 border border-yellow-200';
+    default: return 'bg-gray-400 border border-gray-200';
+  }
+}
 
 // ========== 当前打开的文件 ==========
 const currentActorFile = ref('');
@@ -1058,6 +1488,8 @@ const currentFileInfo = computed(() => {
   } else if (mainActiveTab.value === 'actor') {
     const fileName = currentActorFile.value ? actorData.value.name : '未打开';
     return `👤 单位: ${fileName}`;
+  } else if (mainActiveTab.value === 'timeline') {
+    return `⏱ 时间轴: ${formatTimelineTime(timelineState.currentTime)} / ${formatTimelineTime(timelineState.duration)}`;
   } else {
     const fileName = currentModelFile.value ? modelData.value.name : '未打开';
     return `📦 模型: ${fileName}`;
@@ -1419,34 +1851,14 @@ const updateModelTransformFast = (operationType, axis = null, value = null) => {
   });
 };
 
-// 更新单位变换
+// 更新单位变换——快速通道已写入 SharedDataHub，此处仅触发写盘
 const updateActorTransform = (operationType) => {
   if (!currentActorFile.value || !actorData.value.parentScene) return;
   debounced(`actor_transform_${operationType}`, async () => {
     try {
-      let operation = '';
-      const vector = getActorTransformVector(operationType);
-      if (!vector) return;
-
-      switch (operationType) {
-        case 'Move':
-          operation = 'Move';
-          break;
-        case 'Rotate':
-          operation = 'Rotate';
-          break;
-        case 'Scale':
-          operation = 'Scale';
-          break;
-        default:
-          return;
-      }
-
-      await sceneService.actorOperation(
+      await sceneService.saveActor(
         actorData.value.parentScene,
-        currentActorFile.value,
-        operation,
-        vector
+        currentActorFile.value
       );
     } catch (e) {
       logError('更新单位变换失败', e);
@@ -1561,48 +1973,14 @@ const updateCameraLockRotation = () => {
   });
 };
 
-// 更新模型变换
+// 更新模型变换——快速通道已写入 SharedDataHub，此处仅触发写盘
 const updateModelTransform = (operationType) => {
   if (!currentModelFile.value || !modelData.value.targetScene) return;
   debounced(`model_transform_${operationType}`, async () => {
     try {
-      let vector = [];
-      let operation = '';
-
-      switch (operationType) {
-        case 'Move':
-          vector = [
-            Number(modelData.value.defaultTransform.position.x),
-            Number(modelData.value.defaultTransform.position.y),
-            Number(modelData.value.defaultTransform.position.z),
-          ];
-          operation = 'Move';
-          break;
-        case 'Rotate':
-          vector = [
-            Number(modelData.value.defaultTransform.rotation.x),
-            Number(modelData.value.defaultTransform.rotation.y),
-            Number(modelData.value.defaultTransform.rotation.z),
-          ];
-          operation = 'Rotate';
-          break;
-        case 'Scale':
-          vector = [
-            Number(modelData.value.defaultTransform.scale.x),
-            Number(modelData.value.defaultTransform.scale.y),
-            Number(modelData.value.defaultTransform.scale.z),
-          ];
-          operation = 'Scale';
-          break;
-        default:
-          return;
-      }
-
-      await sceneService.actorOperation(
+      await sceneService.saveActor(
         modelData.value.targetScene,
-        currentModelFile.value,
-        operation,
-        vector
+        currentModelFile.value
       );
     } catch (e) {
       logError('更新模型变换失败', e);
@@ -1722,6 +2100,7 @@ const selectActorScript = async () => {
 };
 
 const CloseFloat = async () => {
+  if (closeDockPanel) { closeDockPanel(); return; }
   try {
     await appService.removeDockWidget('SceneDatas');
   } catch (e) {
@@ -1870,12 +2249,24 @@ const setupWindowListener = () => {
 
 // ========== 生命周期 ==========
 onMounted(async () => {
-  // 场景默认存在，直接加载场景数据
   const result = await projectService.OnInit();
-  await loadSceneData(result.data.path || DEFAULT_SCENE_NAME);
+  const initData = result?.data ?? result;
+  const activeScene = initData?.scenes?.[initData?.active_index ?? 0];
+  await loadSceneData(activeScene?.path || DEFAULT_SCENE_NAME);
 
   setupWindowListener();
+
+  coronaEventBus.on('actor-change', (type, sceneId, actorId, oldPath) => {
+    if (window.onActorChange) window.onActorChange(type, sceneId, actorId, oldPath);
+  });
+  coronaEventBus.on('transform-update', (sceneName, actorName, position, rotation, scale, type) => {
+    if (window.onTransformUpdate) window.onTransformUpdate(sceneName, actorName, position, rotation, scale, type);
+  });
 });
 
-onUnmounted(() => {});
+onUnmounted(() => {
+  stopPlayback();
+  coronaEventBus.off('actor-change');
+  coronaEventBus.off('transform-update');
+});
 </script>

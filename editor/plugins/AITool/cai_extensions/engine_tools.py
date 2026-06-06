@@ -85,3 +85,42 @@ def register_engine_loaders(registry: ToolRegistry) -> None:
         )
     except ImportError as exc:
         logger.warning("scene_review_tools 注册失败（跳过）: %s", exc)
+
+    # 场景快照
+    try:
+        from .mcp.tools.scene_snapshot import load_scene_snapshot_tools
+        registry.register_loader(
+            loader=load_scene_snapshot_tools,
+            category=ToolCategory.SCENE,
+            dependencies=[],
+            requires_config=False,
+            source="cai_extensions.mcp.scene_snapshot",
+        )
+    except ImportError as exc:
+        logger.warning("scene_snapshot_tools 注册失败（跳过）: %s", exc)
+
+    # 绝对变换
+    try:
+        from .mcp.tools.set_actor_transform import load_set_actor_transform_tools
+        registry.register_loader(
+            loader=load_set_actor_transform_tools,
+            category=ToolCategory.SCENE,
+            dependencies=[],
+            requires_config=False,
+            source="cai_extensions.mcp.set_actor_transform",
+        )
+    except ImportError as exc:
+        logger.warning("set_actor_transform_tools 注册失败（跳过）: %s", exc)
+
+    # 锚点放置
+    try:
+        from .mcp.tools.place_object_near import load_place_object_near_tools
+        registry.register_loader(
+            loader=load_place_object_near_tools,
+            category=ToolCategory.SCENE,
+            dependencies=[],
+            requires_config=False,
+            source="cai_extensions.mcp.place_object_near",
+        )
+    except ImportError as exc:
+        logger.warning("place_object_near_tools 注册失败（跳过）: %s", exc)

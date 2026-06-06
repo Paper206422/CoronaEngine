@@ -30,6 +30,18 @@ from .progress import ParallelProgressTracker
 
 logger = logging.getLogger(__name__)
 
+# 延迟导入，避免循环依赖
+_generate_terrain_for_outdoor = None
+
+def _get_terrain_classifier():
+    global _generate_terrain_for_outdoor
+    if _generate_terrain_for_outdoor is None:
+        from ..terrain_generation_workflow.classifier import (
+            generate_terrain_for_outdoor_scenes,
+        )
+        _generate_terrain_for_outdoor = generate_terrain_for_outdoor_scenes
+    return _generate_terrain_for_outdoor
+
 # stream_output_node 的 no-op formatter（节点内部自行发布事件）
 NO_OUTPUT = lambda _state, _updates: []
 
@@ -45,12 +57,29 @@ DECOMPOSE_SYSTEM_PROMPT = """你是场景拆解专家。将用户的高层空间
   {"scene_name": "客房", "scene_prompt": "Create a 5-star hotel guest room with king-size bed, velvet drapes, gold-trimmed furniture, and a marble bathroom."}
 ]
 
-约束:
+核心规则:
 1. scene_name 必须简短（≤10 个字符），用于文件命名
 2. scene_prompt 必须详细（≥50 个字符），包含风格、元素、材质、布局
 3. 最多拆解 5 个子场景（避免超时）
-4. 如果用户需求本身就是单场景，返回 1 个元素的数组
-5. 只输出 JSON 数组，不要输出解释文字"""
+4. 只输出 JSON 数组，不要输出解释文字
+
+地形场景拆解规则（重要）:
+- 当用户描述的是一个自然地形场景（草原/沙漠/山脉/森林/海滩等），没有明确列出子区域时，
+  你必须主动拆解为 2-3 个不同特征的子场景，每个子场景有不同的地形变化:
+  * 示例输入: "草原"
+  * 示例输出: [
+      {"scene_name": "平坦草原", "scene_prompt": "一片开阔平坦的草原区域，低矮起伏，主要是低地草和中坡草覆盖，适合搭建蒙古包和放牧。地表有少量灌木点缀，远处是连绵缓坡。"},
+      {"scene_name": "丘陵草坡", "scene_prompt": "草原上的丘陵地带，地形有明显起伏，高地区域植被以高草和灌木为主，有几处岩石露头。坡面朝南，适合建造瞭望台。"},
+      {"scene_name": "河畔草地", "scene_prompt": "草原边缘的河畔区域，地势低洼平坦，靠近水源。地面以低地草为主，湿润处有花丛分布。适合搭建帐篷营地和钓鱼点。"}
+    ]
+  * 每个子场景的 scene_prompt 必须包含具体的地形描述词（平坦/起伏/缓坡/陡坡/低洼/高地），
+    这样后面的地形生成模块才能为每个子场景生成不同的地形
+
+- 当用户明确列出了具体区域（如"蒙古包和河边帐篷"），按用户描述拆解，不用自动扩展
+
+室内场景拆解规则:
+- 当用户描述室内空间（卧室/客厅/办公室/酒店等），按功能区域拆解
+- 如果用户只说了单一室内类型（如"卧室"），返回 1 个元素即可"""
 
 
 @stream_output_node("integrated", NO_OUTPUT)
@@ -336,6 +365,73 @@ def _push_progress(
         pass  # 进度推送失败不阻塞主流程
 
 
+# ---------------------------------------------------------------------------
+# Classify & Generate Terrain Node (indoor/outdoor)
+# ---------------------------------------------------------------------------
+
+@stream_output_node("integrated", NO_OUTPUT)
+def classify_and_generate_terrain_node(state: WorkflowState) -> Dict[str, Any]:
+    """对 decompose 产生的子场景分类 indoor/outdoor, outdoor 场景生成地形。
+
+    分类规则:
+      1. 关键词快速匹配 (中文/英文 indoor/outdoor 词表)
+      2. 无法匹配 → LLM 批量分类
+      3. outdoor → 匹配地形预设 (草原/沙漠/...) → 调用 terrain_generator
+      4. indoor → 跳过, 不做任何地形处理
+
+    产出:
+      intermediate.classified_scenes: 带 scene_type 标记的子场景列表
+      global_assets.terrain: {scene_name: terrain_result} 供 scene_composition 使用
+    """
+    sub_scenes: List[Dict[str, Any]] = state.get("intermediate", {}).get("sub_scenes", [])
+
+    if not sub_scenes:
+        logger.warning("[classify_terrain] no sub_scenes to classify")
+        return {"intermediate": {"classified_scenes": []}}
+
+    output_base = state.get("intermediate", {}).get("output_dir", "")
+
+    try:
+        classify_fn = _get_terrain_classifier()
+        result = classify_fn(sub_scenes, dict(state), output_base)
+    except Exception as e:
+        logger.exception("[classify_terrain] failed: %s", e)
+        for sc in sub_scenes:
+            sc["scene_type"] = "indoor"
+            sc["terrain_keyword"] = None
+        result = {
+            "intermediate": {"classified_scenes": sub_scenes, "terrain_results": {}},
+            "global_assets": {},
+        }
+
+    # 推送进度
+    session_id = str(state.get("session_id", "default") or "default")
+    classified = result.get("intermediate", {}).get("classified_scenes", sub_scenes)
+    terrain_results = result.get("intermediate", {}).get("terrain_results", {})
+    outdoor_count = sum(1 for sc in classified if sc.get("scene_type") == "outdoor")
+    terrain_ok = sum(1 for r in terrain_results.values() if r.get("ok"))
+
+    status_text = f"场景分类完成: {len(classified)} 个子场景"
+    if outdoor_count > 0:
+        status_text += f" ({outdoor_count} 个室外, {terrain_ok} 个地形已生成)"
+
+    entry = build_node_dialogue_entry(
+        "integrated",
+        [{"content_type": "text", "content_text": status_text}],
+        node_name="classify_terrain",
+        function_id=PARALLEL_GENERATE_FUNCTION_ID,
+    )
+    try:
+        publish_node_entries_event(session_id, "classify_terrain", [entry])
+    except Exception:
+        pass
+
+    logger.info("[classify_terrain] done: %d outdoor, %d terrain generated",
+                outdoor_count, terrain_ok)
+
+    return result
+
+
 @stream_output_node("integrated", NO_OUTPUT)
 def fork_generate_node(state: WorkflowState) -> Dict[str, Any]:
     """Phase 1: 并行执行所有子场景的 multi_scene + model_retrieval。"""
@@ -608,6 +704,104 @@ def serial_compose_node(state: WorkflowState) -> Dict[str, Any]:
                 "child_session": result.get("child_session", ""),
             })
             logger.info("[parallel] compose: '%s' done → %s", scene_name, scene_path)
+
+            # 导入地形/地板 mesh
+            terrain_results = state.get("global_assets", {}).get("terrain", {})
+            terrain_data = terrain_results.get(scene_name, {})
+            terrain_obj = terrain_data.get("files", {}).get("obj", "")
+            # 检测地板类型: 读 config 文件内容
+            is_indoor = False
+            preset_floor_size = 10.0
+            config_path = terrain_data.get("files", {}).get("config", "")
+            if config_path and os.path.exists(config_path):
+                try:
+                    with open(config_path, "r", encoding="utf-8") as _f:
+                        _cfg = json.loads(_f.read())
+                        is_indoor = _cfg.get("type") == "indoor_floor"
+                        if is_indoor:
+                            preset_floor_size = _cfg.get("size", 10.0)
+                except Exception:
+                    pass
+
+            if terrain_obj and os.path.exists(terrain_obj):
+                try:
+                    from ..scene_composition_workflow.helpers import get_tool
+
+                    pos_y = 0.0
+                    final_obj = terrain_obj
+
+                    # ---- 室内地板：固定大尺寸铺满整个区域 ----
+                    if is_indoor:
+                        scene_actors = final.get("intermediate", {}).get("scene_actors", [])
+                        # 取物体位置的包围盒
+                        min_x = min_z = float("inf")
+                        max_x = max_z = float("-inf")
+                        min_y = float("inf")
+                        for actor in scene_actors:
+                            geo = actor.get("geometry", {})
+                            pos = geo.get("pos", [0, 0, 0])
+                            min_x = min(min_x, pos[0])
+                            max_x = max(max_x, pos[0])
+                            min_z = min(min_z, pos[2])
+                            max_z = max(max_z, pos[2])
+                            min_y = min(min_y, pos[1])
+
+                        pos_y = -0.5
+                        if scene_actors:
+                            pos_y = min_y - 0.5
+                            # 用物体跨度 + 大 margin，再取 sqrt 保证地板足够大
+                            span = max(max_x - min_x, max_z - min_z, 4.0)
+                            half = max(span * 1.5, 12.0)  # 至少 24m 见方，确保铺满所有物体
+                        else:
+                            half = 12.0
+
+                        terrain_dir = os.path.dirname(terrain_obj)
+                        prompt_text = ""
+                        for sc in state.get("intermediate", {}).get("classified_scenes", []):
+                            if sc.get("scene_name") == scene_name:
+                                prompt_text = sc.get("scene_prompt", "")
+                                break
+                        from ..terrain_generation_workflow.terrain_generator import (
+                            generate_room_box,
+                            _resolve_indoor_floor_style,
+                            INDOOR_FLOOR_STYLES,
+                        )
+                        style = _resolve_indoor_floor_style(prompt_text)
+                        style_def = INDOOR_FLOOR_STYLES.get(style, INDOOR_FLOOR_STYLES["wood_warm"])
+                        try:
+                            result_floor = generate_room_box(
+                                terrain_dir,
+                                min_x=-half, max_x=half,
+                                min_y=0.0, max_y=style_def["wall_height"],
+                                min_z=-half, max_z=half,
+                                style=style,
+                            )
+                            final_obj = result_floor["files"]["obj"]
+                            logger.info("[parallel] floor: %s %.0fx%.0fm style=%s y=%.2f",
+                                        scene_name, half*2, half*2,
+                                        style_def.get("label", style), pos_y)
+                        except Exception as fe:
+                            logger.warning("[parallel] floor generation failed: %s", fe)
+
+                    tool = get_tool("import_model")
+                    if tool:
+                        tool.invoke({
+                            "model_path": final_obj,
+                            "actor_name": f"Terrain_{scene_name}",
+                            "position": [0, pos_y, 0],
+                            "rotation": [0, 0, 0],
+                            "scale": [1, 1, 1],
+                            "scene_name": scene_name,
+                        })
+                        logger.info("[parallel] %s imported: '%s' → %s (y=%.2f)",
+                                    "indoor floor" if is_indoor else "terrain",
+                                    scene_name, final_obj, pos_y)
+                    else:
+                        logger.warning("[parallel] import_model tool not available, terrain not imported")
+                except Exception as te:
+                    logger.warning("[parallel] terrain import failed for '%s': %s", scene_name, te)
+            elif terrain_obj:
+                logger.warning("[parallel] terrain obj not found: %s", terrain_obj)
 
         except Exception as e:
             logger.exception("[parallel] compose: '%s' failed: %s", scene_name, e)

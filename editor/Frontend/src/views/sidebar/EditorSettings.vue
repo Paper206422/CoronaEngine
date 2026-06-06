@@ -1,6 +1,7 @@
 <template>
-  <div class="h-screen rounded-lg overflow-hidden relative bg-[#282828]/90 flex flex-col text-white font-sans">
+  <div class="flex-1 min-h-0 w-full rounded-lg overflow-hidden relative bg-[#282828]/90 flex flex-col text-white font-sans">
     <DockTitleBar
+      v-if="!isDocked"
       title="编辑器设置"
       extraClass="bg-[#5b8def]"
       routePath="/SetUp"
@@ -124,7 +125,10 @@
 <script setup>
 import { ref, reactive, watch, onMounted } from 'vue';
 import { appService } from '@/utils/bridge';
+import { useDockPanel } from '@/composables/useDockPanel.js';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
+
+const { closePanel: closeDockPanel, isDocked } = useDockPanel();
 
 const STORAGE_KEY = 'corona_editor_settings';
 
@@ -196,6 +200,7 @@ watch(form, () => {
 
 const closeFloat = () => {
   window.__settingsOpen = false;
+  if (closeDockPanel) { closeDockPanel(); return; }
   appService.removeDockWidgetByRoute('/SetUp').catch(() => {});
 };
 

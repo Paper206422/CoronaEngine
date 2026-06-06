@@ -103,6 +103,27 @@ def remove_batch(routes: List[str]) -> int:
 
 
 # ============================================================================
+# 全局 Actor 查询（跨所有 Scene）
+# ============================================================================
+def find_actor(name: str):
+    """跨所有 Scene 按名称查找 Actor"""
+    for scene in _scenes.values():
+        actor = scene.find_actor(name)
+        if actor is not None:
+            return actor
+    return None
+
+
+def find_actor_by_route(route: str):
+    """跨所有 Scene 按文件路径查找 Actor"""
+    for scene in _scenes.values():
+        actor = scene.find_actor_by_route(route)
+        if actor is not None:
+            return actor
+    return None
+
+
+# ============================================================================
 # 调试与监控
 # ============================================================================
 def get_all() -> Dict[str, Scene]:

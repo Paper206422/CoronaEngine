@@ -1,6 +1,7 @@
 <template>
-  <div class="min-h-screen rounded-lg overflow-hidden relative bg-[#282828]/90">
+  <div class="flex flex-col flex-1 min-h-0 w-full rounded-lg overflow-hidden relative bg-[#282828]/90">
     <DockTitleBar
+      v-if="!isDocked"
       title="助手"
       extraClass="bg-[#84A65B]"
       routePath="/AITalkBar"
@@ -467,7 +468,10 @@ import DockTitleBar from '@/components/ui/DockTitleBar.vue';
 import RichTextPart from '@/components/ui/RichTextPart.vue';
 import { appService, aiClient, aiService } from '@/utils/bridge.js';
 import { useErrorHandler } from '@/composables/useErrorHandler.js';
+import { useDockPanel } from '@/composables/useDockPanel.js';
+import { coronaEventBus } from '@/utils/eventBus.js';
 
+const { closePanel: closeDockPanel, isDocked } = useDockPanel();
 const { error: logError, warn: logWarn } = useErrorHandler('AITalkBar');
 
 const messages = ref([{ sender: 'AI', text: '你好！我是 AI。', status: 'success' }]);
@@ -1540,6 +1544,7 @@ window.receiveAIMessage = async (data) => {
 };
 
 const closeFloat = async () => {
+  if (closeDockPanel) { closeDockPanel(); return; }
   try {
     await appService.removeDockWidgetByRoute('/AITalkBar');
   } catch (e) {
@@ -1547,8 +1552,14 @@ const closeFloat = async () => {
   }
 };
 
+// 事件总线 handler 引用（用于精准卸载）
+const onAiChunk = (payload) => {
+  if (window.receiveAIMessageChunk) window.receiveAIMessageChunk(payload);
+};
+
 onMounted(async () => {
   document.addEventListener('click', handleGlobalClick, true);
+  coronaEventBus.on('ai-chunk', onAiChunk);
 });
 
 function handleGlobalClick(e) {
@@ -1566,6 +1577,7 @@ function handleGlobalClick(e) {
 }
 
 onUnmounted(() => {
+  coronaEventBus.off('ai-chunk', onAiChunk);
   document.removeEventListener('click', handleGlobalClick, true);
 
   if (sendTimeout.value) {

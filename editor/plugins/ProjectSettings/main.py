@@ -11,7 +11,7 @@ from utils.settings import settings_manager
 logger = logging.getLogger(__name__)
 
 
-@PluginBase.register_web("ProjectSettings", "/ProjectSettings", "项目设置", -1, "", 600, 800, False, False)
+@PluginBase.register_web("ProjectSettings")
 class ProjectSettings(PluginBase):
 
     @staticmethod

@@ -8,8 +8,10 @@
 #include <corona/shared_data_hub.h>
 #include <corona/systems/optics/optics_system.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -197,6 +199,27 @@ bool OpticsSystem::initialize_render_pipelines() {
     return true;
 }
 
+void OpticsSystem::ensure_camera_render_resources(uint32_t width, uint32_t height) {
+    width = std::max(width, 1u);
+    height = std::max(height, 1u);
+
+    if (hardware_->gbufferSize.x == width && hardware_->gbufferSize.y == height &&
+        hardware_->visibilityImage && hardware_->depthImage && hardware_->finalOutputImage) {
+        return;
+    }
+
+    hardware_->gbufferSize.x = width;
+    hardware_->gbufferSize.y = height;
+    hardware_->visibilityImage = HardwareImage(width, height, ImageFormat::RGBA32_UINT,
+                                               ImageUsage::StorageImage);
+    hardware_->depthImage = HardwareImage(width, height, ImageFormat::D32_FLOAT,
+                                          ImageUsage::DepthImage);
+    hardware_->finalOutputImage = HardwareImage(width, height, ImageFormat::RGBA16_FLOAT,
+                                                ImageUsage::StorageImage);
+
+    CFW_LOG_INFO("OpticsSystem: Render targets resized to camera resolution {}x{}", width, height);
+}
+
 bool OpticsSystem::initialize(Kernel::ISystemContext* ctx) {
     (void)ctx;
 
@@ -322,6 +345,13 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
 
         for (auto cam_handle : scene.camera_handles) {
             if (auto camera = SharedDataHub::instance().camera_storage().acquire_read(cam_handle)) {
+                if (image_handle_ != 0) {
+                    if (auto consumed_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
+                        hardware_->executor.wait(consumed_device->consumed_executor);
+                    }
+                }
+                ensure_camera_render_resources(camera->width, camera->height);
+
                 // ================================================================
                 // 1. Update camera uniform buffers
                 // ================================================================
@@ -572,14 +602,8 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                 // ================================================================
                 // 8. GPU sync & dispatch
                 // ================================================================
-                if (image_handle_ != 0) {
-                    if (auto consumed_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
-                        hardware_->executor.wait(consumed_device->consumed_executor);
-                    }
-                }
-
-                const uint32_t dispatchX = hardware_->gbufferSize.x / 8;
-                const uint32_t dispatchY = hardware_->gbufferSize.y / 8;
+                const uint32_t dispatchX = (hardware_->gbufferSize.x + 7u) / 8u;
+                const uint32_t dispatchY = (hardware_->gbufferSize.y + 7u) / 8u;
 
                 const bool is_debug_mode = camera->output_mode != CameraOutputMode::FinalColor;
                 const auto actor_pick_request = take_pending_actor_pick(cam_handle);
@@ -635,13 +659,13 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                     }
                     debugResolve.pushConsts.debugMode = debugMode;
 
-                    hardware_->executor << visibility(1920, 1080)
+                    hardware_->executor << visibility(hardware_->gbufferSize.x, hardware_->gbufferSize.y)
                                         << debugResolve(dispatchX, dispatchY, 1);
                 } else {
                     // ============================================================
                     // Normal rendering path: full pipeline
                     // ============================================================
-                    hardware_->executor << visibility(1920, 1080)
+                    hardware_->executor << visibility(hardware_->gbufferSize.x, hardware_->gbufferSize.y)
                                         << lighting(dispatchX, dispatchY, 1)
                                         << sky(dispatchX, dispatchY, 1)
                                         << tonemap(dispatchX, dispatchY, 1);
@@ -701,6 +725,58 @@ float half_to_float(uint16_t h) {
         result = std::ldexp(static_cast<float>(mantissa | 0x400), static_cast<int>(exponent) - 25);
     }
     return sign ? -result : result;
+}
+
+// Convert single-precision float to IEEE 754 half-precision (16-bit), round-to-nearest-even.
+// Vision's view_texture() is float32 RGBA but finalOutputImage is RGBA16_FLOAT (half);
+// HardwareImage::copyFrom() raw-copies sized by the destination format, so the float32
+// readback MUST be narrowed to half here or the bytes get reinterpreted and the image scrambles.
+uint16_t float_to_half(float f) {
+    uint32_t x;
+    static_assert(sizeof(x) == sizeof(f), "float must be 32-bit");
+    std::memcpy(&x, &f, sizeof(x));
+
+    const uint32_t sign = (x >> 16) & 0x8000u;
+    int32_t exponent = static_cast<int32_t>((x >> 23) & 0xFF) - 127 + 15;
+    uint32_t mantissa = x & 0x7FFFFFu;
+
+    if (((x >> 23) & 0xFF) == 0xFF) {
+        // Inf / NaN: preserve (NaN keeps a non-zero mantissa).
+        return static_cast<uint16_t>(sign | 0x7C00u | (mantissa ? 0x200u : 0u));
+    }
+    if (exponent >= 0x1F) {
+        return static_cast<uint16_t>(sign | 0x7C00u);  // overflow -> half inf
+    }
+    if (exponent <= 0) {
+        if (exponent < -10) {
+            return static_cast<uint16_t>(sign);  // underflow -> signed zero
+        }
+        // Subnormal half: add implicit leading 1, then shift into place with rounding.
+        mantissa |= 0x800000u;
+        const int32_t shift = 14 - exponent;
+        const uint32_t halfMant = mantissa >> shift;
+        const uint32_t remainder = mantissa & ((1u << shift) - 1u);
+        const uint32_t roundBias = (1u << (shift - 1));
+        uint32_t rounded = halfMant;
+        if (remainder > roundBias || (remainder == roundBias && (halfMant & 1u))) {
+            ++rounded;  // round-to-nearest-even
+        }
+        return static_cast<uint16_t>(sign | rounded);
+    }
+    // Normalized half: round mantissa to 10 bits, round-to-nearest-even.
+    uint32_t halfMant = mantissa >> 13;
+    const uint32_t remainder = mantissa & 0x1FFFu;
+    if (remainder > 0x1000u || (remainder == 0x1000u && (halfMant & 1u))) {
+        ++halfMant;
+        if (halfMant == 0x400u) {  // mantissa overflow carries into exponent
+            halfMant = 0;
+            ++exponent;
+            if (exponent >= 0x1F) {
+                return static_cast<uint16_t>(sign | 0x7C00u);
+            }
+        }
+    }
+    return static_cast<uint16_t>(sign | (static_cast<uint32_t>(exponent) << 10) | halfMant);
 }
 
 }  // namespace
@@ -1196,9 +1272,7 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 //    CFW_LOG_INFO("OpticsSystem: [VDIAG-B2] frame={} stage=sync_camera cam={}",
                 //                 frame_index, cam_handle);
                 //}
-                #ifndef CORONA_VISION_IMPORT_DEMO
-                                Vision::sync_vision_camera(*renderPipeline, *camera);
-                #endif
+                Vision::sync_vision_camera(*renderPipeline, *camera);
                  /*               if ((frame_index % 120) == 0) {
                                     CFW_LOG_INFO("OpticsSystem: [VDIAG-B2] frame={} stage=render begin", frame_index);
                                 }*/
@@ -1240,12 +1314,32 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 vision_readback_buffer_.resize(pixel_count * 4ull);
                 view_tex.download_immediately(
                     reinterpret_cast<ocarina::float4*>(vision_readback_buffer_.data()));
-                const auto& wbuf = vision_readback_buffer_;
-                static_assert(sizeof(wbuf[0]) == sizeof(float),
+                static_assert(sizeof(vision_readback_buffer_[0]) == sizeof(float),
                     "vision_readback_buffer_ must be a flat float buffer (4 floats per pixel)");
 
-                // Upload the REAL tone-mapped Vision pixels to the display image.
-                hardware_->executor << hardware_->finalOutputImage.copyFrom(vision_readback_buffer_.data())
+                // Vision's view_texture() is PixelStorage::FLOAT4 (float32 RGBA), but the
+                // display image is RGBA16_FLOAT (half). HardwareImage::copyFrom() raw-copies
+                // sized by the DESTINATION format, so we must narrow float32 -> half here;
+                // uploading the float32 bytes directly makes copyFrom reinterpret them as
+                // half (and read only the first half of the buffer) -> scrambled picture.
+                vision_half_buffer_.resize(pixel_count * 4ull);
+                for (uint64_t i = 0; i < pixel_count * 4ull; ++i) {
+                    vision_half_buffer_[i] = float_to_half(vision_readback_buffer_[i]);
+                }
+
+                // Vision is synchronized to camera.width/camera.height above, and both
+                // backends intentionally reuse hardware_->finalOutputImage so switching
+                // Native/Vision compares the same output surface. copyFrom() strides by
+                // destination size, so keep the image exactly matched to the Vision frame.
+                if (image_handle_ != 0) {
+                    if (auto consumed_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
+                        hardware_->executor.wait(consumed_device->consumed_executor);
+                    }
+                }
+                ensure_camera_render_resources(w, h);
+
+                // Upload the REAL tone-mapped Vision pixels to the shared display image.
+                hardware_->executor << hardware_->finalOutputImage.copyFrom(vision_half_buffer_.data())
                                     << hardware_->executor.commit();
 
                 last_render_cam_handle_ = cam_handle;
@@ -1254,7 +1348,6 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 last_vision_frame_width_ = w;
                 last_vision_frame_height_ = h;
 
-                
                 if (image_handle_ != 0) {
                     if (camera->surface != nullptr) {
                         if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
@@ -1266,8 +1359,8 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                             event_bus->publish<Events::OpticsFrameReadyEvent>({camera->surface,
                                                                                image_handle_,
                                                                                frame_index,
-                                                                               hardware_->gbufferSize.x,
-                                                                               hardware_->gbufferSize.y});
+                                                                               w,
+                                                                               h});
                         }
                     }
                 }
@@ -1287,24 +1380,6 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 //            "OpticsSystem: [VDIAG-B1] publish-gate: image_handle={} surface={} frame={} {}x{}",
                 //            image_handle_, static_cast<const void*>(camera->surface), frame_index, w, h);
                 //    }
-                //}
-
-                //if (image_handle_ != 0 && camera->surface != nullptr) {
-                //    if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
-                //        image_device->image = vision_output_image_;
-                //        image_device->executor = hardware_->executor;
-                //    }
-                //    if (auto* event_bus = context()->event_bus()) {
-                //        event_bus->publish<Events::OpticsFrameReadyEvent>(
-                //            {camera->surface, image_handle_, frame_index, w, h});
-                //    }
-                //} else if ((frame_index % 120) == 0) {
-                //    // [VDIAG-B1b] Publish was SKIPPED. This is the prime suspect for a
-                //    // black screen: the frame is rendered+uploaded but never published to
-                //    // DisplaySystem because the handle/surface gate failed.
-                //    CFW_LOG_WARNING(
-                //        "OpticsSystem: [VDIAG-B1b] publish SKIPPED frame={} image_handle={} surface={}",
-                //        frame_index, image_handle_, static_cast<const void*>(camera->surface));
                 //}
             } catch (const std::exception& e) {
                 //++consecutive_vision_failures_;

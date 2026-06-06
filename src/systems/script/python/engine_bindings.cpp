@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <memory>
 
+#include <SDL3/SDL.h>
+
 namespace nb = nanobind;
 using namespace Corona::API;
 
@@ -258,8 +260,12 @@ void BindAll(nanobind::module_& m) {
         .def(nb::init<>(), "Create an Environment")
         .def("set_sun_direction", &Environment::set_sun_direction, nb::arg("direction"),
              "Set sun light direction [x, y, z]")
+        .def("get_sun_direction", &Environment::get_sun_direction,
+             "Get sun light direction [x, y, z]")
         .def("set_floor_grid", &Environment::set_floor_grid, nb::arg("enabled"),
              "Enable or disable floor grid rendering")
+        .def("get_floor_grid", &Environment::get_floor_grid,
+             "Get floor grid rendering state")
         .def("set_gravity", &Environment::set_gravity, nb::arg("gravity"),
              "Set gravity vector [x, y, z]")
         .def("get_gravity", &Environment::get_gravity,
@@ -375,6 +381,17 @@ void BindAll(nanobind::module_& m) {
           "Request a render backend switch. mode: 'native' or 'vision'. Only effective when Vision is available.");
     m.def("get_render_backend", &get_render_backend,
           "Get the currently requested render backend as 'native' or 'vision'");
+
+    // ============================================================================
+    // Engine lifecycle
+    // ============================================================================
+    m.def("request_engine_exit", []() {
+        SDL_Event quit_event;
+        SDL_zero(quit_event);
+        quit_event.type = SDL_EVENT_QUIT;
+        SDL_PushEvent(&quit_event);
+    }, "Request graceful engine shutdown. "
+       "Pushes an SDL_QUIT event, same as clicking the window close button.");
 
 }
 

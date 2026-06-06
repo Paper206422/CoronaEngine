@@ -16,7 +16,9 @@
 
 将 Vision `FrameBuffer` 输出的 `float4 RGBA32F`（每通道 32-bit 浮点）像素数组转换为
 Horizon 所需的 `RGBA16F`（每通道 16-bit 半精度浮点），并通过 `HardwareExecutor` 上传
-到 `HardwareImage`，供后续显示管线使用。
+到 `HardwareImage`，供后续显示管线使用。当前 `run_vision_frame()` 为便于调试直接下载
+`FrameBuffer::view_texture()` 并在 `OpticsSystem` 内完成同样的 RGBA32F→RGBA16F 转换，
+上传目标为复用的 `hardware_->finalOutputImage`。
 
 **关键接口**
 
@@ -27,7 +29,9 @@ static bool upload_to_hardware_image(
     uint32_t width,
     uint32_t height,
     HardwareImage& out_image,
-    HardwareExecutor& executor);
+    HardwareExecutor& executor,
+    uint32_t& last_width,
+    uint32_t& last_height);
 
 // IEEE 754 float32 → float16 转换
 static uint16_t float_to_half(float f);
@@ -49,7 +53,7 @@ static uint16_t float_to_half(float f);
 | 方法 | 作用 |
 |------|------|
 | `init_vision_lazy()` | 首次切换到 Vision 后端时执行懒初始化，纯代码创建 fixed `vision::Pipeline`，再把 Corona 场景数据注入到 Vision scene |
-| `run_vision_frame(frame_count, frame_index)` | 每帧调用 `Pipeline::render()`，读取 `window_buffer_`（`vector<float4>`），调用 `VisionOutputBridge` 上传图像，发布 `OpticsFrameReadyEvent` |
+| `run_vision_frame(frame_count, frame_index)` | 每帧同步主相机与分辨率，执行 `Pipeline::display()`，下载 `FrameBuffer::view_texture()`（float4 RGBA32F），在 `OpticsSystem` 内转换为 RGBA16F 后上传到复用的 `hardware_->finalOutputImage`，发布 `OpticsFrameReadyEvent` |
 
 相机同步已收敛为独立 adapter：
 
@@ -118,11 +122,11 @@ CORONA_ENABLE_VISION 编译宏启用
 optics_system.cpp update()     ← 适配器二：渲染循环（首帧自动切换）
   │  init_vision_lazy()        ← 首次：纯代码创建 Vision Pipeline
   │  vision_camera_adapter     ← 每帧：同步主相机与分辨率
-  │  Pipeline::render()        ← Vision 渲染
-  │  window_buffer_ (float4[]) ← FrameBuffer 输出
+  │  Pipeline::display()       ← Vision 渲染并提交 CUDA 命令
+  │  view_texture() (float4[]) ← 最终 tone-mapped RGBA32F 输出
   ▼
-VisionOutputBridge             ← 适配器一：RGBA32F → RGBA16F
-  │  HardwareImage (RGBA16F)
+OpticsSystem readback/upload    ← RGBA32F → RGBA16F，复用 finalOutputImage
+  │  hardware_->finalOutputImage (RGBA16F)
   ▼
 OpticsFrameReadyEvent → DisplaySystem → 屏幕显示
 ```

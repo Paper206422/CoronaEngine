@@ -103,6 +103,7 @@ class CabbageWorkflowPlugin:
         ".flows.full_pipeline_workflow",
         ".flows.integrated_multi_scene_workflow",
         ".flows.multi_scene_parallel_workflow",
+        ".flows.scene_composition_workflow_v2",
     )
 
     def __init__(self, context: CabbageContext):

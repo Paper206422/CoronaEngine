@@ -1,8 +1,9 @@
 <template>
   <div
-    class="h-screen rounded-lg overflow-hidden relative bg-[#282828]/90 flex flex-col text-white font-sans"
+    class="flex-1 min-h-0 w-full rounded-lg overflow-hidden relative bg-[#282828]/90 flex flex-col text-white font-sans"
   >
     <DockTitleBar
+      v-if="!isDocked"
       title="项目设置"
       extraClass="bg-[#84A65B]"
       routePath="/ProjectSettings"
@@ -115,7 +116,10 @@
 <script setup>
 import { ref, onMounted } from 'vue';
 import { projectSettingsService, appService } from '@/utils/bridge';
+import { useDockPanel } from '@/composables/useDockPanel.js';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
+
+const { closePanel: closeDockPanel, isDocked } = useDockPanel();
 
 const loading = ref(true);
 const saving = ref(false);
@@ -195,6 +199,7 @@ const handleBrowseScene = async () => {
 };
 
 const closeFloat = () => {
+  if (closeDockPanel) { closeDockPanel(); return; }
   window.__settingsOpen = false;
   appService.removeDockWidgetByRoute('/SetUp').catch(() => {});
 };
