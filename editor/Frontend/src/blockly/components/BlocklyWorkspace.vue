@@ -212,7 +212,12 @@ function setupScriptKeyForwarding() {
     if (e.shiftKey) mods.push('Shift');
     if (e.altKey) mods.push('Alt');
 
-    // 发送 code(物理码,如KeyA/Digit0/BracketRight) + key(显示字符,如a/0/])
+    // ── 快速通道：coronaBridge.injectInput → CEF ProcessMessage → 队列 → Python 批量消费 ──
+    const bridge = window.coronaBridge;
+    if (bridge && typeof bridge.injectInput === 'function') {
+      try { bridge.injectInput(0, code, mods.join(','), displayKey); return; } catch (e) {}
+    }
+    // ── 慢通道：cefQuery 回退 ──
     scriptingService.sendKeyEvent(code, mods.join(','), displayKey).catch(() => {});
   };
 
@@ -221,7 +226,12 @@ function setupScriptKeyForwarding() {
     if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
       return;
     }
-    // 通知 Python 按键已释放（同时发送 code 和 display key）
+    // ── 快速通道：coronaBridge.injectInput → CEF ProcessMessage → 队列 → Python 批量消费 ──
+    const bridge = window.coronaBridge;
+    if (bridge && typeof bridge.injectInput === 'function') {
+      try { bridge.injectInput(1, e.code || e.key, e.key || e.code); return; } catch (e) {}
+    }
+    // ── 慢通道：cefQuery 回退 ──
     scriptingService.sendKeyUpEvent(e.code || e.key, e.key || e.code).catch(() => {});
   };
 

@@ -1,5 +1,6 @@
 ﻿#include <corona/kernel/core/callback_sink.h>
 #include <corona/kernel/core/i_logger.h>
+#include <corona/systems/script/camera_follow_controller.h>
 #include <corona/systems/script/corona_engine_api.h>
 #include <corona/systems/script/engine_scripts.h>
 #include <nanobind/nanobind.h>
@@ -12,6 +13,21 @@
 #include <memory>
 
 #include <SDL3/SDL.h>
+
+// Forward declare InputEvent from cef_bridge_helpers.h (UI system header,
+// avoid adding UI include dirs to script system which lives in its own
+// namespace).  Definition lives in Corona::Systems::UI in cef_bridge_helpers.h.
+namespace Corona::Systems::UI {
+struct InputEvent {
+    int type;
+    std::string arg0;
+    std::string arg1;
+    std::string arg2;
+    double arg3;
+    double arg4;
+};
+std::vector<InputEvent> drain_input_events();
+}  // namespace Corona::Systems::UI
 
 namespace nb = nanobind;
 using namespace Corona::API;
@@ -392,6 +408,49 @@ void BindAll(nanobind::module_& m) {
         SDL_PushEvent(&quit_event);
     }, "Request graceful engine shutdown. "
        "Pushes an SDL_QUIT event, same as clicking the window close button.");
+
+    // ============================================================================
+    // CameraFollowController: 摄像头跟随 C++ 快速通道
+    // ============================================================================
+    m.def("camera_follow_set_target", [](std::uintptr_t actor_handle, std::uintptr_t camera_handle,
+                                         float ox, float oy, float oz) {
+        Corona::Systems::CameraFollowController::instance().set_target(
+            actor_handle, camera_handle, ox, oy, oz);
+    }, nb::arg("actor_handle"), nb::arg("camera_handle"),
+       nb::arg("offset_x"), nb::arg("offset_y"), nb::arg("offset_z"),
+       "Set camera follow target with actor/camera handles and offset");
+
+    m.def("camera_follow_clear", []() {
+        Corona::Systems::CameraFollowController::instance().clear_target();
+    }, "Clear the camera follow target");
+
+    m.def("camera_follow_inject_rmb", [](bool down, int x, int y) {
+        Corona::Systems::CameraFollowController::instance().inject_rmb(down, x, y);
+    }, nb::arg("down"), nb::arg("screen_x"), nb::arg("screen_y"),
+       "Inject right mouse button state for camera orbit");
+
+    // ============================================================================
+    // Input 事件队列：积木脚本键盘/鼠标注入 → CEF ProcessMessage → 队列 → Python 消费
+    // InputEvent / drain_input_events 定义在 src/systems/ui/cef/cef_bridge_helpers.h
+    // (forward-declared above because script system shouldn't depend on UI includes)
+    // ============================================================================
+    nb::class_<Corona::Systems::UI::InputEvent>(m, "InputEvent")
+        .def_ro("type", &Corona::Systems::UI::InputEvent::type,
+                "0=keyDown, 1=keyUp, 2=mouseEvent")
+        .def_ro("arg0", &Corona::Systems::UI::InputEvent::arg0,
+                "key code (keyDown/keyUp) or eventType (mouse)")
+        .def_ro("arg1", &Corona::Systems::UI::InputEvent::arg1,
+                "modifiers (keyDown) / button (mouse) / displayKey (keyUp)")
+        .def_ro("arg2", &Corona::Systems::UI::InputEvent::arg2,
+                "displayKey (keyDown only)")
+        .def_ro("arg3", &Corona::Systems::UI::InputEvent::arg3,
+                "x (mouse)")
+        .def_ro("arg4", &Corona::Systems::UI::InputEvent::arg4,
+                "y (mouse)");
+
+    m.def("drain_input_events", []() -> std::vector<Corona::Systems::UI::InputEvent> {
+        return Corona::Systems::UI::drain_input_events();
+    }, "Drain all pending input events from the CEF InputInject queue");
 
 }
 

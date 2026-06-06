@@ -541,6 +541,7 @@
                           value="none"
                           class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-[#84a65b]"
                           @change="updateActorCollision"
+                          @update:model-value="updateActorCollisionFast"
                         />
                         <span>无</span>
                       </label>
@@ -551,6 +552,7 @@
                           value="box"
                           class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-[#84a65b]"
                           @change="updateActorCollision"
+                          @update:model-value="updateActorCollisionFast"
                         />
                         <span>包围盒</span>
                       </label>
@@ -561,6 +563,7 @@
                           value="mesh"
                           class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-[#84a65b]"
                           @change="updateActorCollision"
+                          @update:model-value="updateActorCollisionFast"
                         />
                         <span>网格</span>
                       </label>
@@ -583,6 +586,7 @@
                         v-model="actorData.mechanics.physics_enabled"
                         class="sr-only peer"
                         @change="() => updateActorMechanics('SetPhysicsEnabled')"
+                        @update:model-value="() => updateActorMechanicsFast(PROPERTY.PhysicsEnabled)"
                       />
                       <div class="w-7 h-4 bg-[#1a1a1a] rounded-full peer-checked:bg-[#84a65b]/60 peer-checked:after:bg-[#84a65b] after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-[#555] after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-3"></div>
                     </label>
@@ -597,6 +601,7 @@
                         :min="0.01"
                         :max="100"
                         @change="() => updateActorMechanics('SetMass')"
+                        @update:model-value="() => updateActorMechanicsFast(PROPERTY.Mass)"
                       />
                     </div>
                   </div>
@@ -610,6 +615,7 @@
                         :min="0"
                         :max="1"
                         @change="() => updateActorMechanics('SetRestitution')"
+                        @update:model-value="() => updateActorMechanicsFast(PROPERTY.Restitution)"
                       />
                     </div>
                   </div>
@@ -623,6 +629,7 @@
                         :min="0"
                         :max="1"
                         @change="() => updateActorMechanics('SetDamping')"
+                        @update:model-value="() => updateActorMechanicsFast(PROPERTY.Damping)"
                       />
                     </div>
                   </div>
@@ -1005,6 +1012,7 @@
                         value="none"
                         class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-[#84a65b]"
                         @change="updateModelCollision"
+                        @update:model-value="updateModelCollisionFast"
                       />
                       <span>无</span>
                     </label>
@@ -1015,6 +1023,7 @@
                         value="box"
                         class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-[#84a65b]"
                         @change="updateModelCollision"
+                        @update:model-value="updateModelCollisionFast"
                       />
                       <span>包围盒</span>
                     </label>
@@ -1025,6 +1034,7 @@
                         value="mesh"
                         class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-[#84a65b]"
                         @change="updateModelCollision"
+                        @update:model-value="updateModelCollisionFast"
                       />
                       <span>网格</span>
                     </label>
@@ -1044,6 +1054,7 @@
                       v-model="modelData.mechanics.physics_enabled"
                       class="sr-only peer"
                       @change="() => updateModelMechanics('SetPhysicsEnabled')"
+                      @update:model-value="() => updateModelMechanicsFast(PROPERTY.PhysicsEnabled)"
                     />
                     <div class="w-7 h-4 bg-[#1a1a1a] rounded-full peer-checked:bg-[#84a65b]/60 peer-checked:after:bg-[#84a65b] after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-[#555] after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-3"></div>
                   </label>
@@ -1058,6 +1069,7 @@
                       :min="0.01"
                       :max="100"
                       @change="() => updateModelMechanics('SetMass')"
+                      @update:model-value="() => updateModelMechanicsFast(PROPERTY.Mass)"
                     />
                   </div>
                 </div>
@@ -1071,6 +1083,7 @@
                       :min="0"
                       :max="1"
                       @change="() => updateModelMechanics('SetRestitution')"
+                      @update:model-value="() => updateModelMechanicsFast(PROPERTY.Restitution)"
                     />
                   </div>
                 </div>
@@ -1084,6 +1097,7 @@
                       :min="0"
                       :max="1"
                       @change="() => updateModelMechanics('SetDamping')"
+                      @update:model-value="() => updateModelMechanicsFast(PROPERTY.Damping)"
                     />
                   </div>
                 </div>
@@ -1737,6 +1751,16 @@ const ACTOR_TRANSFORM_OPERATION = {
   Scale: 2,
 };
 
+// 属性编辑快速通道常量（与 cef_subprocess/main.cpp 中 setProperty 的 propertyType 一致）
+const PROPERTY = {
+  Mass: 0,
+  Restitution: 1,
+  Damping: 2,
+  Visible: 3,
+  CollisionEnabled: 4,
+  PhysicsEnabled: 5,
+};
+
 const applyAxisOverride = (vector, axis, value) => {
   if (!axis) return vector;
   const axisIndex = { x: 0, y: 1, z: 2 }[axis];
@@ -1896,7 +1920,23 @@ const updateActorTransform = (operationType) => {
   });
 };
 
-// 更新单位物理属性
+// 更新单位物理属性 — 快速通道写入 SharedDataHub
+const updateActorMechanicsFast = (propertyType) => {
+  const bridge = window.coronaBridge;
+  if (!bridge || typeof bridge.setProperty !== 'function') return;
+  if (!actorData.value.handle) return;
+  let value = 0;
+  switch (propertyType) {
+    case PROPERTY.Mass: value = actorData.value.mechanics.mass; break;
+    case PROPERTY.Restitution: value = actorData.value.mechanics.restitution; break;
+    case PROPERTY.Damping: value = actorData.value.mechanics.damping; break;
+    case PROPERTY.PhysicsEnabled: value = actorData.value.mechanics.physics_enabled ? 1 : 0; break;
+    default: return;
+  }
+  try { bridge.setProperty(actorData.value.handle, propertyType, value); } catch (e) { /* ignore */ }
+};
+
+// 更新单位物理属性 — 慢通道：触发 Python 写盘 + 设置
 const updateActorMechanics = (operationType) => {
   if (!currentActorFile.value || !actorData.value.parentScene) return;
   debounced(`actor_mechanics_${operationType}`, async () => {
@@ -1931,7 +1971,16 @@ const updateActorMechanics = (operationType) => {
   });
 };
 
-// 更新单位碰撞类型
+// 更新单位碰撞类型 — 快速通道写入 SharedDataHub
+const updateActorCollisionFast = () => {
+  const bridge = window.coronaBridge;
+  if (!bridge || typeof bridge.setProperty !== 'function') return;
+  if (!actorData.value.handle) return;
+  const value = actorData.value.collision.type !== 'none' ? 1 : 0;
+  try { bridge.setProperty(actorData.value.handle, PROPERTY.CollisionEnabled, value); } catch (e) {}
+};
+
+// 更新单位碰撞类型 — 慢通道：触发 Python 写盘 + 设置
 const updateActorCollision = () => {
   if (!currentActorFile.value || !actorData.value.parentScene) return;
   debounced('actor_collision', async () => {
@@ -2022,6 +2071,22 @@ const updateModelTransform = (operationType) => {
 };
 
 // 更新模型物理属性
+// 更新模型物理属性 — 快速通道写入 SharedDataHub
+const updateModelMechanicsFast = (propertyType) => {
+  const bridge = window.coronaBridge;
+  if (!bridge || typeof bridge.setProperty !== 'function') return;
+  if (!modelData.value.handle) return;
+  let value = 0;
+  switch (propertyType) {
+    case PROPERTY.Mass: value = modelData.value.mechanics.mass; break;
+    case PROPERTY.Restitution: value = modelData.value.mechanics.restitution; break;
+    case PROPERTY.Damping: value = modelData.value.mechanics.damping; break;
+    case PROPERTY.PhysicsEnabled: value = modelData.value.mechanics.physics_enabled ? 1 : 0; break;
+    default: return;
+  }
+  try { bridge.setProperty(modelData.value.handle, propertyType, value); } catch (e) {}
+};
+
 const updateModelMechanics = (operationType) => {
   if (!currentModelFile.value || !modelData.value.targetScene) return;
   debounced(`model_mechanics_${operationType}`, async () => {
@@ -2054,6 +2119,15 @@ const updateModelMechanics = (operationType) => {
       logError('更新模型物理属性失败', e);
     }
   });
+};
+
+// 更新模型碰撞类型 — 快速通道写入 SharedDataHub
+const updateModelCollisionFast = () => {
+  const bridge = window.coronaBridge;
+  if (!bridge || typeof bridge.setProperty !== 'function') return;
+  if (!modelData.value.handle) return;
+  const value = modelData.value.collision.type !== 'none' ? 1 : 0;
+  try { bridge.setProperty(modelData.value.handle, PROPERTY.CollisionEnabled, value); } catch (e) {}
 };
 
 // 更新模型碰撞类型

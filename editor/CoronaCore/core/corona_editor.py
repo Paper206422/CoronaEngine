@@ -123,6 +123,12 @@ class CoronaEditor:
     @classmethod
     def camera_lock_set(cls, enabled, ox=0.0, oy=0.0, oz=2.0, rx=0.0, ry=0.0, rz=0.0):
         if not enabled:
+            # 清除 C++ 侧 CameraFollowController 目标
+            try:
+                import CoronaEngine
+                CoronaEngine.camera_follow_clear()
+            except Exception:
+                pass
             cls._camera_follow_actor = None
             cls._camera_follow_scene = None
             cls._held_keys.clear()
@@ -154,6 +160,8 @@ class CoronaEditor:
                             break
             if cam is None:
                 return {"ok": False, "error": "未找到摄像机"}
+
+            # 计算 offset
             cam_pos = cam.get_position()
             obj_pos = actor.get_position()
             world_offset = [
@@ -167,6 +175,19 @@ class CoronaEditor:
                 cls._camera_follow_offset = world_offset
             cls._camera_follow_actor = actor_name
             cls._camera_follow_scene = scene_name
+
+            # 设置 C++ 侧 CameraFollowController 目标
+            try:
+                import CoronaEngine
+                actor_h = getattr(actor.engine_obj, 'get_handle', lambda: 0)()
+                cam_h = cam.get_handle()
+                if actor_h and cam_h:
+                    CoronaEngine.camera_follow_set_target(actor_h, cam_h,
+                        cls._camera_follow_offset[0],
+                        cls._camera_follow_offset[1],
+                        cls._camera_follow_offset[2])
+            except Exception as e:
+                logger.warning("CameraFollowController set_target failed: %s", e)
             cls._follow_debug_once = True
             logger.info("Camera following %s (offset=%s)", actor_name, cls._camera_follow_offset)
             return {"ok": True, "offset": cls._camera_follow_offset}
@@ -372,9 +393,20 @@ class CoronaEditor:
             except Exception:
                 pass
 
-        # 摄像机跟随（UI 已迁移至 Vue CameraFollowPanel）
+        # ── Input 事件队列消费：CEF InputInject → 队列 → Python─ ─
+        # 每帧批量消费积攒的键盘/鼠标注入事件，消除逐事件 cefQuery 开销
         try:
-            cls._update_camera_follow()
+            import CoronaEngine
+            events = CoronaEngine.drain_input_events()
+            if events:
+                from CoronaCore.utils import corona_engine_scratch
+                for e in events:
+                    if e.type == 0:      # keyDown
+                        corona_engine_scratch.handle_key_event(e.arg0, e.arg1.split(',') if e.arg1 else [], e.arg2)
+                    elif e.type == 1:    # keyUp
+                        corona_engine_scratch.handle_key_release(e.arg0, e.arg1 or e.arg0)
+                    elif e.type == 2:    # mouseEvent
+                        corona_engine_scratch.handle_mouse_event(e.arg0, e.arg1, e.arg3, e.arg4)
         except Exception:
             pass
 
