@@ -128,6 +128,15 @@ int main(int argc, char* argv[]) {
         "|                Thank you for using CoronaEngine!                 |\n"
         "+==================================================================+\n");
 
+    CFW_LOG_FLUSH();
     g_engine = nullptr;
+
+    // 使用 TerminateProcess 强杀自身，跳过 DLL_PROCESS_DETACH / atexit。
+    // ExitProcess / return 0 在执行 DLL detach 时会被 torch_python.dll、
+    // python313.dll 或 libcef.dll 的全局析构/DllMain 阻塞，导致僵尸进程。
+    // TerminateProcess 直接通知内核终止，OS 回收所有资源。
+    TerminateProcess(GetCurrentProcess(), 0);
+
+    // 永远不会执行到这里，但保留以消除编译器警告
     return 0;
 }
