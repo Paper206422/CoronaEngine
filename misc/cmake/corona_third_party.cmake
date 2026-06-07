@@ -131,6 +131,14 @@ FetchContent_Declare(
         EXCLUDE_FROM_ALL
 )
 
+FetchContent_Declare(
+        enet
+        GIT_REPOSITORY https://github.com/lsalzman/enet.git
+        GIT_TAG v1.3.18
+        GIT_SHALLOW TRUE
+        EXCLUDE_FROM_ALL
+)
+
 # ------------------------------------------------------------------------------
 # Fetch and enable dependencies
 # ------------------------------------------------------------------------------
@@ -227,6 +235,32 @@ if(NOT TARGET imgui)
         target_compile_options(imgui PRIVATE
             $<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>)
     endif()
+endif()
+
+# Manually define enet target — ENet v1.3.18's CMakeLists.txt only supports
+# Unix Makefiles, so we fetch the source and build the library ourselves.
+FetchContent_GetProperties(enet)
+if(NOT enet_POPULATED)
+    FetchContent_Populate(enet)
+endif()
+if(NOT TARGET enet)
+    add_library(enet STATIC
+        "${enet_SOURCE_DIR}/callbacks.c"
+        "${enet_SOURCE_DIR}/compress.c"
+        "${enet_SOURCE_DIR}/host.c"
+        "${enet_SOURCE_DIR}/list.c"
+        "${enet_SOURCE_DIR}/packet.c"
+        "${enet_SOURCE_DIR}/peer.c"
+        "${enet_SOURCE_DIR}/protocol.c"
+        "${enet_SOURCE_DIR}/win32.c"
+    )
+    target_include_directories(enet PUBLIC "${enet_SOURCE_DIR}/include")
+    if(MSVC)
+        target_compile_definitions(enet PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_compile_options(enet PRIVATE
+            $<$<COMPILE_LANGUAGE:C>:/utf-8>)
+    endif()
+    message(STATUS "[3rdparty] enet module enabled")
 endif()
 
 if(CORONA_BUILD_VISION)

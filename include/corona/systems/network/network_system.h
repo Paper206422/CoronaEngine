@@ -5,6 +5,11 @@
 #include <corona/kernel/event/i_event_stream.h>
 #include <corona/kernel/system/system_base.h>
 
+#include <corona/systems/network/protocol.h>
+#include <corona/systems/network/discovery.h>
+#include <corona/systems/network/peer_manager.h>
+#include <corona/systems/network/sync_engine.h>
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -12,79 +17,74 @@
 namespace Corona::Systems {
 
 /**
- * @brief 网络系统 (Network System) —— Omniverse Nucleus (USD) 联合开发骨架
+ * @brief 网络系统 — 基于 ENet 可靠 UDP 的局域网多人协同编辑。
  *
- * 为多人协作（Nucleus live layer 上的 USD 实时同步）铺底。本次只交付
- * 可编译、可注册、有清晰扩展点的骨架：
- * - 出站：本地 SharedDataHub 中变化的 Transform → 推送到 Nucleus live layer；
- * - 入站：远端协作者的 Transform 变更 → 写回 SharedDataHub。
+ * 每个实例既是服务端也是客户端（full-mesh）。
+ * 采用 Last-Write-Wins (LWW) 冲突解决策略。
  *
- * 当前不链接真实 Omniverse Client Library，connect/push/pull 均为占位实现。
+ * 架构：
+ *   Discovery   — LAN UDP 广播发现
+ *   PeerManager — ENet host + full-mesh peer 管理
+ *   SyncEngine  — SharedDataHub 脏轮询 + LWW 合并
  *
- * 优先级 55：在 ScriptSystem(60) 之后、ImguiSystem(40) 之前。所有逻辑系统
- * （几何/物理/脚本）都更新完成、Transform 落定后，再做网络同步，避免推送到
- * 半完成的帧状态。
+ * 优先级 55：在 ScriptSystem(60) 之后、ImguiSystem(40) 之前。
  */
 class NetworkSystem : public Kernel::SystemBase {
-   public:
-    /// 与 Nucleus 服务器的连接状态
-    enum class ConnectionState : uint8_t {
-        Disconnected = 0,  ///< 未连接（默认）
-        Connecting,        ///< 正在建立连接
-        Connected,         ///< 已连接，可收发同步
-        Error              ///< 连接出错
+public:
+    /// 网络会话状态
+    enum class SessionState : uint8_t {
+        Idle = 0,     ///< 未启动
+        Starting,     ///< 正在启动
+        Active,       ///< 已启动，可收发同步
+        Error         ///< 启动失败
     };
 
     NetworkSystem();
     ~NetworkSystem() override;
 
     // ========================================
-    // ISystem 接口实现
+    // ISystem 接口
     // ========================================
 
-    std::string_view get_name() const override {
-        return "Network";
-    }
-
-    int get_priority() const override {
-        return 55;  // 逻辑系统更新完后再做网络同步
-    }
+    std::string_view get_name() const override { return "Network"; }
+    int get_priority() const override { return 55; }
 
     bool initialize(Kernel::ISystemContext* ctx) override;
     void update() override;
     void shutdown() override;
 
     // ========================================
-    // 协作连接接口（扩展点，当前为占位）
+    // 公共接口
     // ========================================
 
     /**
-     * @brief 连接到 Omniverse Nucleus 服务器
-     * @param url Nucleus 服务器 URL（如 "omniverse://localhost/Projects/scene.usd"）
-     * @return 发起连接成功返回 true（骨架阶段总是返回 false 表示未实现）
-     *
-     * 接入真实 SDK 后：建立 Omniverse Client 连接、打开/创建 live layer。
+     * @brief 启动局域网协同会话（广播发现 + ENet host）。
+     * @param instance_name 本实例名（用于 UI 显示，最多 31 字符）
+     * @param project_id    项目标识 hash（仅同项目 peer 互联）
+     * @param port          UDP 端口（默认 kDefaultPort = 27960）
+     * @return true 成功
      */
-    bool connect_to_nucleus(const std::string& url);
+    bool start_session(const std::string& instance_name, uint64_t project_id,
+                       uint16_t port = Network::kDefaultPort);
 
-    /// 主动断开当前连接
-    void disconnect();
+    /// 停止会话，断开所有 peer，关闭 host。
+    void stop_session();
 
-    [[nodiscard]] ConnectionState connection_state() const;
+    /// 当前会话状态。
+    [[nodiscard]] SessionState session_state() const;
 
-   private:
+    /// 已连接的 peer 数量。
+    [[nodiscard]] size_t peer_count() const;
+
+private:
     // ========================================
-    // 同步扩展点（当前为占位实现）
+    // 内部回调
     // ========================================
 
-    /// 出站：扫描 SharedDataHub 中变化的 Transform，推送到 Nucleus live layer。
-    /// 使用 Impl 内维护的 handle → last_synced_transform 做差异比对
-    /// （Storage<T> 本身无版本号/脏标记）。
-    void push_local_changes();
-
-    /// 入站：从 Nucleus live layer 拉取远端变更，发布 RemoteTransformReceivedEvent
-    /// 并写回 SharedDataHub。
-    void pull_remote_changes();
+    void on_peer_discovered(const std::string& ip, const std::string& name, uint64_t project_id);
+    void on_peer_connected(const Network::PeerManager::PeerInfo& info);
+    void on_peer_disconnected(const Network::PeerManager::PeerInfo& info);
+    void on_data_received(const std::string& peer_id, const uint8_t* data, size_t len);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
