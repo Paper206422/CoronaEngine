@@ -71,27 +71,50 @@ pythonGenerator.workspaceToCode = function customWorkspaceToCode(workspace) {
     return aXY.y - bXY.y || aXY.x - bXY.x;
   });
 
-  // 将按键相关的顶层积木输出到 handler，其余输出到 run
+  // 区分帽子积木（hat block：无 previousConnection）和孤立积木
+  // 只有帽子积木及其连接的积木才会生成代码
+  const hatBlocks = topBlocks.filter((b) => !b.previousConnection);
+  const orphanCount = topBlocks.length - hatBlocks.length;
+
+  // 事件类型路由
   const KEYBOARD_BLOCK_TYPES = new Set(['event_keyboard', 'event_keyboard_combo']);
+  const MOUSE_BLOCK_TYPES = new Set([
+    'event_mouse_click',
+    'event_mouse_move',
+    'event_mouse_wheel',
+    'event_mouse_contextmenu',
+  ]);
   let mainCode = '';
   let handlerCode = '';
+  let mouseHandlerCode = '';
 
-  for (const block of topBlocks) {
+  for (const block of hatBlocks) {
     if (block.disabled) continue;
     let blockCode = pythonGenerator.blockToCode(block);
     let chunk = normalizeCode(blockCode);
     if (chunk && !chunk.endsWith('\n')) chunk += '\n';
     if (KEYBOARD_BLOCK_TYPES.has(block.type)) {
       handlerCode += chunk;
+    } else if (MOUSE_BLOCK_TYPES.has(block.type)) {
+      mouseHandlerCode += chunk;
     } else {
       mainCode += chunk;
     }
   }
 
+  // 孤立积木警告（放在代码头部，不影响 run 函数）
+  let orphanWarning = '';
+  if (orphanCount > 0) {
+    orphanWarning =
+      `# =========================================\n` +
+      `# WARNING: ${orphanCount} 个孤立积木未连接任何事件积木，不会执行\n` +
+      `# 请将它们连接到事件积木（如"当游戏开始时"）下方\n` +
+      `# =========================================\n`;
+  }
+
   // 结束生成
   mainCode = pythonGenerator.finish(mainCode);
   if (mainCode && !mainCode.endsWith('\n')) mainCode += '\n';
-  // handlerCode 不需要再次 finish，保持原样
 
   // 头注释（规范结尾仅 1 个换行）
   const timestamp = new Date().toISOString();
@@ -102,21 +125,33 @@ pythonGenerator.workspaceToCode = function customWorkspaceToCode(workspace) {
   ].join('\n');
 
   // 各位置前置片段（已去除尾部多余换行；此处不再额外添加空行）
-  const preludeGlobal = renderPreludeAt('global'); // 顶部（def run 之前）
-  const preludeRunPrologue = renderPreludeAt('runPrologue'); // def run(): 后，函数体开头
-  const preludeRunEpilogue = renderPreludeAt('runEpilogue'); // 函数体末尾
+  const preludeGlobal = renderPreludeAt('global');
+  const preludeRunPrologue = renderPreludeAt('runPrologue');
+  const preludeRunEpilogue = renderPreludeAt('runEpilogue');
 
   // 组装输出（严格控制空行）
   const parts = [];
   parts.push(header);
+  if (orphanWarning) parts.push(orphanWarning.trimEnd());
   if (preludeGlobal) parts.push(preludeGlobal.trimEnd());
 
-  // 如果有 handler 代码，则输出 def handle
+  // 键盘事件 handler
   if (handlerCode.trim()) {
-    parts.push(''); // 空行分隔
-    parts.push('@Slot(str)\n' + 'def handle(key):' + '\n    print("key:", key)');
+    parts.push('');
+    parts.push('def handle(key, _mods=None):' + '\n    print("key:", key)');
     const indentedHandlers = indentBlock(handlerCode);
     if (indentedHandlers) parts.push(indentedHandlers);
+  }
+
+  // 鼠标事件 handler
+  if (mouseHandlerCode.trim()) {
+    parts.push('');
+    parts.push(
+      'def handle_mouse(_event_type, _button, _x, _y):' +
+        '\n    print("mouse:", _event_type, _button, _x, _y)'
+    );
+    const indentedMouseHandlers = indentBlock(mouseHandlerCode);
+    if (indentedMouseHandlers) parts.push(indentedMouseHandlers);
   }
 
   // 输出 def run
@@ -132,7 +167,6 @@ pythonGenerator.workspaceToCode = function customWorkspaceToCode(workspace) {
   if (runBody.length) {
     parts.push(runBody.join('\n'));
   } else {
-    // 避免空函数导致语法错误
     parts.push('    pass');
   }
 

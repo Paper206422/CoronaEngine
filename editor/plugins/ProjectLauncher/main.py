@@ -10,7 +10,7 @@ from .utils.project_copy import ProjectCopy
 logger = logging.getLogger(__name__)
 
 
-@PluginBase.register_web("ProjectLauncher", "/ProjectLauncher", "项目加载", -1, "main", 1920, 1080, False, False)
+@PluginBase.register_web("ProjectLauncher")
 class ProjectLauncher(PluginBase):
 
     @staticmethod

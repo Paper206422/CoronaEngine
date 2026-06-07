@@ -14,35 +14,31 @@ const _required = new Set();
 // - 或对象：{ global?: string, runPrologue?: string, runEpilogue?: string }
 const PRELUDE_SNIPPETS = {
   // 键盘事件支持：当使用键盘事件积木时加入
-  // 注意：Backend.ui.main_window.get_window 是预留的 CEF 键盘桥接接口
-  // 该接口可能在此阶段未实现，因此导入和调用均使用 try/except 保护
+  // 通过 CEF bridge (ScratchTool.key_event) → CE.handle_key_event → handle()
   keyboard: {
     global: [
-      '# 键盘/事件桥接初始化',
-      PYTHON_IMPORTS.PYTHON_SLOT_IMPORT,
-      `try:
-    ${PYTHON_IMPORTS.MAIN_WINDOW_IMPORT}
-except ImportError:
-    get_window = None`,
+      '# 键盘事件桥接：注册 handle 到 CE 模块',
+      'from CoronaCore.utils import corona_engine_scratch as _CE',
     ].join('\n'),
     runPrologue: [
-      'if callable(get_window):',
-      '    try:',
-      '        wb = get_window()',
-      '        bw = wb.browser_widget',
-      '        if bw is not None:',
-      '            prev = getattr(bw, "_blockly_handle_slot", None)',
-      '            if prev is not None:',
-      '                try:',
-      '                    bw.code_input_changed.disconnect(prev)',
-      '                except Exception:',
-      '                    pass',
-      '            bw.code_input_changed.connect(handle)',
-      '            bw._blockly_handle_slot = handle',
-      '    except Exception:',
-      '        pass',
+      '# 将 handle 注册到 CE，CEF bridge 收到键盘事件后会调用它',
+      '_CE.register_key_handler(handle)',
+      'print("[Blockly] 键盘处理器已注册: " + handle.__name__)',
     ].join('\n'),
-    runEpilogue: ['# 键盘事件已就绪（如需，可在此处添加收尾逻辑）'].join('\n'),
+    runEpilogue: [],
+  },
+
+  // 鼠标事件支持：当使用鼠标事件积木时加入
+  mouse: {
+    global: [
+      '# 鼠标事件桥接：注册 handle_mouse 到 CE 模块',
+      'from CoronaCore.utils import corona_engine_scratch as _CE',
+    ].join('\n'),
+    runPrologue: [
+      '# 将 handle_mouse 注册到 CE，CEF bridge 收到鼠标事件后会调用它',
+      '_CE.register_mouse_handler(handle_mouse)',
+    ].join('\n'),
+    runEpilogue: [],
   },
 };
 

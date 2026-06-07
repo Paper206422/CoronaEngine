@@ -1,29 +1,26 @@
 <script setup>
-import { onMounted, onUnmounted } from 'vue';
-import { appService } from './utils/bridge.js';
+import { computed, onMounted, onUnmounted } from 'vue';
+import { useRoute } from 'vue-router';
+import { useDockStore } from '@/stores/dockStore.js';
+import DockLayout from '@/components/dock/DockLayout.vue';
+import CameraFollowPanel from '@/components/panels/CameraFollowPanel.vue';
+import '@/utils/eventBus.js'; // init window.__coronaEmit
+
+const route = useRoute();
+const dockStore = useDockStore();
+
+// DockLayout + 摄像机跟随面板只在编辑器主页面显示，StartScreen / launcher 等不显示
+const isEditorRoute = computed(() => route.path === '/');
 
 let gcTimer = null;
 
-function isSettingsOpen() {
-  return window.__settingsOpen === true;
-}
-
 function onGlobalKeyDown(event) {
   if (event.key === 'Escape' || event.code === 'Escape') {
-    if (isSettingsOpen()) {
-      appService.removeDockWidgetByRoute('/SetUp').then(() => {
-        window.__settingsOpen = false;
-      }).catch(() => {});
-    } else {
-      appService.addDockWidget('/SetUp', 'center', 450, 550, false).then(() => {
-        window.__settingsOpen = true;
-      }).catch(() => {});
-    }
+    dockStore.togglePanel('EditorSettings');
   }
 }
 
 onMounted(() => {
-  // 每 60 秒触发 JS 垃圾回收（如果环境支持）
   gcTimer = setInterval(() => {
     if (typeof window.gc === 'function') {
       try {
@@ -40,13 +37,12 @@ onUnmounted(() => {
     clearInterval(gcTimer);
     gcTimer = null;
   }
-
   document.removeEventListener('keydown', onGlobalKeyDown);
 });
 </script>
 
 <template>
-  <router-view></router-view>
+  <DockLayout v-if="isEditorRoute" />
+  <router-view v-else />
+  <CameraFollowPanel v-if="isEditorRoute" />
 </template>
-
-<style scoped></style>

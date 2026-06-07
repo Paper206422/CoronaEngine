@@ -54,49 +54,6 @@ export const sceneService = {
     Bridge.callCEF('SceneTools', 'remove_actor', [sceneName, actorName]),
   createScene: (sceneName) => Bridge.callCEF('SceneTools', 'create_scene', [sceneName]),
 
-  cameraMove: (sceneNameOrPayload, position, forward, up, fov) => {
-    if (
-      typeof sceneNameOrPayload === 'object' &&
-      sceneNameOrPayload !== null &&
-      !Array.isArray(sceneNameOrPayload)
-    ) {
-      const payload = sceneNameOrPayload;
-      const sceneId =
-        payload.scene_id ??
-        payload.sceneId ??
-        payload.id ??
-        payload.scene_name ??
-        payload.sceneName;
-      const cameraName =
-        payload.camera_name ??
-        payload.cameraName ??
-        payload.active_camera_name ??
-        payload.activeCameraName;
-      const worldUp = payload.world_up ?? payload.worldUp ?? payload.up;
-
-      return Bridge.callCEF('SceneTools', 'camera_move', [
-        {
-          schema_version: payload.schema_version ?? 2,
-          scene_id: sceneId,
-          scene_name: payload.scene_name ?? payload.sceneName ?? sceneId,
-          camera_name: cameraName,
-          position: payload.position,
-          forward: payload.forward,
-          world_up: worldUp,
-          up: worldUp,
-          fov: payload.fov,
-        },
-      ]);
-    }
-
-    return Bridge.callCEF('SceneTools', 'camera_move', [
-      sceneNameOrPayload,
-      position,
-      forward,
-      up,
-      fov,
-    ]);
-  },
   sunDirection: (sceneName, enable, direction) =>
     Bridge.callCEF('SceneTools', 'sun_direction', [sceneName, enable, direction]),
   floorGrid: (sceneName, enabled) =>
@@ -127,11 +84,17 @@ export const sceneService = {
     Bridge.callCEF('SceneTools', 'open_actor', [sceneName, actorName]),
   focusActor: (sceneName, actorName, cameraName) =>
     Bridge.callCEF('SceneTools', 'focus_actor', [sceneName, actorName, cameraName]),
+  /** 鼠标在3D视口中拾取物体（异步：首次调用设置拾取，~50ms后重试获取结果） */
+  pickActor: (sceneName, x, y, vpWidth, vpHeight) =>
+    Bridge.callCEF('SceneTools', 'pick_actor_at_pixel', [sceneName, x, y, vpWidth, vpHeight]),
 
   getScene: (sceneId) => Bridge.callCEF('SceneDatas', 'get_scene', [sceneId]),
   getActor: (sceneId, actorId) => Bridge.callCEF('SceneDatas', 'get_actor', [sceneId, actorId]),
   actorOperation: (scene_name, actor_name, operation, vector) =>
     Bridge.callCEF('SceneDatas', 'actor_operation', [scene_name, actor_name, operation, vector]),
+  /** 仅触发写盘：Transform 已由快速通道写入 SharedDataHub */
+  saveActor: (sceneName, actorName) =>
+    Bridge.callCEF('SceneDatas', 'save_actor', [sceneName, actorName]),
   selectModelFileDialog: (sceneId, actorId, fileType) =>
     Bridge.callCEF('SceneDatas', 'select_model_file', [sceneId, actorId, fileType]),
   setCameraLock: (sceneName, actorName, enabled) =>
@@ -165,6 +128,15 @@ export const projectService = {
 };
 
 export const appService = {
+  // C++ __cross_tab__ handlers (no Python involved)
+  createPanelTab: (panelId, routePath, width, height) =>
+    Bridge.callCEF('__cross_tab__', 'create-panel-tab', [panelId, routePath, width, height]),
+  closeThisTab: (panelId) =>
+    Bridge.callCEF('__cross_tab__', 'close-this-tab', [panelId]),
+  crossTabBroadcast: (event, payload) =>
+    Bridge.callCEF('__cross_tab__', 'broadcast', [event, payload]),
+
+  // Deprecated: old Python-managed window APIs, kept for backward compat during migration
   addDockWidget: (route_path, pos, width, height, fixed) =>
     Bridge.callCEF('CoronaEditor', 'open_browser', [route_path, pos, width, height, fixed]),
   removeDockWidget: (tool_name) =>
@@ -172,8 +144,14 @@ export const appService = {
   removeDockWidgetByRoute: (route_name) =>
     Bridge.callCEF('CoronaEditor', 'minimize_browser', [route_name]),
   closeProcess: () => Bridge.callCEF('CoronaEditor', 'close_process'),
-  callDockFunction: (routename, functionname, args) =>
-    Bridge.callCEF('CoronaEditor', 'js_call_func', [routename, functionname, args]),
+  callDockFunction: (routename, functionname, args) => {
+    // 单 CEF Tab 架构：直接调 window.xxx，不需要 Python 中转
+    const fn = window[functionname];
+    if (typeof fn === 'function') {
+      try { fn(...(args || [])); } catch (e) { /* ignore */ }
+    }
+    return Promise.resolve({ success: true });
+  },
   start_engine: () => Bridge.callCEF('CoronaEditor', 'start_corona_engine', []),
 };
 
@@ -204,6 +182,41 @@ export const aiClient = {
     ]),
 };
 
+// 局域网聊天室：所有跨机传输在 Python 侧完成，前端只通过 cefQuery 调用本机插件。
+// Python 侧通过 js_call_func('lanchat-event', [event]) 把房间消息推回前端
+// （coronaEventBus.on('lanchat-event')），事件信封带 channel: 'lanchat'。
+//
+// 注意：deal_func_from_js 用 create_success_response 把返回值包成
+// { success, data, timestamp }，业务结果在 .data 里。这里统一解包，
+// 让 store 直接拿到 { ok, ip, ... } 业务对象（约定同 SceneBar：result?.data ?? result）。
+const _unwrap = (res) => (res && res.data !== undefined ? res.data : res);
+
+export const lanChatService = {
+  // 房主开房：{ room, password, port? } -> { ok, ip, port, room } | { ok:false, error }
+  startRoom: (payload) =>
+    Bridge.callCEF('LANChat', 'start_room', [payload]).then(_unwrap),
+  // 房主关房 -> { ok }
+  stopRoom: () => Bridge.callCEF('LANChat', 'stop_room', [{}]).then(_unwrap),
+  // 加入房间：{ ip, port, room, password, nickname } -> { ok, members, history } | { ok:false, code }
+  joinRoom: (payload) =>
+    Bridge.callCEF('LANChat', 'join_room', [payload]).then(_unwrap),
+  // 离开房间 -> { ok }
+  leaveRoom: () => Bridge.callCEF('LANChat', 'leave_room', [{}]).then(_unwrap),
+  // 发送消息：{ text } -> { ok } | { ok:false, error }
+  sendMessage: (text) =>
+    Bridge.callCEF('LANChat', 'send_message', [{ text }]).then(_unwrap),
+  // 获取本机局域网 IP -> { ok, ip, port }
+  getLocalIp: () => Bridge.callCEF('LANChat', 'get_local_ip', [{}]).then(_unwrap),
+  // 添加 AI 助手：{ name, persona } -> { ok, agent_id, name } | { ok:false, error }
+  addAgent: (payload) =>
+    Bridge.callCEF('LANChat', 'add_agent', [payload]).then(_unwrap),
+  // 移除 AI 助手：{ agent_id } -> { ok }
+  removeAgent: (agentId) =>
+    Bridge.callCEF('LANChat', 'remove_agent', [{ agent_id: agentId }]).then(_unwrap),
+  // 列出 agent 名册 -> { ok, agents:[{agent_id,name,owner}] }
+  listAgents: () => Bridge.callCEF('LANChat', 'list_agents', [{}]).then(_unwrap),
+};
+
 export const scriptingService = {
   /**
    * 执行 Blockly 生成的 Python 代码
@@ -232,6 +245,26 @@ export const scriptingService = {
    */
   getScriptStatus: () =>
     Bridge.callCEF('ScratchTool', 'get_script_status', []),
+
+  /**
+   * 发送键盘事件到积木脚本
+   * @param {string} key - 按键名 (如 'KeyA', 'Space', 'ArrowUp')
+   * @param {string} modifiers - 修饰键 (如 'Ctrl,Shift')
+   */
+  sendKeyEvent: (key, modifiers, displayKey) =>
+    Bridge.callCEF('ScratchTool', 'key_event', [key, modifiers || '', displayKey || key]),
+
+  /**
+   * 发送键盘释放事件到积木脚本
+   */
+  sendKeyUpEvent: (key, displayKey) =>
+    Bridge.callCEF('ScratchTool', 'key_release', [key, displayKey || key]),
+
+  /**
+   * 发送鼠标事件到积木脚本
+   */
+  sendMouseEvent: (eventType, button, x, y) =>
+    Bridge.callCEF('ScratchTool', 'mouse_event', [eventType, button || '', x || 0, y || 0]),
 };
 
 export const projectLauncherService = {
@@ -276,6 +309,38 @@ export const logService = {
   setLogReady: () => Bridge.callCEF('LogTool', 'set_log_ready', []),
   // 如果需要，也可以添加关闭接口
   setLogClose: () => Bridge.callCEF('LogTool', 'set_log_close', []),
+};
+
+/**
+ * 场景栏资源智能搜索
+ * - fuzzy_search: 模糊文本搜索(支持中文分词/拼音/编辑距离)
+ * - image_search: 以图搜索(本地 pHash,无网络依赖)
+ * - list_types / rebuild_index / get_stats: 索引元操作
+ * - focus_actor: 搜索结果"定位"按钮 → 桥接 SceneTools
+ */
+// 当前模块的"调用方"标识(必须出现在后端 ALLOWED_CALLERS 白名单内)
+// 任何后端接口调用都会自动附带此标识,供权限控制
+const CURRENT_CALLER = 'SceneBar';
+
+export const resourceService = {
+  fuzzySearch: (query, topK = 20, typeFilter = null) =>
+    Bridge.callCEF('ResourceSearch', 'fuzzy_search',
+      [query, topK, typeFilter, CURRENT_CALLER]),
+  imageSearch: (imageB64, topK = 20, threshold = 10) =>
+    Bridge.callCEF('ResourceSearch', 'image_search',
+      [imageB64, topK, threshold, CURRENT_CALLER]),
+  listTypes: () =>
+    Bridge.callCEF('ResourceSearch', 'list_types', [CURRENT_CALLER]),
+  rebuildIndex: () =>
+    Bridge.callCEF('ResourceSearch', 'rebuild_index', [CURRENT_CALLER]),
+  getStats: () =>
+    Bridge.callCEF('ResourceSearch', 'get_stats', [CURRENT_CALLER]),
+  markIndexDirty: (reason = 'frontend') =>
+    Bridge.callCEF('ResourceSearch', 'mark_index_dirty',
+      [reason, CURRENT_CALLER]),
+  focusActor: (sceneName, actorName) =>
+    Bridge.callCEF('ResourceSearch', 'focus_actor',
+      [sceneName, actorName, CURRENT_CALLER]),
 };
 
 export const projectSettingsService = {

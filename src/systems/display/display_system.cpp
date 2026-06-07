@@ -267,10 +267,12 @@ void DisplaySystem::compose_and_present(HardwareDisplayer& displayer,
     composite_pipeline_.pushConsts.bgWidth = std::max(state.optics.width, 1u);
     composite_pipeline_.pushConsts.bgHeight = std::max(state.optics.height, 1u);
 
+    const uint32_t dispatch_x = (state.ui.width + 7u) / 8u;
+    const uint32_t dispatch_y = (state.ui.height + 7u) / 8u;
+
     // [VDIAG-B4] Composite probe: a mismatch between the optics (bg) resolution and
-    // the output resolution forces the shader to rescale; an integer /8 dispatch that
-    // rounds down to 0 groups (very small resolutions) leaves the output untouched ->
-    // black. Logged a few times to compare bg vs output dimensions and dispatch size.
+    // the output resolution forces the shader to rescale. Dispatch is ceil-divided so
+    // non-multiple-of-8 UI sizes still cover the right/bottom edge pixels.
     {
         static uint32_t s_vdiag_compose_count = 0;
         static uint32_t s_vdiag_compose_optics = 0;
@@ -281,7 +283,7 @@ void DisplaySystem::compose_and_present(HardwareDisplayer& displayer,
             CFW_LOG_INFO(
                 "DisplaySystem: [VDIAG-B4] compose: out={}x{} bg(optics)={}x{} dispatch={}x{}",
                 state.ui.width, state.ui.height, state.optics.width, state.optics.height,
-                state.ui.width / 8, state.ui.height / 8);
+                dispatch_x, dispatch_y);
         }
     }
 
@@ -293,7 +295,7 @@ void DisplaySystem::compose_and_present(HardwareDisplayer& displayer,
         compositor_executor_.wait(*ui_executor);
     }
 
-    compositor_executor_ << composite_pipeline_(state.ui.width / 8, state.ui.height / 8, 1)
+    compositor_executor_ << composite_pipeline_(dispatch_x, dispatch_y, 1)
                          << compositor_executor_.commit();
 
     // After commit, producer images are no longer read — displayer only reads composite_output_

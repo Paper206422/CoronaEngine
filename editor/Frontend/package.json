@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "blockly": "^11.2.2",
+    "pinia": "^3.0.4",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0"
   },
@@ -22,7 +23,7 @@
     "@vitejs/plugin-legacy": "^6.0.2",
     "@vitejs/plugin-vue": "^5.2.1",
     "autoprefixer": "^10.4.20",
-    "eslint": "^9.18.0",
+    "eslint": "^9.39.4",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-vue": "^9.32.0",
     "postcss": "^8.5.3",

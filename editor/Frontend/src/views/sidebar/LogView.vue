@@ -1,8 +1,8 @@
 <template>
   <div
-    class="h-screen rounded-lg overflow-hidden flex flex-col bg-[#1e1e1e] text-gray-300 font-mono text-xs"
+    class="flex-1 min-h-0 w-full rounded-lg overflow-hidden flex flex-col bg-[#1e1e1e] text-gray-300 font-mono text-xs"
   >
-    <DockTitleBar title="日志" extraClass="bg-[#84A65B]" routePath="/LogView" @close="closeFloat" />
+    <DockTitleBar v-if="!isDocked" title="日志" extraClass="bg-[#84A65B]" routePath="/LogView" @close="closeFloat" />
 
     <div class="p-2 bg-[#2d2d2d] flex gap-4 items-center border-b border-black">
       <div class="flex gap-2">
@@ -52,10 +52,14 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onMounted } from 'vue';
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import { logService, appService } from '@/utils/bridge';
 import SimpleSelect from '@/components/ui/SimpleSelect.vue';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
+import { coronaEventBus } from '@/utils/eventBus.js';
+import { useDockPanel } from '@/composables/useDockPanel.js';
+
+const { closePanel: closeDockPanel, isDocked } = useDockPanel();
 
 const logs = ref([]);
 const filterSources = ref(['Engine', 'Python', 'Vue']);
@@ -130,9 +134,20 @@ const getLevelClass = (l) => {
   return 'text-blue-300'; // INFO
 };
 
-const closeFloat = () => appService.removeDockWidget('LogTool');
+const closeFloat = () => {
+  if (closeDockPanel) { closeDockPanel(); return; }
+  appService.removeDockWidget('LogTool');
+};
 
 onMounted(() => {
   logService.setLogReady();
+  // 事件总线：接收 Python 推送的 log-batch
+  coronaEventBus.on('log-batch', (batch) => {
+    if (window.onReceiveLogBatch) window.onReceiveLogBatch(batch);
+  });
+});
+
+onUnmounted(() => {
+  coronaEventBus.off('log-batch');
 });
 </script>

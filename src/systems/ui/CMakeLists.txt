@@ -49,8 +49,10 @@ corona_add_system(imgui
         nanobind-static
         ktm
         corona::resource::manager
+        nlohmann_json::nlohmann_json
     INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/cef
         ${CMAKE_SOURCE_DIR}/build_deps/imgui-src
         ${CEF_INCLUDE_DIR}
         ${CEF_ROOT}

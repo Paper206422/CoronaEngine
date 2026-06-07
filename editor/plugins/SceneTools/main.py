@@ -14,14 +14,37 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-@PluginBase.register_web("SceneTools", "/SceneBar", "场景工具", 0, "right_top", 300, 600, False, True)
+@PluginBase.register_web("SceneTools")
 class SceneTools(PluginBase):
 
     @staticmethod
     def create_actor(scene_name: str, asset_path: str, actor_type: str = 'model', actor_data=None) -> dict:
+        # B-1 + 模型导入修复:场景不存在时不再崩溃,
+        # 改为通过 get_or_create 自动补建并返回明确错误信息,避免前端静默失败
         scene = scene_manager.get(scene_name)
+        if scene is None:
+            try:
+                scene = scene_manager.get_or_create(scene_name)
+            except Exception as exc:
+                logger.error("create_actor: 场景 '%s' 不存在且无法创建: %s", scene_name, exc)
+                return {"status": "error",
+                        "message": f"Scene '{scene_name}' not found",
+                        "code": "scene_not_found"}
+        if scene is None:
+            logger.error("create_actor: scene '%s' still None after get_or_create", scene_name)
+            return {"status": "error",
+                    "message": f"Scene '{scene_name}' not found",
+                    "code": "scene_not_found"}
+
+        existing_count = 0
+        try:
+            existing_count = sum(1 for a in scene._actors if a.route == asset_path)
+        except Exception as exc:
+            logger.warning("create_actor: 统计同路径 actor 失败 (%s),按 0 处理: %s", scene_name, exc)
+            existing_count = 0
+
         actor = Actor(route=asset_path,
-                      source_index=sum(1 for a in scene._actors if a.route == asset_path),
+                      source_index=existing_count,
                       actor_type=actor_type,
                       parent_scene=scene,
                       actor_data=actor_data)
@@ -43,72 +66,29 @@ class SceneTools(PluginBase):
 
     @staticmethod
     def remove_actor(scene_name: str, actor_name: str) -> dict:
-        """从场景移除 Actor"""
-        scene = scene_manager.get(scene_name)
-        actor = scene.find_actor(actor_name)
-        if actor is None:
-            raise ValueError(f"Actor '{actor_name}' not found")
-        scene.remove_actor(actor)
-        logger.info("Actor %s removed from %s", actor_name, scene_name)
-        return {"scene": scene_name, "actor": actor_name}
+        """从场景移除 Actor
 
-    @staticmethod
-    def camera_move(scene_name, position=None, forward=None, up=None, fov: float = None) -> dict:
+        B-1 修复:不再 raise ValueError,改为返回 error dict
+        与同模块其他方法(focus_actor / camera_move 等)保持一致,
+        前端可统一通过 success===false / status==='error' 判定失败。
+        """
         try:
-            camera_name = None
-            scene_id = None
-
-            if isinstance(scene_name, dict):
-                payload = scene_name
-                scene_id = payload.get("scene_id") or payload.get("sceneId") or payload.get("id")
-                scene_name = scene_id or payload.get("scene_name") or payload.get("sceneName")
-                position = payload.get("position", position)
-                forward = payload.get("forward", forward)
-                up = payload.get("up", payload.get("world_up", payload.get("worldUp", up)))
-                fov = payload.get("fov", fov)
-                camera_name = payload.get("camera_name") or payload.get("cameraName") or payload.get("active_camera_name")
-                # backward compat: accept old viewport_name keys as camera_name
-                if not camera_name:
-                    camera_name = payload.get("viewport_name") or payload.get("viewportName") or payload.get("active_viewport_name")
-
-            if not scene_name:
-                raise ValueError("scene_name is required")
-
-            missing_args = [
-                name for name, value in {
-                    "position": position,
-                    "forward": forward,
-                    "up": up,
-                    "fov": fov,
-                }.items() if value is None
-            ]
-            if missing_args:
-                raise ValueError(f"Missing camera arguments: {', '.join(missing_args)}")
-
             scene = scene_manager.get(scene_name)
             if scene is None:
-                raise ValueError(f"Scene '{scene_name}' not found")
-
-            updated = False
-            if hasattr(scene, "set_camera"):
-                updated = scene.set_camera(position, forward, up, fov,
-                                           camera_name=camera_name)
-
-            if not updated:
-                raise RuntimeError(f"Failed to update camera in scene '{scene_name}'")
-
-            snapshot = scene.to_dict() if hasattr(scene, "to_dict") else {"scene_id": scene_name}
-            logger.info("Camera updated in %s camera=%s",
-                        scene_name,
-                        snapshot.get("active_camera_name") or camera_name)
-            return {
-                "status": "success",
-                "scene_id": snapshot.get("scene_id", scene_id or scene_name),
-                "camera_name": snapshot.get("active_camera_name") or camera_name,
-                "scene": snapshot,
-            }
+                return {"status": "error",
+                        "message": f"Scene '{scene_name}' not found",
+                        "code": "scene_not_found"}
+            actor = scene.find_actor(actor_name)
+            if actor is None:
+                return {"status": "error",
+                        "message": f"Actor '{actor_name}' not found",
+                        "code": "actor_not_found"}
+            scene.remove_actor(actor)
+            logger.info("Actor %s removed from %s", actor_name, scene_name)
+            return {"status": "success", "scene": scene_name, "actor": actor_name}
         except Exception as exc:
-            return {"status": "error", "message": str(exc)}
+            logger.exception("remove_actor 失败")
+            return {"status": "error", "message": str(exc), "code": "internal_error"}
 
     @staticmethod
     def sun_direction(scene_name: str, if_enable: bool, direction: list[float]) -> dict:
@@ -380,8 +360,84 @@ class SceneTools(PluginBase):
             if actor is None:
                 logger.error(f"open_actor: actor '{actor_name}' not found in scene '{scene_name}'")
                 return False
-            CoronaEditor.js_call_func("/Object", "onActorChange", [actor.actor_type, scene_name, actor_name])
+            CoronaEditor.js_call_func("actor-change", [actor.actor_type, scene_name, actor_name])
             return True
         except Exception as e:
             logger.error(f"open actor error: {e}")
             return False
+
+    @staticmethod
+    def pick_actor_at_pixel(scene_name: str, x: float, y: float,
+                            vp_width: float, vp_height: float) -> dict:
+        """
+        鼠标在3D视口中拾取物体。
+
+        引擎的 pick_actor_at_pixel 是异步的：第一次调用设置GPU拾取请求并返回0，
+        需要等待一帧（约16ms）后再次调用才能获取拾取结果。
+        前端应在第一次调用后等待约50ms再重试。
+
+        Args:
+            scene_name: 场景名称
+            x, y: 浏览器视口中的鼠标坐标 (event.clientX, event.clientY)
+            vp_width, vp_height: 浏览器视口尺寸 (window.innerWidth, innerHeight)
+        Returns:
+            {"status": "success", "actor": {...}}  拾取成功
+            {"status": "miss"}                      该位置没有物体
+            {"status": "pending"}                   结果尚未就绪，需重试
+            {"status": "error", "message": "..."}   出错
+        """
+        try:
+            # 获取当前场景和活动摄像机
+            scene = scene_manager.get(scene_name)
+            if scene is None:
+                return {"status": "error", "message": f"场景 '{scene_name}' 未找到"}
+
+            camera = scene.get_active_camera()
+            if camera is None:
+                return {"status": "error", "message": "没有可用的摄像机"}
+
+            # 坐标缩放：浏览器视口坐标 -> 摄像机渲染分辨率坐标
+            cam_w = camera.width
+            cam_h = camera.height
+            if vp_width <= 0 or vp_height <= 0:
+                return {"status": "error", "message": "无效的视口尺寸"}
+            pick_x = int(x * cam_w / vp_width)
+            pick_y = int(y * cam_h / vp_height)
+
+            # 边界检查
+            if pick_x < 0 or pick_x >= cam_w or pick_y < 0 or pick_y >= cam_h:
+                return {"status": "miss"}
+
+            # 调用引擎拾取API（第一次调用设置拾取请求，返回0或缓存的命中结果）
+            handle = camera.pick_actor_at_pixel(pick_x, pick_y)
+
+            if handle != 0:
+                # 命中物体：通过handle查找对应的Python Actor对象
+                from CoronaCore.core.entities.actor import _handle_to_actor
+                actor = _handle_to_actor.get(handle)
+                if actor is not None:
+                    # 设置选中状态并通知前端更新属性面板
+                    CoronaEditor._selected_scene = scene_name
+                    CoronaEditor._selected_actor = actor.name
+                    CoronaEditor.js_call_func(
+                        "actor-change",
+                        [actor.actor_type, scene_name, actor.name]
+                    )
+                    logger.info(
+                        "Viewport pick hit: actor='%s' at pixel (%d, %d)",
+                        actor.name, pick_x, pick_y
+                    )
+                    return {"status": "success", "actor": actor.to_dict()}
+                else:
+                    # handle存在但Python对象已被GC回收
+                    logger.warning(
+                        "Viewport pick: handle %d 未找到对应的 Python Actor", handle
+                    )
+                    return {"status": "miss"}
+
+            # handle == 0：无缓存结果，拾取请求已提交，需等待下一帧
+            return {"status": "pending"}
+
+        except Exception as e:
+            logger.error("pick_actor_at_pixel error: %s", e)
+            return {"status": "error", "message": str(e)}

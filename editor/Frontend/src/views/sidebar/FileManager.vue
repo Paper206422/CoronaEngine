@@ -1,8 +1,9 @@
 <template>
   <div
-    class="h-screen rounded-lg overflow-hidden relative bg-[#282828]/90 flex flex-col text-white font-sans"
+    class="flex-1 min-h-0 w-full rounded-lg overflow-hidden relative bg-[#282828]/90 flex flex-col text-white font-sans"
   >
     <DockTitleBar
+      v-if="!isDocked"
       title="文件管理"
       extraClass="bg-[#84A65B]"
       routePath="/FileManager"
@@ -129,8 +130,11 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue';
 import { fileService, appService } from '@/utils/bridge';
+import { useDockPanel } from '@/composables/useDockPanel.js';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
 import FileTreeNode from '@/components/ui/FileTreeNode.vue';
+
+const { closePanel: closeDockPanel, isDocked } = useDockPanel();
 
 const projectName = ref('Corona Project');
 const fileTree = ref({ children: [] });
@@ -327,7 +331,10 @@ const handleDialogConfirm = async () => {
 };
 
 // 关闭浮动窗口
-const closeFloat = () => appService.removeDockWidget('FileManager');
+const closeFloat = () => {
+  if (closeDockPanel) { closeDockPanel(); return; }
+  appService.removeDockWidget('FileManager');
+};
 
 onMounted(() => {
   init();

@@ -3,7 +3,7 @@ import { ref, shallowRef } from 'vue';
 const workspace = shallowRef(null);
 const workspaceSvg = shallowRef(null);
 
-const hasLayoutSider = ref(false);
+const hasLayoutSider = ref(true);
 const searchVisible = ref(false);
 
 export function useStore() {

@@ -14,14 +14,13 @@ from CoronaCore.utils.proejct_utils import (
     set_project_scenes,
     append_project_scene,
 )
-from CoronaPlugin.utils.settings import core_path
+from utils.settings import core_path, settings_manager
 from plugins.SceneTools.main import SceneTools
-from utils.settings import settings_manager
 
 logger = logging.getLogger(__name__)
 
 
-@PluginBase.register_web("MainView", "", "主界面", -1, "main", 1920, 1080, False, False)
+@PluginBase.register_web("MainView")
 class MainView(PluginBase):
 
     @staticmethod
@@ -125,7 +124,7 @@ class MainView(PluginBase):
         scene = scene_manager.get_or_create(to_scene_path)
         scene.set_enabled(True)
 
-        CoronaEditor.js_call_func("/Object", "onActorChange", ['scene', scene.route, ""])
+        CoronaEditor.js_call_func("actor-change", ['scene', scene.route, ""])
         return True
 
     @staticmethod
@@ -158,11 +157,19 @@ class MainView(PluginBase):
             read_content = False
 
             init_path = CoronaEditor.CoronaEngine.active_project_path if CoronaEditor.CoronaEngine.active_project_path else None
+
             content, file_path = FileHandler.open_file(title, filter_str, init_path, read_content=read_content,
                                                        return_relative_path=True)
 
+            # 模型导入修复:用户取消文件选择时,显式返回 canceled 状态,
+            # 让前端能正确区分"未选择"和"导入失败",避免静默无反馈
             if not file_path:
-                return {}
+                logger.info("import_resource_file: user canceled file selection (scene=%s, type=%s)",
+                            scene_name, file_type)
+                return {"status": "canceled", "message": "用户取消了文件选择"}
+
+            if not scene_name:
+                return {"status": "error", "message": "scene_name is required", "code": "scene_name_missing"}
 
             # 场景文件通过路径解析
             if file_type == "scene":
@@ -171,14 +178,25 @@ class MainView(PluginBase):
                 # model 和 multimedia 都使用 import_model
                 payload = MainView.import_model(scene_name, file_path, file_type)
             if payload is None:
-                return {"status": "canceled"}
+                return {"status": "canceled", "message": "导入已取消"}
+            if isinstance(payload, dict) and payload.get("status") == "error":
+                # 下游 import_model/create_actor 已经显式返回错误,直接透传
+                return payload
             return {"status": "success", **payload}
         except Exception as exc:
-            return {"status": "error", "message": str(exc)}
+            logger.exception("import_resource_file 失败 (scene=%s, type=%s)", scene_name, file_type)
+            return {"status": "error", "message": str(exc), "code": "internal_error"}
 
     @staticmethod
     def import_model(scene_name: str, model_path: str, file_type: str) -> dict:
-        payload = SceneTools.create_actor(scene_name, model_path, file_type)
+        try:
+            payload = SceneTools.create_actor(scene_name, model_path, file_type)
+        except Exception as exc:
+            logger.exception("import_model 失败 (scene=%s, path=%s)", scene_name, model_path)
+            return {"status": "error", "message": str(exc), "code": "create_actor_failed"}
+        # 透传 create_actor 的 status/error 状态
+        if isinstance(payload, dict) and payload.get("status") == "error":
+            return payload
         return payload
 
     @staticmethod
@@ -209,48 +227,6 @@ class MainView(PluginBase):
 
         logger.info("Scene '%s' imported from '%s'", scene_name, file_path)
         return {"scene": scene_name, "actors": actors, "sun_direction": sun_direction}
-
-    @staticmethod
-    def get_menu_data() -> dict:
-        """获取菜单数据（视图工具和插件列表及其状态）"""
-
-        view_states = []
-        plugin_states = []
-        for name, module in CoronaEditor.module_list.items():
-            if not hasattr(module, "page_type"):
-                continue
-            if module.page_type == 0:
-                view_states.append({"id": name,
-                                    "name": module.cn_name,
-                                    "open": module.is_open})
-            elif module.page_type == 1:
-                plugin_states.append({"id": name,
-                                      "name": module.cn_name,
-                                      "open": module.is_open})
-
-        return {
-            "view_states": view_states,
-            "plugin_states": plugin_states
-        }
-
-    @staticmethod
-    def update_view_tool_state(tool_id: str, enabled: bool) -> dict:
-        """更新视图工具状态"""
-        if tool_id in CoronaEditor.module_list:
-
-            if enabled:
-                CoronaEditor.module_list[tool_id].open()
-            else:
-                CoronaEditor.close_browser_for_js(tool_id)
-
-            # 返回更新后的完整菜单数据
-            return {
-                "status": "success",
-                "tool_id": tool_id,
-                "enabled": enabled,
-                "menu_data": MainView.get_menu_data()
-            }
-        return {"status": "error", "message": f"未知的视图工具ID: {tool_id}"}
 
     @staticmethod
     def run_project(scene_path: Optional[str] = None) -> dict:

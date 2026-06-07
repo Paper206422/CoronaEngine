@@ -22,6 +22,9 @@ class FileHandler:
         root = tk.Tk()
         root.withdraw()  # 隐藏主窗口
         root.attributes('-topmost', True)  # 置顶
+        root.update()  # 强制处理所有待处理的事件
+        root.lift()  # 提升到最前
+        root.focus_force()  # 强制获取焦点
         return root
 
     @staticmethod
@@ -30,6 +33,10 @@ class FileHandler:
         打开文件对话框
         file_types: [(描述, 扩展), ...] 如 [("文本文件", "*.txt"), ("所有文件", "*.*")]
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[FileHandler.open_file] Called with caption={caption}, default_dir={default_dir}")
+
         if default_dir is None:
             default_dir = os.getcwd()
 
@@ -40,16 +47,22 @@ class FileHandler:
             file_types = FileHandler._parse_file_types(file_types)
 
         # 初始化tkinter
+        logger.info(f"[FileHandler.open_file] Initializing tkinter...")
         root = FileHandler.init_tkinter()
 
-        # 显示文件对话框
-        file_path = filedialog.askopenfilename(
-            title=caption,
-            initialdir=default_dir,
-            filetypes=file_types
-        )
-
-        root.destroy()  # 销毁窗口
+        try:
+            logger.info(f"[FileHandler.open_file] Showing file dialog...")
+            # 显示文件对话框
+            file_path = filedialog.askopenfilename(
+                title=caption,
+                initialdir=default_dir,
+                filetypes=file_types,
+                parent=root
+            )
+            logger.info(f"[FileHandler.open_file] Dialog returned: {file_path}")
+        finally:
+            root.destroy()  # 确保窗口被销毁
+            logger.info(f"[FileHandler.open_file] Tkinter destroyed")
 
         if not file_path:
             return None, None
@@ -94,16 +107,18 @@ class FileHandler:
         # 初始化tkinter
         root = FileHandler.init_tkinter()
 
-        # 显示保存对话框
-        file_path = filedialog.asksaveasfilename(
-            title=caption,
-            initialdir=default_dir,
-            initialfile=default_filename,
-            filetypes=file_types,
-            defaultextension=file_types[0][1] if file_types else ""
-        )
-
-        root.destroy()
+        try:
+            # 显示保存对话框
+            file_path = filedialog.asksaveasfilename(
+                title=caption,
+                initialdir=default_dir,
+                initialfile=default_filename,
+                filetypes=file_types,
+                defaultextension=file_types[0][1] if file_types else "",
+                parent=root
+            )
+        finally:
+            root.destroy()
 
         if file_path:
             try:
@@ -135,15 +150,17 @@ class FileHandler:
             if isinstance(pattern, str) and pattern.startswith("*."):
                 default_ext = pattern[1:]
 
-        file_path = filedialog.asksaveasfilename(
-            title=caption,
-            initialdir=default_dir,
-            initialfile=default_filename,
-            filetypes=file_types,
-            defaultextension=default_ext
-        )
-
-        root.destroy()
+        try:
+            file_path = filedialog.asksaveasfilename(
+                title=caption,
+                initialdir=default_dir,
+                initialfile=default_filename,
+                filetypes=file_types,
+                defaultextension=default_ext,
+                parent=root
+            )
+        finally:
+            root.destroy()
 
         if not file_path:
             return ""
@@ -163,8 +180,14 @@ class FileHandler:
             default_dir = os.getcwd()
 
         root = FileHandler.init_tkinter()
-        directory = filedialog.askdirectory(title=caption, initialdir=default_dir)
-        root.destroy()
+        try:
+            directory = filedialog.askdirectory(
+                title=caption,
+                initialdir=default_dir,
+                parent=root
+            )
+        finally:
+            root.destroy()
 
         return directory
 

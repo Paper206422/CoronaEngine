@@ -102,6 +102,7 @@ class Mechanics:
             result['mass'] = self.get_mass()
             result['restitution'] = self.get_restitution()
             result['damping'] = self.get_damping()
+            result['physics_enabled'] = self.get_physics_enabled()
         except Exception:
             pass
         return result

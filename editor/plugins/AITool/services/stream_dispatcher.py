@@ -6,9 +6,8 @@ logger = logging.getLogger(__name__)
 
 
 class StreamDispatcher:
-    def __init__(self, js_call_func, target_path: str = "/AITalkBar"):
+    def __init__(self, js_call_func):
         self._js_call_func = js_call_func
-        self._target_path = target_path
 
     def dispatch_chunk(self, chunk: str, request_id: str | None, token: str | None) -> str:
         result_obj = json.loads(chunk)
@@ -25,7 +24,7 @@ class StreamDispatcher:
 
         event_type = self.get_stream_event_type(result_obj)
         result = json.dumps(result_obj, ensure_ascii=False)
-        self._js_call_func(self._target_path, "receiveAIMessageChunk", [result])
+        self._js_call_func("ai-chunk", [result])
         logger.debug(
             "[AI Bridge Stream] 已发送流式事件 [request=%s, session=%s, event=%s]",
             metadata.get("request_id", request_id or "N/A"),
@@ -35,7 +34,7 @@ class StreamDispatcher:
         return event_type
 
     def dispatch_error(self, error_payload: str):
-        self._js_call_func(self._target_path, "receiveAIMessageChunk", [error_payload])
+        self._js_call_func("ai-chunk", [error_payload])
 
     @staticmethod
     def get_stream_event_type(result_obj: dict) -> str:

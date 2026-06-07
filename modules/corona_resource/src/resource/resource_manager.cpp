@@ -2,6 +2,8 @@
 
 #include "corona/kernel/core/i_logger.h"
 
+#include <unordered_set>
+
 #ifdef _WIN32
 #include <Windows.h>
 #endif
@@ -149,6 +151,21 @@ TResourceID ResourceManager::load_internal(const std::filesystem::path& path) {
     }
 
     auto const rid = IResource::generate_uid(normalized_path);
+
+    // 防止递归导入自死锁：parser 在解析资源时可能间接调用 import_sync(X) →
+    // load_internal(X) 回到同一资源，此时本线程已持有 Loading 状态，再进入会
+    // cv.wait() 永久阻塞等自己完成。用 thread_local 集合追踪并提前中断循环。
+    thread_local std::unordered_set<TResourceID> tls_loading_resources;
+    if (!tls_loading_resources.insert(rid).second) {
+        CFW_LOG_ERROR("[ResourceManager] Circular import detected for resource: '{}'",
+                      path_to_utf8(normalized_path));
+        return IResource::INVALID_UID;
+    }
+    struct TlsGuard {
+        std::unordered_set<TResourceID>* set;
+        TResourceID rid;
+        ~TlsGuard() { set->erase(rid); }
+    } tls_guard{&tls_loading_resources, rid};
 
     if (auto [entry, is_creator] = resource_cache_.get_or_create_entry(rid); is_creator) {
         std::shared_ptr<IResource> resource = nullptr;

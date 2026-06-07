@@ -96,6 +96,117 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
                 return true;
             }
 
+            // ── setProperty: 属性编辑快速通道 (Mass/Restitution/Damping/Visible/Collision/Physics) ──
+            if (name == "setProperty") {
+                // arguments: (actorHandle: number, propertyType: int, value: number)
+                // propertyType: 0=Mass, 1=Restitution, 2=Damping, 3=Visible, 4=CollisionEnabled, 5=PhysicsEnabled
+                if (arguments.size() < 3) {
+                    exception = "setProperty(handle, propertyType, value) requires 3 arguments";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                const auto prop_handle = arguments[0];
+                if (!prop_handle || (!prop_handle->IsInt() && !prop_handle->IsDouble())) {
+                    exception = "setProperty: handle must be a number";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                const auto prop_type = arguments[1];
+                if (!prop_type || !prop_type->IsInt()) {
+                    exception = "setProperty: propertyType must be an integer";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                const auto prop_value = arguments[2];
+                if (!prop_value || (!prop_value->IsInt() && !prop_value->IsDouble() && !prop_value->IsBool())) {
+                    exception = "setProperty: value must be a number or bool";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                auto prop_ctx = CefV8Context::GetCurrentContext();
+                if (!prop_ctx || !prop_ctx->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                CefRefPtr<CefProcessMessage> prop_msg = CefProcessMessage::Create("PropertyFast");
+                CefRefPtr<CefListValue> prop_args = prop_msg->GetArgumentList();
+                prop_args->SetDouble(0, prop_handle->GetDoubleValue());
+                prop_args->SetInt(1, prop_type->GetIntValue());
+                if (prop_value->IsBool()) {
+                    prop_args->SetDouble(2, prop_value->GetBoolValue() ? 1.0 : 0.0);
+                } else if (prop_value->IsInt()) {
+                    prop_args->SetDouble(2, static_cast<double>(prop_value->GetIntValue()));
+                } else {
+                    prop_args->SetDouble(2, prop_value->GetDoubleValue());
+                }
+                prop_ctx->GetFrame()->SendProcessMessage(PID_BROWSER, prop_msg);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
+            // ── injectInput: 积木脚本键盘/鼠标注入快速通道 ──
+            if (name == "injectInput") {
+                // arguments: (type: int, arg1, arg2, arg3, arg4)
+                // type: 0=keyDown(code, modifiers?, displayKey?), 1=keyUp(code, displayKey?),
+                //       2=mouseEvent(eventType, button?, x?, y?)
+                if (arguments.size() < 1) {
+                    exception = "injectInput requires at least 1 argument (type)";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                auto inj_ctx = CefV8Context::GetCurrentContext();
+                if (!inj_ctx || !inj_ctx->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                CefRefPtr<CefProcessMessage> inj_msg = CefProcessMessage::Create("InputInject");
+                CefRefPtr<CefListValue> inj_args = inj_msg->GetArgumentList();
+                for (size_t i = 0; i < arguments.size() && i < 6; ++i) {
+                    const auto& arg = arguments[i];
+                    if (!arg) continue;
+                    if (arg->IsInt()) inj_args->SetInt(i, arg->GetIntValue());
+                    else if (arg->IsDouble()) inj_args->SetDouble(i, arg->GetDoubleValue());
+                    else if (arg->IsString()) inj_args->SetString(i, arg->GetStringValue());
+                    else if (arg->IsBool()) inj_args->SetBool(i, arg->GetBoolValue());
+                }
+                inj_ctx->GetFrame()->SendProcessMessage(PID_BROWSER, inj_msg);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
+            // ── pickActor: 视口拾取快速通道 ──
+            if (name == "pickActor") {
+                // arguments: (sceneHandle: number, x: number, y: number, vpWidth: number, vpHeight: number)
+                // Returns result via __coronaEmit("actor-pick-result", ...) injected into the main frame
+                if (arguments.size() < 5) {
+                    exception = "pickActor(handle, x, y, vpW, vpH) requires 5 arguments";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                auto pick_ctx = CefV8Context::GetCurrentContext();
+                if (!pick_ctx || !pick_ctx->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                CefRefPtr<CefProcessMessage> pick_msg = CefProcessMessage::Create("ViewportPick");
+                CefRefPtr<CefListValue> pick_args = pick_msg->GetArgumentList();
+                for (int i = 0; i < 5; ++i) {
+                    const auto& arg = arguments[i];
+                    if (!arg) { retval = CefV8Value::CreateBool(false); return true; }
+                    if (arg->IsInt()) pick_args->SetInt(i, arg->GetIntValue());
+                    else if (arg->IsDouble()) pick_args->SetDouble(i, arg->GetDoubleValue());
+                    else { retval = CefV8Value::CreateBool(false); return true; }
+                }
+                pick_ctx->GetFrame()->SendProcessMessage(PID_BROWSER, pick_msg);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
             if (name != "cameraMove") {
                 return false;
             }
@@ -197,8 +308,14 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
         CefRefPtr<CefV8Handler> handler(new FastCameraMoveHandler());
         CefRefPtr<CefV8Value> camera_move = CefV8Value::CreateFunction("cameraMove", handler);
         CefRefPtr<CefV8Value> actor_transform = CefV8Value::CreateFunction("actorTransform", handler);
+        CefRefPtr<CefV8Value> set_property = CefV8Value::CreateFunction("setProperty", handler);
+        CefRefPtr<CefV8Value> pick_actor = CefV8Value::CreateFunction("pickActor", handler);
+        CefRefPtr<CefV8Value> inject_input = CefV8Value::CreateFunction("injectInput", handler);
         bridge->SetValue("cameraMove", camera_move, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("actorTransform", actor_transform, V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("setProperty", set_property, V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("pickActor", pick_actor, V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("injectInput", inject_input, V8_PROPERTY_ATTRIBUTE_NONE);
         global->SetValue("coronaBridge", bridge, V8_PROPERTY_ATTRIBUTE_NONE);
 
         std::cout << "[Renderer] V8 context created, cefQuery injected" << std::endl;

@@ -6,6 +6,13 @@ export const defineControlGenerators = () => {
     return `CoronaEngine.wait(${seconds})\n`;
   };
 
+  /** 在循环体开头注入 stop 检查 */
+  function injectStopCheck(branch, indent) {
+    const stopCheck = indent + 'CoronaEngine.check_stop()\n';
+    if (!branch) return stopCheck + indent + 'pass\n';
+    return stopCheck + branch;
+  }
+
   pythonGenerator.forBlock['control_for'] = function (block) {
     let branch = pythonGenerator.statementToCode(block, 'DO');
     if (pythonGenerator.STATEMENT_PREFIX) {
@@ -15,8 +22,7 @@ export const defineControlGenerators = () => {
           pythonGenerator.INDENT
         ) + branch;
     }
-    // Use branch as-is (already indented by Blockly). If empty, insert a pass.
-    if (!branch) branch = pythonGenerator.INDENT + 'pass\n';
+    branch = injectStopCheck(branch, pythonGenerator.INDENT);
     return `while True:\n` + branch;
   };
 
@@ -26,7 +32,7 @@ export const defineControlGenerators = () => {
       pythonGenerator.valueToCode(block, 'TIMES', pythonGenerator.ORDER_NONE) ||
       block.getFieldValue('DEFAULT_TIMES');
     let branch = pythonGenerator.statementToCode(block, 'DO');
-    if (!branch) branch = pythonGenerator.INDENT + 'pass\n';
+    branch = injectStopCheck(branch, pythonGenerator.INDENT);
     return `for _ in range(${times}):\n` + branch;
   };
 
@@ -58,7 +64,11 @@ export const defineControlGenerators = () => {
   pythonGenerator.forBlock['control_wait2'] = function (block) {
     const condition =
       pythonGenerator.valueToCode(block, 'CONDITION', pythonGenerator.ORDER_NONE) || 'False';
-    return `while not (${condition}):\n` + pythonGenerator.INDENT + 'pass\n';
+    // 等待直到 + stop 检查 + 短休眠防止 CPU 空转
+    const body =
+      pythonGenerator.INDENT + 'CoronaEngine.check_stop()\n' +
+      pythonGenerator.INDENT + 'CoronaEngine.wait(0.05)\n';
+    return `while not (${condition}):\n` + body;
   };
 
   // 定义重复执行直到积木块的 Python 代码生成器
@@ -66,7 +76,7 @@ export const defineControlGenerators = () => {
     const condition =
       pythonGenerator.valueToCode(block, 'CONDITION', pythonGenerator.ORDER_NONE) || 'False';
     let branch = pythonGenerator.statementToCode(block, 'DO');
-    if (!branch) branch = pythonGenerator.INDENT + 'pass\n';
+    branch = injectStopCheck(branch, pythonGenerator.INDENT);
     return `while not (${condition}):\n` + branch;
   };
 

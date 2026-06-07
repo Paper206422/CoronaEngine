@@ -3,7 +3,24 @@
 #include <cef_browser.h>
 #include <wrapper/cef_message_router.h>
 
+#include <string>
+#include <vector>
+
 namespace Corona::Systems::UI {
+
+// Input 事件结构：V8 injectInput → CEF ProcessMessage → 事件队列 → Python 消费
+// Also forward-declared in engine_bindings.cpp (kept in sync).
+struct InputEvent {
+    int type;           // 0=keyDown, 1=keyUp, 2=mouseEvent
+    std::string arg0;  // key code / eventType
+    std::string arg1;  // modifiers / button / displayKey
+    std::string arg2;  // displayKey (keyDown only)
+    double arg3{0.0};  // x (mouse)
+    double arg4{0.0};  // y (mouse)
+};
+
+// 消费所有积攒的输入事件（由 Python show_log_on_js 每帧调用）
+std::vector<InputEvent> drain_input_events();
 
 bool handle_realtime_process_message(const CefRefPtr<CefProcessMessage>& message);
 

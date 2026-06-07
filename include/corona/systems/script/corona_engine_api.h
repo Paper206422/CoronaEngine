@@ -271,7 +271,9 @@ class Environment {
     ~Environment();
 
     void set_sun_direction(const std::array<float, 3>& direction);
+    [[nodiscard]] std::array<float, 3> get_sun_direction() const;
     void set_floor_grid(bool enabled) const;
+    [[nodiscard]] bool get_floor_grid() const;
 
     void set_gravity(const std::array<float, 3>& gravity);
     [[nodiscard]] std::array<float, 3> get_gravity() const;

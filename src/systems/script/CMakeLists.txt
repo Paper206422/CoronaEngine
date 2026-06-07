@@ -21,12 +21,14 @@ corona_add_system(script
         python/python_hotfix.cpp
         python/python_path_config.cpp
         python/python_error_handler.cpp
+        camera_follow_controller.cpp
     DEPENDENCIES
         ktm
         Python::Python
         nanobind-static
         corona::resource::manager
         Horizon
+        SDL3::SDL3-static
 )
 
 # Add Python-specific include directories

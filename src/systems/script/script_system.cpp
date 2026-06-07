@@ -3,6 +3,7 @@
 #include <corona/kernel/core/i_logger.h>
 #include <corona/kernel/event/i_event_bus.h>
 #include <corona/kernel/event/i_event_stream.h>
+#include <corona/systems/script/camera_follow_controller.h>
 #include <corona/systems/script/python_api.h>
 #include <corona/systems/script/script_system.h>
 #include <nanobind/nanobind.h>
@@ -60,6 +61,7 @@ bool ScriptSystem::initialize(Kernel::ISystemContext* ctx) {
 
 void ScriptSystem::update() {
 #ifdef CORONA_ENABLE_PYTHON_API
+    CameraFollowController::instance().update(1.0f / 60.0f);
     python_api_->runPythonScript();
 #endif
 }

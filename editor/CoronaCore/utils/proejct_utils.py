@@ -1,12 +1,13 @@
 import configparser
 import datetime
+import logging
 import os
 import shutil
-import logging
+import threading
 from functools import wraps
-from typing import Callable
+from typing import Callable, Dict
 
-from .settings import version
+from utils.settings import version
 
 logger = logging.getLogger(__name__)
 
@@ -195,17 +196,33 @@ def append_project_scene(ini_path: str, scene_route: str) -> None:
         set_project_scenes(ini_path, scenes)
 
 
+_save_timers: Dict[int, threading.Timer] = {}
+
+
 def auto_save(func: Callable) -> Callable:
     """
-    装饰器：如果被装饰的函数返回True，则自动调用实例的save_data方法
-    如果函数返回其他值，则不调用save_data
+    装饰器：被装饰函数返回 True 时，延迟 0.5 秒后自动调用 save_data。
+    短时间内的多次修改合并为一次磁盘写入。
     """
     @wraps(func)
     def wrapper(self, *args, **kwargs):
         result = func(self, *args, **kwargs)
-        # 如果函数返回True，调用save_data
-        if result is True:
-            if hasattr(self, 'save_data'):
-                self.save_data()
+        if result is True and hasattr(self, 'save_data'):
+            obj_key = id(self)
+            old = _save_timers.pop(obj_key, None)
+            if old is not None:
+                old.cancel()
+
+            def _do_save():
+                try:
+                    self.save_data()
+                except Exception:
+                    pass
+                finally:
+                    _save_timers.pop(obj_key, None)
+
+            timer = threading.Timer(0.5, _do_save)
+            _save_timers[obj_key] = timer
+            timer.start()
         return result
     return wrapper

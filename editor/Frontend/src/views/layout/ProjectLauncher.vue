@@ -133,8 +133,11 @@
 
 <script setup>
 import { ref, onMounted, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { projectLauncherService, appService } from '@/utils/bridge';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
+
+const router = useRouter();
 
 // --- 状态数据 ---
 const projectName = ref('New_Corona_Project');
@@ -216,7 +219,7 @@ const handleOpenProject = async (path) => {
     const success = await projectLauncherService.openProject(path);
     if (success.data) {
       await appService.start_engine();
-      closeFloat();
+      router.push('/');
     }
   } catch (error) {
     console.error('打开项目失败:', error);

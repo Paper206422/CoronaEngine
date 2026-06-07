@@ -33,7 +33,7 @@ from .services.stream_dispatcher import StreamDispatcher
 from .services.ai_hint_service import get_hint_service
 
 
-@PluginBase.register_web("AITool", "/Pet", "AI插件", 1, "bottom_right", 200, 200, False, True)
+@PluginBase.register_web("AITool")
 class AITool(PluginBase):
     _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="AI_")
     _STREAM_QUEUE_MAXSIZE = 128

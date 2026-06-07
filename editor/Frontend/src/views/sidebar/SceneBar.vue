@@ -1,6 +1,7 @@
 <template>
-  <div class="rounded-lg overflow-hidden min-h-screen relative bg-[#282828]/70">
+  <div class="rounded-lg overflow-hidden flex flex-col flex-1 min-h-0 w-full relative bg-[#282828]/70">
     <DockTitleBar
+      v-if="!isDocked"
       title="场景管理"
       extraClass="bg-[#84A65B] rounded-t-md"
       routePath="/SceneBar"
@@ -8,12 +9,135 @@
     />
 
     <!-- 主内容区域 -->
-    <div class="flex flex-col" style="height: calc(100vh - 48px)">
+    <div class="flex flex-col flex-1 min-h-0">
       <div class="flex items-center gap-2 p-2 bg-[#1a1a1a]/50 border-b border-[#333]">
         <div class="text-[10px] text-gray-400 truncate flex-1">
           <span class="text-[#84a65b] font-bold">{{ currentSceneName }}</span>
         </div>
       </div>
+
+      <!-- 资源搜索栏(B-2 竞态保护 + 防抖 + 错误兜底) -->
+      <div class="flex items-center gap-1 px-2 py-1.5 bg-[#2a2a2a] border-b border-[#1a1a1a]">
+        <div class="relative flex-1">
+          <input
+            v-model="searchInput"
+            type="text"
+            placeholder="🔍 搜索资源(名称/中文/拼音,支持模糊)"
+            class="w-full pl-2 pr-7 py-1 text-xs bg-[#1e1e1e] text-[#e0e0e0] border border-[#3a3a3a] rounded focus:border-[#84a65b] focus:outline-none"
+            :disabled="searchLoading"
+            data-testid="resource-search-input"
+            @input="onSearchInput"
+            @keydown.enter="onSearchEnter"
+            @keydown.esc="onSearchClear"
+          />
+          <button
+            v-if="searchInput && !searchLoading"
+            class="absolute right-1 top-1/2 -translate-y-1/2 text-[#666] hover:text-[#aaa] text-xs"
+            data-testid="resource-search-clear"
+            @click="onSearchClear"
+          >
+            ✕
+          </button>
+          <span
+            v-if="searchLoading"
+            class="absolute right-1 top-1/2 -translate-y-1/2 text-[#84a65b] text-[10px] animate-pulse"
+          >
+            ⌛
+          </span>
+        </div>
+        <!-- 以图搜索 -->
+        <label
+          class="px-1.5 py-1 text-xs bg-[#3c3c3c] hover:bg-[#545454] rounded text-[#e0e0e0] cursor-pointer flex items-center"
+          :class="{ 'opacity-50 pointer-events-none': searchLoading }"
+          title="以图搜索(本地 pHash)"
+          data-testid="resource-image-search"
+        >
+          🖼
+          <input
+            ref="imageInputRef"
+            type="file"
+            accept="image/*"
+            class="hidden"
+            @change="onImageSelected"
+          />
+        </label>
+        <!-- 重建索引 -->
+        <button
+          class="px-1.5 py-1 text-xs bg-[#3c3c3c] hover:bg-[#545454] rounded text-[#e0e0e0]"
+          :class="{ 'opacity-50 pointer-events-none': searchLoading }"
+          title="重建索引"
+          data-testid="resource-rebuild"
+          @click="onRebuildIndex"
+        >
+          🔄
+        </button>
+      </div>
+
+      <!-- 搜索结果区(可切换) -->
+      <div
+        v-if="searchActive"
+        class="flex-1 overflow-y-auto bg-[#282828]/50"
+        data-testid="resource-search-results"
+      >
+        <!-- 错误提示 -->
+        <div
+          v-if="searchError"
+          class="m-2 p-2 text-xs text-red-300 bg-red-900/30 border border-red-700/50 rounded"
+          data-testid="resource-search-error"
+        >
+          ⚠ {{ searchError }}
+        </div>
+        <!-- 命中计数 -->
+        <div v-else class="px-2 py-1 text-[10px] text-[#909090] border-b border-[#1a1a1a]/30">
+          找到 <span class="text-[#84a65b] font-bold">{{ searchResults.length }}</span> 项
+          <span v-if="searchLastQuery" class="ml-2">query=“{{ searchLastQuery }}”</span>
+          <span v-if="searchElapsedMs" class="ml-2 text-[#666]">{{ searchElapsedMs }}ms</span>
+        </div>
+        <!-- 命中列表 -->
+        <div
+          v-for="item in searchResults"
+          :key="item.path"
+          class="group flex items-center px-2 py-1 hover:bg-[#3c3c3c]/50 cursor-pointer border-l-2 border-transparent hover:border-[#84a65b] text-xs"
+          :class="{ 'bg-[#264f78]/60': selectedItem === 'search:' + item.path }"
+          data-testid="resource-search-item"
+          @click="selectedItem = 'search:' + item.path"
+          @dblclick="OnLocateSearchItem(item)"
+        >
+          <span class="w-5 flex-shrink-0 text-center">
+            <span :class="typeColorClass(item.type)">{{ typeIcon(item.type) }}</span>
+          </span>
+          <span class="text-[#e0e0e0] truncate flex-1 ml-1" :title="item.name">
+            {{ item.name }}
+          </span>
+          <span class="text-[10px] text-[#666] mr-1">
+            {{ item.type_label }}
+          </span>
+          <span
+            v-if="item.score != null"
+            class="text-[10px] text-[#84a65b] mr-1"
+            :title="'相似度'"
+          >
+            {{ Math.round(item.score * 100) }}%
+          </span>
+          <button
+            class="w-5 h-5 flex items-center justify-center text-[#666] hover:text-[#84a65b] rounded opacity-0 group-hover:opacity-100"
+            title="定位到资源"
+            @click.stop="OnLocateSearchItem(item)"
+          >
+            ◎
+          </button>
+        </div>
+        <div
+          v-if="!searchError && searchResults.length === 0"
+          class="px-4 py-8 text-center text-[#666] text-xs"
+        >
+          暂无匹配结果
+        </div>
+      </div>
+
+      <!-- 原场景树(无搜索时显示) -->
+      <div v-show="!searchActive" class="flex flex-col flex-1 min-h-0">
+        <div class="flex items-center gap-2 p-2 bg-[#1a1a1a]/50 border-b border-[#333]"></div>
 
       <!-- 工具栏 -->
       <div class="flex items-center gap-1 px-2 py-1.5 bg-[#3c3c3c]/60 border-b border-[#1a1a1a]/30">
@@ -411,6 +535,7 @@
           </div>
         </div>
       </div>
+      </div>
 
       <!-- 底部状态栏 -->
       <div
@@ -427,10 +552,14 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue';
 import { useRoute } from 'vue-router';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
-import { appService, sceneService, projectService } from '@/utils/bridge.js';
+import { appService, sceneService, projectService, resourceService } from '@/utils/bridge.js';
 import { DEFAULT_SCENE_NAME } from '@/utils/constants.js';
 import { useErrorHandler } from '@/composables/useErrorHandler.js';
 import { setActorContext } from '@/blockly/composables/useActorContext.js';
+import { coronaEventBus } from '@/utils/eventBus.js';
+import { useDockPanel } from '@/composables/useDockPanel.js';
+
+const { closePanel: closeDockPanel, isDocked } = useDockPanel();
 
 const { error: logError, warn: logWarn } = useErrorHandler('SceneBar');
 
@@ -471,6 +600,180 @@ const px = ref('1.0'),
   py = ref('1.0'),
   pz = ref('1.0');
 const recording = ref(false);
+
+// ===========================================================================
+//  资源智能搜索(场景栏新增功能)
+// ===========================================================================
+const searchInput = ref('');
+const searchLoading = ref(false);
+const searchError = ref('');
+const searchResults = ref([]);
+const searchLastQuery = ref('');
+const searchElapsedMs = ref(0);
+const searchSeq = ref(0);        // B-2 竞态保护
+const searchDebounce = ref(null);
+const imageInputRef = ref(null);
+const SEARCH_DEBOUNCE_MS = 250;
+
+const searchActive = computed(() => {
+  return searchLoading.value || searchResults.value.length > 0
+    || !!searchError.value || !!searchLastQuery.value;
+});
+
+const typeIcon = (type) => ({
+  model: '📦', actor: '👤', scene: '🎬',
+  multimedia: '🎵', terrain: '🏔', script: '📜', other: '📄',
+})[type] || '📄';
+
+const typeColorClass = (type) => ({
+  model: 'text-[#9cdcfe]',
+  actor: 'text-[#ce9178]',
+  scene: 'text-[#c586c0]',
+  multimedia: 'text-[#dcdcaa]',
+  terrain: 'text-[#4ec9b0]',
+  script: 'text-[#b5cea8]',
+  other: 'text-[#808080]',
+})[type] || 'text-[#808080]';
+
+const onSearchInput = () => {
+  if (searchDebounce.value) clearTimeout(searchDebounce.value);
+  searchDebounce.value = setTimeout(() => {
+    doFuzzySearch(searchInput.value);
+  }, SEARCH_DEBOUNCE_MS);
+};
+
+const onSearchEnter = () => {
+  if (searchDebounce.value) clearTimeout(searchDebounce.value);
+  doFuzzySearch(searchInput.value);
+};
+
+const onSearchClear = () => {
+  searchInput.value = '';
+  if (searchDebounce.value) clearTimeout(searchDebounce.value);
+  searchResults.value = [];
+  searchError.value = '';
+  searchLastQuery.value = '';
+  searchElapsedMs.value = 0;
+};
+
+const doFuzzySearch = async (query) => {
+  const mySeq = ++searchSeq.value;
+  if (!query || !query.trim()) {
+    searchResults.value = [];
+    searchError.value = '';
+    searchLastQuery.value = '';
+    return;
+  }
+  searchLoading.value = true;
+  searchError.value = '';
+  try {
+    const resp = await resourceService.fuzzySearch(query.trim(), 30);
+    if (mySeq !== searchSeq.value) return;  // 已被新请求覆盖
+    if (resp && resp.success !== false && resp.data) {
+      const data = resp.data;
+      if (data.status === 'success' || data.status === 'ok') {
+        searchResults.value = Array.isArray(data.items) ? data.items : [];
+        searchLastQuery.value = query.trim();
+        searchElapsedMs.value = data.elapsed_ms || 0;
+      } else {
+        searchError.value = data.message || '搜索失败';
+        searchResults.value = [];
+      }
+    } else {
+      searchError.value = (resp && resp.error) || '搜索请求失败';
+      searchResults.value = [];
+    }
+  } catch (e) {
+    if (mySeq !== searchSeq.value) return;
+    searchError.value = e?.message || '网络错误';
+    searchResults.value = [];
+  } finally {
+    if (mySeq === searchSeq.value) searchLoading.value = false;
+  }
+};
+
+const onImageSelected = async (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  // B-3 大图片走 base64 时限制大小(> 2MB 警告)
+  if (file.size > 5 * 1024 * 1024) {
+    searchError.value = `图片过大 (${(file.size / 1024 / 1024).toFixed(1)}MB),请使用 ≤ 2MB 的图片`;
+    return;
+  }
+  const mySeq = ++searchSeq.value;
+  searchLoading.value = true;
+  searchError.value = '';
+  try {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = () => reject(fr.error);
+      fr.readAsDataURL(file);
+    });
+    const resp = await resourceService.imageSearch(dataUrl, 30, 10);
+    if (mySeq !== searchSeq.value) return;
+    if (resp && resp.success !== false && resp.data) {
+      const data = resp.data;
+      if (data.status === 'success') {
+        searchResults.value = Array.isArray(data.items) ? data.items : [];
+        searchLastQuery.value = `[图] ${file.name}`;
+        searchElapsedMs.value = data.elapsed_ms || 0;
+      } else {
+        searchError.value = data.message || '以图搜索失败';
+        searchResults.value = [];
+      }
+    } else {
+      searchError.value = (resp && resp.error) || '以图搜索请求失败';
+      searchResults.value = [];
+    }
+  } catch (e) {
+    if (mySeq !== searchSeq.value) return;
+    searchError.value = e?.message || '图片读取失败';
+    searchResults.value = [];
+  } finally {
+    if (mySeq === searchSeq.value) searchLoading.value = false;
+    if (imageInputRef.value) imageInputRef.value.value = '';
+  }
+};
+
+const onRebuildIndex = async () => {
+  const mySeq = ++searchSeq.value;
+  searchLoading.value = true;
+  searchError.value = '';
+  try {
+    const resp = await resourceService.rebuildIndex();
+    if (mySeq !== searchSeq.value) return;
+    if (resp && resp.success !== false && resp.data && resp.data.status === 'success') {
+      const t = resp.data.text || {};
+      searchLastQuery.value = `[重建] ${t.count || 0} 项, ${t.elapsed_seconds || 0}s`;
+    } else {
+      searchError.value = (resp && resp.data && resp.data.message) || '重建索引失败';
+    }
+  } catch (e) {
+    if (mySeq !== searchSeq.value) return;
+    searchError.value = e?.message || '重建索引失败';
+  } finally {
+    if (mySeq === searchSeq.value) searchLoading.value = false;
+  }
+};
+
+const OnLocateSearchItem = async (item) => {
+  // 桥接 ResourceSearch.focus_actor → SceneTools.focus_actor
+  // 资源项的 path 形如 Scene/MyScene.actor 或 assets/xxx.fbx
+  // 我们尝试从 name 推断 actor,失败则回退到原行为
+  try {
+    const name = (item.name || '').trim();
+    const resp = await resourceService.focusActor(currentSceneName.value, name);
+    if (resp && resp.data && resp.data.status === 'success') {
+      selectedItem.value = name;
+      setActorContext(currentSceneName.value, name);
+    } else {
+      logWarn('定位资源失败', resp && resp.data && resp.data.message);
+    }
+  } catch (e) {
+    logError('定位资源失败', e);
+  }
+};
 
 const ControlObject = async (scene) => {
   try {
@@ -744,18 +1047,57 @@ const addActorToList = async (actor) => {
 };
 
 const HandleFileImport = async () => {
+  // 测试 window.cefQuery 是否存在
+  if (typeof window.cefQuery === 'undefined') {
+    alert('错误：window.cefQuery 未定义！CEF bridge 未初始化。');
+    return;
+  }
+
   ShowModelDropdown.value = false;
-  await appService.callDockFunction('', 'showLoading', ['加载中', '请稍候...', 0]);
+  if (!currentSceneName.value) {
+    logWarn('File import aborted: no active scene');
+    return;
+  }
+  try {
+    await appService.callDockFunction('', 'showLoading', ['加载中', '请稍候...', 0]);
+  } catch (e) {
+    // showLoading 失败不阻塞主流程
+  }
   try {
     const result = await projectService.importResourceFileByDialog(currentSceneName.value, 'model');
-    if (result.success && result.data.actor) {
-      await addActorToList(result.data.actor);
-      await appService.callDockFunction('', 'updateLoading', ['导入完成', 100]);
+    // 兼容两种返回形态:
+    //   1) 包装型 { success, data: { status, actor, ... } }
+    //   2) 直返型 { status, actor, ... }
+    const payload = result?.data ?? result;
+    const status = payload?.status;
+    if (result?.success === false || status === 'error') {
+      logError('File import failed', payload?.message || result?.error || 'unknown error');
+      return;
+    }
+    if (status === 'canceled') {
+      // 用户主动取消,无需弹错
+      return;
+    }
+    const actor = payload?.actor;
+    if (actor && actor.name) {
+      await addActorToList(actor);
+      try {
+        await appService.callDockFunction('', 'updateLoading', ['导入完成', 100]);
+      } catch (e) {
+        // 忽略加载条更新失败
+      }
+    } else {
+      logWarn('File import returned without actor payload', payload);
     }
   } catch (e) {
     logError('File import failed', e);
+  } finally {
+    try {
+      await appService.callDockFunction('', 'hideLoading', []);
+    } catch (e) {
+      // 忽略关闭加载条失败
+    }
   }
-  await appService.callDockFunction('', 'hideLoading', []);
 };
 
 const HandleActorImport = async () => {
@@ -833,11 +1175,8 @@ const DeleteActor = async (scene) => {
 };
 
 const CloseFloat = async () => {
-  try {
-    await appService.removeDockWidget('SceneTools');
-  } catch (e) {
-    logError('Failed to close dock', e);
-  }
+  if (closeDockPanel) { closeDockPanel(); return; }
+  await appService.removeDockWidget('SceneTools');
 };
 
 const setupFragmentListener = () => {
@@ -901,12 +1240,37 @@ onMounted(async () => {
   const result = await projectService.OnInit();
   const queryString = window.location.hash?.split('?')[1] || window.location.search?.slice(1);
   const urlSceneName = queryString ? new URLSearchParams(queryString).get('sceneName') : null;
-  currentSceneName.value = urlSceneName || result.data.path || DEFAULT_SCENE_NAME;
+
+  // 从 OnInit 返回值中取活跃场景：scenes 数组 + active_index
+  const initData = result?.data ?? result;
+  const activeScene = initData?.scenes?.[initData?.active_index ?? 0];
+  currentSceneName.value = urlSceneName || activeScene?.path || DEFAULT_SCENE_NAME;
 
   setupFragmentListener();
   await OnInitObjTree();
   await RefreshRenderBackendState();
+
+  // 监听 Python 推送的 actor-change：场景切换/物体变化时重新加载场景树
+  coronaEventBus.on('actor-change', onActorChangeEvent);
+  coronaEventBus.on('scene-tree-changed', onSceneTreeChangedEvent);
 });
 
-onUnmounted(() => {});
+// 场景切换或 actor 变化时刷新当前场景树
+const onActorChangeEvent = (type, sceneId /*, actorId, oldPath */) => {
+  if (type === 'scene' && sceneId) {
+    currentSceneName.value = sceneId;
+  }
+  OnInitObjTree();
+};
+
+const onSceneTreeChangedEvent = (sceneName) => {
+  if (!sceneName || sceneName === currentSceneName.value) {
+    OnInitObjTree();
+  }
+};
+
+onUnmounted(() => {
+  coronaEventBus.off('actor-change', onActorChangeEvent);
+  coronaEventBus.off('scene-tree-changed', onSceneTreeChangedEvent);
+});
 </script>
