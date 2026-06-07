@@ -1,8 +1,8 @@
 <template>
   <div class="navigat-bar">
     <button class="nav-btn" @click="handleNewClick">新建</button>
-    <button class="nav-btn" @click="handleSaveClick">保存</button>
-    <button class="nav-btn" @click="handleOpenClick">打开</button>
+    <button class="nav-btn" @click="handleExportClick" title="导出积木 (Ctrl+S)">导出</button>
+    <button class="nav-btn" @click="handleImportClick" title="导入积木 (Ctrl+O)">导入</button>
     <div class="flex-1"></div>
     <button class="nav-btn" @click="handleSearchClick">查找</button>
     <button class="nav-btn" @click="handleSettingsClick">设置</button>
@@ -37,57 +37,92 @@ function handleSettingsClick() {
   settingsModal.value.handleClick();
 }
 
-async function handleSaveClick() {
-  if (!store.workspace.value) return;
-  const data = Blockly.serialization.workspaces.save(store.workspace.value);
+/** 生成导出文件名（包含 Actor 和场景信息） */
+function getExportFilename() {
+  const scene = currentSceneName.value || 'unknown';
+  const actor = currentActorName.value || 'unknown';
+  const ts = new Date().toISOString().slice(0, 10);
+  return `${actor}_${scene}_${ts}.blockly`;
+}
+
+/** 回退下载方案 */
+function fallbackDownload(jsonStr, filename) {
+  const blob = new Blob([jsonStr], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 150);
+}
+
+async function handleExportClick() {
+  const ws = store.workspace.value;
+  if (!ws) return;
+  const blocks = ws.getAllBlocks(false);
+  if (blocks.length === 0) {
+    alert('当前工作区没有积木，无法导出。');
+    return;
+  }
+  const data = Blockly.serialization.workspaces.save(ws);
   const jsonStr = JSON.stringify(data, null, 2);
   const blob = new Blob([jsonStr], { type: 'application/json' });
+  const suggestedName = getExportFilename();
 
   if (window.showSaveFilePicker) {
     try {
       const opts = {
         types: [{ description: 'Blockly 项目文件', accept: { 'application/json': ['.blockly'] } }],
-        suggestedName: `project_${Date.now()}.blockly`,
+        suggestedName,
       };
       const handle = await window.showSaveFilePicker(opts);
       const writable = await handle.createWritable();
       await writable.write(blob);
       await writable.close();
-    } catch {}
+    } catch {
+      // 用户取消或 API 不可用 → 回退
+      fallbackDownload(jsonStr, suggestedName);
+    }
   } else {
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `project_${Date.now()}.blockly`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    setTimeout(() => URL.revokeObjectURL(url), 150);
+    fallbackDownload(jsonStr, suggestedName);
   }
 }
 
-function handleOpenClick() {
+function handleImportClick() {
+  const ws = store.workspace.value;
+  if (!ws) {
+    alert('工作区尚未初始化，请先打开积木编辑器。');
+    return;
+  }
   const input = document.createElement('input');
   input.setAttribute('type', 'file');
-  input.setAttribute('accept', '.blockly');
+  input.setAttribute('accept', '.blockly,.json');
   input.addEventListener('change', function () {
     const file = this.files[0];
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.blockly')) {
-      alert('仅支持 .blockly 格式的文件');
+    const ext = (file.name || '').split('.').pop()?.toLowerCase();
+    if (ext !== 'blockly' && ext !== 'json') {
+      alert('仅支持 .blockly 或 .json 格式的文件');
       return;
     }
-    if (!store.workspace.value) {
-      alert('工作区尚未初始化');
-      return;
+
+    // 确认覆盖
+    const ws2 = store.workspace.value;
+    if (ws2 && ws2.getAllBlocks(false).length > 0) {
+      if (!confirm('当前工作区已有积木，导入将替换现有积木。是否继续？')) {
+        return;
+      }
     }
+
     const reader = new FileReader();
     reader.addEventListener('load', function () {
       let text = this.result;
-      // 移除 BOM（UTF-8: EF BB BF → U+FEFF; UTF-16: U+FEFF）
+      // 移除 BOM（UTF-8: EF BB BF → U+FEFF）
       if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
 
-      // 第一步：解析 JSON
+      // 解析 JSON
       let json;
       try {
         json = JSON.parse(text);
@@ -97,7 +132,7 @@ function handleOpenClick() {
         return;
       }
 
-      // 第二步：验证 JSON 结构（必须包含 blocks 字段）
+      // 验证 JSON 结构
       if (!json || typeof json !== 'object') {
         alert('文件格式不正确：JSON 根节点必须是对象');
         return;
@@ -106,9 +141,14 @@ function handleOpenClick() {
         console.warn('[Blockly] JSON 缺少 blocks 字段，尝试直接加载');
       }
 
-      // 第三步：加载到工作区（Blockly load 内部会先 clear 各序列化器，无需手动 clear）
+      // 加载到工作区
+      const ws3 = store.workspace.value;
+      if (!ws3) {
+        alert('工作区已关闭，无法导入。');
+        return;
+      }
       try {
-        Blockly.serialization.workspaces.load(json, store.workspace.value);
+        Blockly.serialization.workspaces.load(json, ws3);
       } catch (e) {
         console.error('[Blockly] 工作区加载失败：', e);
         alert('工作区加载失败：' + (e.message || '未知错误'));

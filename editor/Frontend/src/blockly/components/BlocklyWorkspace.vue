@@ -13,11 +13,66 @@
 
     <Navigat v-if="!embedded" @new-canvas="handleNewCanvas" />
 
+    <!-- 工作区工具栏（始终可见，不遮挡任何内容） -->
+    <div
+      class="flex items-center gap-1 px-2 py-1 select-none shrink-0"
+      style="background: #252525; border-bottom: 1px solid rgba(255,255,255,0.06);"
+    >
+      <button class="toolbar-btn group" title="导入积木 (Ctrl+O)" @click="triggerFileImport">
+        <svg class="toolbar-icon" viewBox="0 0 16 16" fill="none"><path d="M2 10v3h12v-3M8 3v8M5 6l3-3 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="toolbar-label">导入</span>
+      </button>
+      <button class="toolbar-btn group" title="导出积木 (Ctrl+S)" @click="handleToolbarExport">
+        <svg class="toolbar-icon" viewBox="0 0 16 16" fill="none"><path d="M2 10v3h12v-3M8 3v8M5 10l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="toolbar-label">导出</span>
+      </button>
+      <div class="w-px h-4 mx-1" style="background: rgba(255,255,255,0.1);"></div>
+      <button class="toolbar-btn group" title="整理积木布局" @click="handleOrganize">
+        <svg class="toolbar-icon" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="1.5" width="5" height="5" rx="0.5" stroke="currentColor" stroke-width="1.3"/><rect x="9.5" y="1.5" width="5" height="5" rx="0.5" stroke="currentColor" stroke-width="1.3"/><rect x="1.5" y="9.5" width="5" height="5" rx="0.5" stroke="currentColor" stroke-width="1.3"/><rect x="9.5" y="9.5" width="5" height="5" rx="0.5" stroke="currentColor" stroke-width="1.3"/></svg>
+        <span class="toolbar-label">整理</span>
+      </button>
+      <div class="flex-1"></div>
+      <button
+        class="toolbar-btn group"
+        :class="{ 'toolbar-btn-active': store.hasLayoutSider.value }"
+        title="显示/隐藏代码区"
+        @click="store.hasLayoutSider.value = !store.hasLayoutSider.value"
+      >
+        <svg class="toolbar-icon" viewBox="0 0 16 16" fill="none"><path d="M5 2H3a1 1 0 00-1 1v10a1 1 0 001 1h2M11 2h2a1 1 0 011 1v10a1 1 0 01-1 1h-2M6.5 6l2 2-2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="toolbar-label">代码区</span>
+      </button>
+    </div>
+
     <div class="flex-1 flex overflow-hidden">
       <div ref="blockdiv" class="flex-1 relative" style="overflow: hidden;">
         <Search />
         <Zoom />
         <Trashcan />
+        <!-- 拖拽导入高亮遮罩 -->
+        <div
+          id="drag-overlay"
+          class="absolute inset-0 z-20 flex items-center justify-center pointer-events-none"
+          style="background: rgba(132,166,91,0.15); border: 3px dashed #84a65b; display: none;"
+        >
+          <div class="text-center text-[#84a65b]">
+            <div class="text-4xl mb-2">📂</div>
+            <div class="text-lg font-bold">释放文件以导入积木</div>
+          </div>
+        </div>
+        <!-- 隐藏的文件导入输入框 -->
+        <input
+          ref="fileImportInput"
+          type="file"
+          accept=".blockly,.json"
+          class="hidden"
+          @change="handleFileImportChange"
+        />
+        <!-- 导入反馈提示 -->
+        <div
+          id="import-toast"
+          class="absolute top-4 left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded shadow-lg text-sm font-medium transition-opacity duration-300 pointer-events-none"
+          style="opacity: 0;"
+        ></div>
         <div id="status-overlay" class="absolute inset-0 flex items-center justify-center z-10" style="background: #1e1e1e;">
           <div class="text-center">
             <div class="text-xl font-bold text-green-400 mb-2">积木编辑器</div>
@@ -120,6 +175,7 @@ const emit = defineEmits(['resize']);
 const { error: logError } = useErrorHandler('BlocklyWorkspace');
 
 const blockdiv = ref(null);
+const fileImportInput = ref(null);
 const store = useStore();
 const generatedCode = ref('');
 const codeRunning = ref(false);
@@ -639,6 +695,9 @@ const initBlockly = async () => {
   setupCefFieldInputFix();
 
   try { Blockly.ContextMenuRegistry.registry.unregister('saveWorkspace'); } catch {}
+  try { Blockly.ContextMenuRegistry.registry.unregister('loadWorkspace'); } catch {}
+  try { Blockly.ContextMenuRegistry.registry.unregister('copyWorkspace'); } catch {}
+  try { Blockly.ContextMenuRegistry.registry.unregister('pasteWorkspace'); } catch {}
 
   Blockly.ContextMenuRegistry.registry.register({
     displayText: '保存工作区',
@@ -647,21 +706,95 @@ const initBlockly = async () => {
       const data = Blockly.serialization.workspaces.save(workspace);
       const jsonStr = JSON.stringify(data, null, 2);
       const blob = new Blob([jsonStr], { type: 'application/json' });
+      const suggestedName = getExportFilename();
       try {
         const opts = {
           types: [{ description: 'Blockly 项目文件', accept: { 'application/json': ['.blockly'] } }],
-          suggestedName: `project_${Date.now()}.blockly`,
+          suggestedName,
         };
         const handle = await window.showSaveFilePicker(opts);
         const writable = await handle.createWritable();
         await writable.write(blob);
         await writable.close();
-      } catch {}
+        showToast('✅ 积木导出成功', 'success');
+      } catch {
+        // 用户取消或 API 不可用 → 回退到下载链接
+        fallbackDownload(jsonStr, suggestedName);
+      }
     },
     scopeType: Blockly.ContextMenuRegistry.ScopeType.WORKSPACE,
     id: 'saveWorkspace',
     weight: 1,
   });
+
+  Blockly.ContextMenuRegistry.registry.register({
+    displayText: '导入积木',
+    preconditionFn: () => workspace ? 'enabled' : 'disabled',
+    callback: () => {
+      triggerFileImport();
+    },
+    scopeType: Blockly.ContextMenuRegistry.ScopeType.WORKSPACE,
+    id: 'loadWorkspace',
+    weight: 2,
+  });
+
+  Blockly.ContextMenuRegistry.registry.register({
+    displayText: '复制积木',
+    preconditionFn: () => workspace && workspace.getAllBlocks(false).length > 0 ? 'enabled' : 'disabled',
+    callback: async () => {
+      try {
+        const data = Blockly.serialization.workspaces.save(workspace);
+        const jsonStr = JSON.stringify(data);
+        await navigator.clipboard.writeText(jsonStr);
+        showToast('📋 积木已复制到剪贴板', 'success');
+      } catch (e) {
+        logError('复制积木失败', e);
+        showToast('❌ 复制失败', 'error');
+      }
+    },
+    scopeType: Blockly.ContextMenuRegistry.ScopeType.WORKSPACE,
+    id: 'copyWorkspace',
+    weight: 3,
+  });
+
+  Blockly.ContextMenuRegistry.registry.register({
+    displayText: '粘贴积木',
+    preconditionFn: () => 'enabled',
+    callback: async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (!text || !text.trim()) {
+          showToast('⚠️ 剪贴板为空', 'warn');
+          return;
+        }
+        let json;
+        try {
+          json = JSON.parse(text);
+        } catch {
+          showToast('❌ 剪贴板内容不是有效的积木数据', 'error');
+          return;
+        }
+        if (!json || typeof json !== 'object') {
+          showToast('❌ 剪贴板数据格式不正确', 'error');
+          return;
+        }
+        const hasBlocks = workspace.getAllBlocks(false).length > 0;
+        if (hasBlocks && !confirm('当前工作区已有积木，粘贴将替换现有积木。是否继续？')) {
+          return;
+        }
+        Blockly.serialization.workspaces.load(json, workspace);
+        showToast('✅ 积木粘贴成功', 'success');
+      } catch (e) {
+        logError('粘贴积木失败', e);
+        showToast('❌ 粘贴失败，请检查剪贴板权限', 'error');
+      }
+    },
+    scopeType: Blockly.ContextMenuRegistry.ScopeType.WORKSPACE,
+    id: 'pasteWorkspace',
+    weight: 4,
+  });
+
+  setupKeyboardShortcuts();
 
   const { pythonGenerator: pyGen } = await import('blockly/python');
   pythonGenerator = pyGen;
@@ -673,6 +806,291 @@ const initBlockly = async () => {
   resizeBlockly();
   return true;
 };
+
+// ============================================================
+// 导入/导出工具函数
+// ============================================================
+
+/** 显示短暂的提示消息 */
+let toastTimer = null;
+function showToast(message, type = 'info') {
+  const toast = document.getElementById('import-toast');
+  if (!toast) return;
+  if (toastTimer) clearTimeout(toastTimer);
+  const colors = {
+    success: 'bg-green-700 text-green-100',
+    error: 'bg-red-700 text-red-100',
+    warn: 'bg-yellow-700 text-yellow-100',
+    info: 'bg-blue-700 text-blue-100',
+  };
+  toast.className = colors[type] || colors.info;
+  toast.textContent = message;
+  toast.style.opacity = '1';
+  toastTimer = setTimeout(() => {
+    toast.style.opacity = '0';
+    toastTimer = null;
+  }, 2500);
+}
+
+/** 生成导出文件名（包含 Actor 和场景信息） */
+function getExportFilename() {
+  const { scene, actor } = getActorContext();
+  const scenePart = scene || 'unknown';
+  const actorPart = actor || 'unknown';
+  const ts = new Date().toISOString().slice(0, 10);
+  return `${actorPart}_${scenePart}_${ts}.blockly`;
+}
+
+/** 回退下载方案（showSaveFilePicker 不可用时） */
+function fallbackDownload(jsonStr, filename) {
+  const blob = new Blob([jsonStr], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 150);
+  showToast('✅ 积木导出成功', 'success');
+}
+
+/** 工具栏导出按钮处理 */
+async function handleToolbarExport() {
+  if (!workspace || !BlocklyLib) return;
+  if (workspace.getAllBlocks(false).length === 0) {
+    showToast('⚠️ 工作区为空，无积木可导出', 'warn');
+    return;
+  }
+  const data = BlocklyLib.serialization.workspaces.save(workspace);
+  const jsonStr = JSON.stringify(data, null, 2);
+  const blob = new Blob([jsonStr], { type: 'application/json' });
+  const suggestedName = getExportFilename();
+  if (window.showSaveFilePicker) {
+    try {
+      const opts = {
+        types: [{ description: 'Blockly 项目文件', accept: { 'application/json': ['.blockly'] } }],
+        suggestedName,
+      };
+      const handle = await window.showSaveFilePicker(opts);
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      showToast('✅ 积木导出成功', 'success');
+    } catch {
+      fallbackDownload(jsonStr, suggestedName);
+    }
+  } else {
+    fallbackDownload(jsonStr, suggestedName);
+  }
+}
+
+/** 整理积木布局 */
+function handleOrganize() {
+  if (!workspace) return;
+  try {
+    workspace.cleanUp();
+    showToast('✅ 积木已整理', 'success');
+  } catch (e) {
+    showToast('❌ 整理失败', 'error');
+  }
+}
+
+/** 触发文件选择器导入 */
+function triggerFileImport() {
+  if (fileImportInput.value) {
+    fileImportInput.value.value = ''; // 清除旧值，确保重复选择同一文件能触发 change
+    fileImportInput.value.click();
+  } else {
+    // 回退：动态创建 input
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.blockly,.json';
+    input.addEventListener('change', (e) => handleFileImportChange(e));
+    input.click();
+  }
+}
+
+/** 文件选择器 change 事件处理 */
+function handleFileImportChange(event) {
+  const file = event.target?.files?.[0];
+  if (!file) return;
+  importWorkspaceFromFileObject(file);
+}
+
+/** 从 File 对象导入积木 */
+function importWorkspaceFromFileObject(file) {
+  if (!workspace) {
+    showToast('❌ 工作区尚未初始化', 'error');
+    return;
+  }
+  const ext = (file.name || '').split('.').pop()?.toLowerCase();
+  if (ext !== 'blockly' && ext !== 'json') {
+    showToast('⚠️ 仅支持 .blockly 或 .json 格式', 'warn');
+    return;
+  }
+  const reader = new FileReader();
+  reader.addEventListener('load', function () {
+    let text = this.result;
+    // 移除 BOM
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch (e) {
+      showToast('❌ JSON 解析失败：' + (e.message || '格式错误'), 'error');
+      return;
+    }
+
+    if (!json || typeof json !== 'object') {
+      showToast('❌ 文件格式不正确：根节点必须是对象', 'error');
+      return;
+    }
+
+    // 确认覆盖
+    const hasBlocks = workspace.getAllBlocks(false).length > 0;
+    if (hasBlocks && !confirm('当前工作区已有积木，导入将替换现有积木。是否继续？')) {
+      return;
+    }
+
+    try {
+      BlocklyLib.serialization.workspaces.load(json, workspace);
+      showToast(`✅ 成功导入 ${file.name}`, 'success');
+    } catch (e) {
+      showToast('❌ 工作区加载失败：' + (e.message || '未知错误'), 'error');
+    }
+  });
+  reader.addEventListener('error', () => {
+    showToast('❌ 文件读取失败，请确认文件未损坏', 'error');
+  });
+  reader.readAsText(file, 'UTF-8');
+}
+
+// ============================================================
+// 键盘快捷键：Ctrl+S 导出、Ctrl+O 导入
+// ============================================================
+let kbShortcutHandler = null;
+
+function setupKeyboardShortcuts() {
+  const injectionDiv = workspace?.workspaceSvg?.injectionDiv
+    || (workspace?.injectionDiv)
+    || document.querySelector('.injectionDiv');
+  if (!injectionDiv) return;
+
+  teardownKeyboardShortcuts();
+
+  kbShortcutHandler = (e) => {
+    // 跳过文本输入框
+    const tag = document.activeElement?.tagName?.toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+    const mod = e.ctrlKey || e.metaKey;
+
+    if (mod && e.key === 's') {
+      e.preventDefault();
+      e.stopPropagation();
+      // 导出当前工作区
+      if (!workspace || workspace.getAllBlocks(false).length === 0) {
+        showToast('⚠️ 工作区为空，无积木可导出', 'warn');
+        return;
+      }
+      const data = BlocklyLib.serialization.workspaces.save(workspace);
+      const jsonStr = JSON.stringify(data, null, 2);
+      const suggestedName = getExportFilename();
+      if (window.showSaveFilePicker) {
+        const blob = new Blob([jsonStr], { type: 'application/json' });
+        const opts = {
+          types: [{ description: 'Blockly 项目文件', accept: { 'application/json': ['.blockly'] } }],
+          suggestedName,
+        };
+        window.showSaveFilePicker(opts).then(async (handle) => {
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          showToast('✅ 积木导出成功', 'success');
+        }).catch(() => {
+          fallbackDownload(jsonStr, suggestedName);
+        });
+      } else {
+        fallbackDownload(jsonStr, suggestedName);
+      }
+    }
+
+    if (mod && e.key === 'o') {
+      e.preventDefault();
+      e.stopPropagation();
+      triggerFileImport();
+    }
+  };
+
+  injectionDiv.addEventListener('keydown', kbShortcutHandler, true);
+}
+
+function teardownKeyboardShortcuts() {
+  if (kbShortcutHandler) {
+    const injectionDiv = document.querySelector('.injectionDiv');
+    if (injectionDiv) {
+      injectionDiv.removeEventListener('keydown', kbShortcutHandler, true);
+    }
+    kbShortcutHandler = null;
+  }
+}
+
+// ============================================================
+// 拖拽导入 .blockly 文件
+// ============================================================
+let dragEnterCount = 0;
+
+function setupDragDrop() {
+  const container = blockdiv.value;
+  if (!container) return;
+  container.addEventListener('dragover', handleDragOver);
+  container.addEventListener('dragenter', handleDragEnter);
+  container.addEventListener('dragleave', handleDragLeave);
+  container.addEventListener('drop', handleDrop);
+}
+
+function teardownDragDrop() {
+  const container = blockdiv.value;
+  if (!container) return;
+  container.removeEventListener('dragover', handleDragOver);
+  container.removeEventListener('dragenter', handleDragEnter);
+  container.removeEventListener('dragleave', handleDragLeave);
+  container.removeEventListener('drop', handleDrop);
+}
+
+function handleDragOver(e) {
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+}
+
+function handleDragEnter(e) {
+  e.preventDefault();
+  dragEnterCount++;
+  const overlay = document.getElementById('drag-overlay');
+  if (overlay) overlay.style.display = 'flex';
+}
+
+function handleDragLeave(e) {
+  dragEnterCount--;
+  if (dragEnterCount <= 0) {
+    dragEnterCount = 0;
+    const overlay = document.getElementById('drag-overlay');
+    if (overlay) overlay.style.display = 'none';
+  }
+}
+
+function handleDrop(e) {
+  e.preventDefault();
+  dragEnterCount = 0;
+  const overlay = document.getElementById('drag-overlay');
+  if (overlay) overlay.style.display = 'none';
+
+  const file = e.dataTransfer?.files?.[0];
+  if (!file) return;
+  importWorkspaceFromFileObject(file);
+}
 
 const hideOverlay = () => {
   const overlay = document.getElementById('status-overlay');
@@ -743,6 +1161,7 @@ onMounted(async () => {
   if (blockdiv.value) {
     resizeObserver = new ResizeObserver(() => resizeBlockly());
     resizeObserver.observe(blockdiv.value);
+    setupDragDrop();
   }
 
   try {
@@ -765,6 +1184,10 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('resize', handleWindowResize);
   if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
+  // 清理拖拽导入
+  teardownDragDrop();
+  // 清理键盘快捷键
+  teardownKeyboardShortcuts();
   // 清理 CEF 键盘转发
   teardownCefFieldInputFix();
   // 清理积木键盘转发
@@ -773,6 +1196,8 @@ onUnmounted(() => {
   clearPollTimer();
   // 清理自动保存定时器
   if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
+  // 清理提示定时器
+  if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
   // 销毁前立即保存当前工作区状态
   flushAutoSave();
   if (workspace) {
@@ -792,3 +1217,61 @@ onUnmounted(() => {
 
 defineExpose({ resize: resizeBlockly });
 </script>
+
+<style scoped>
+/* ── 工作区工具栏 ── */
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: #999;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1.4;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.toolbar-btn:hover {
+  color: #e0e0e0;
+  background: rgba(255,255,255,0.06);
+  border-color: rgba(255,255,255,0.12);
+}
+
+.toolbar-btn:active {
+  background: rgba(255,255,255,0.1);
+  transform: scale(0.97);
+}
+
+.toolbar-btn-active {
+  color: #f0c060 !important;
+  background: rgba(240,192,96,0.1) !important;
+  border-color: rgba(240,192,96,0.3) !important;
+}
+
+.toolbar-btn-active:hover {
+  background: rgba(240,192,96,0.18) !important;
+  border-color: rgba(240,192,96,0.5) !important;
+}
+
+.toolbar-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+
+.toolbar-btn:hover .toolbar-icon {
+  opacity: 1;
+}
+
+.toolbar-label {
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+</style>
