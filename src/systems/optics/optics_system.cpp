@@ -21,7 +21,7 @@
 
 // CORONA_ENABLE_VISION is controlled by CMake (-DCORONA_ENABLE_VISION).
 
-#define CORONA_VISION_IMPORT_DEMO
+//#define CORONA_VISION_IMPORT_DEMO
 
 #ifdef CORONA_ENABLE_VISION
 #include "base/import/importer.h"
@@ -36,13 +36,82 @@
 #include "vision/vision_geometry_adapter.h"
 #include "vision/vision_camera_adapter.h"
 #include "vision/vision_light_adapter.h"
-#include "vision/vision_output_bridge.h"
+#include "vision/vision_zero_copy_bridge.h"
 #endif
 
 namespace {
 #ifdef CORONA_ENABLE_VISION
 ocarina::SP<vision::Pipeline> renderPipeline;
 vision::Device* visionDevicePtr = nullptr;
+
+// ============================================================================
+// Vision 集成差分诊断实验（详见 docs/vision_integration.md「差分诊断实验」一节）
+//
+//   CORONA_VISION_EXP_PROBE          只读状态探针，默认开启（开销极小，可常开）。
+//                                    在关键生命周期点 dump 几何(host/device)/光源/
+//                                    相机/累积帧，用于对比 DEMO 与非 DEMO 路径。
+//   CORONA_VISION_EXP_SKIP_GEOMETRY  Stage 1.5：非 DEMO 下跳过 build_vision_geometry，
+//                                    做「空几何天光测试」——若能看见灰色天空，说明
+//                                    输出/光照/相机链路正常，黑屏根因在几何导入。
+//   CORONA_VISION_EXP_GRAFT_GEOMETRY Stage 2：DEMO 下渲染若干帧确认台子正常后，调用
+//                                    rebuild_vision_scene() 把 demo 几何「嫁接」成
+//                                    Corona 几何，直接验证 mesh 导入是否成功。
+//
+// 后两个是行为性开关，默认关闭；需要时取消注释或用 -D 传入。
+// ============================================================================
+#define CORONA_VISION_EXP_PROBE 1
+// #define CORONA_VISION_EXP_SKIP_GEOMETRY 1
+// #define CORONA_VISION_EXP_GRAFT_GEOMETRY 1
+
+#if CORONA_VISION_EXP_PROBE
+// 只读：把一个 Vision pipeline 的几何/光源/相机/累积状态打到日志。
+// HOST 段为主机侧（shape/instance/mesh 注册表），DEV 段为设备侧（accel/BVH）。
+// 「mesh 导入成功」当且仅当 HOST(inst>0,mesh_reg>0) 且 DEV(tri>0,mesh>0) 同时成立；
+// 若 HOST 非零而 DEV 为零 => 上传/BVH 失败或 transform 把几何甩飞（看 world r）。
+void dump_vision_state(const char* tag, ::vision::Pipeline& pl) {
+    auto& scene = pl.scene();
+
+    // 设备侧：accel/BVH（仅在 prepare / prepare_geometry 之后才非零）
+    const auto gs = pl.geometry_stats();  // {mesh_num, triangle_num, vertex_num}
+
+    // 主机侧：shape group / instance / mesh 注册表
+    const size_t groups = scene.groups().size();
+    const size_t inst = scene.instances().size();
+    size_t mesh_reg = 0;
+    scene.geometry().data()->for_each_mesh(
+        [&mesh_reg](const ::vision::Mesh*, auto) { ++mesh_reg; });
+
+    // 世界包围盒：transform 是否正常的关键信号（退化 0 / 天文数字 => transform bug）
+    const auto center = scene.world_center();
+    const float radius = scene.world_radius();
+
+    // 光源：env_light_ 是否被正确赋值（全黑常见根因之一）
+    auto& lm = scene.light_manager();
+    size_t light_n = 0;
+    for (auto& l : lm.lights()) { (void)l; ++light_n; }
+    const void* env = static_cast<const void*>(lm.env_light());
+
+    // 相机 + 累积帧（frame_idx 每帧归 0 => invalidate 误触发，永不收敛）
+    auto& sensor = scene.sensor();
+    const auto cam_pos = sensor->position();
+
+    CFW_LOG_INFO(
+        "[VPROBE {}] HOST(groups={} inst={} mesh_reg={}) "
+        "DEV(accel mesh={} tri={} vert={}) "
+        "world(center=({},{},{}) r={}) light(n={} env={}) "
+        "cam(pos=({},{},{}) yaw={} pitch={} fov={}) frame_idx={}",
+        tag, groups, inst, mesh_reg,
+        gs.mesh_num, gs.triangle_num, gs.vertex_num,
+        center.x, center.y, center.z, radius,
+        light_n, env,
+        cam_pos.x, cam_pos.y, cam_pos.z,
+        sensor->yaw(), sensor->pitch(), sensor->fov_y(),
+        pl.frame_index());
+}
+#define CORONA_VPROBE(tag_, pl_) dump_vision_state((tag_), (pl_))
+#else
+#define CORONA_VPROBE(tag_, pl_) ((void)0)
+#endif  // CORONA_VISION_EXP_PROBE
 
 [[nodiscard]] auto make_default_vision_project_desc() -> vision::ProjectDesc {
     // Each *Desc has in-class default initializers; the overridden
@@ -187,6 +256,9 @@ bool OpticsSystem::initialize_render_pipelines() {
         hardware_->tonemapPipeline.emplace();
         hardware_->debugResolvePipeline.emplace();
         hardware_->actorPickPipeline.emplace();
+#ifdef CORONA_ENABLE_VISION
+        hardware_->visionResolvePipeline.emplace();
+#endif
         hardware_->shaderHasInit = true;
         CFW_LOG_INFO(
             "OpticsSystem: VBuffer pipelines created successfully "
@@ -733,58 +805,6 @@ float half_to_float(uint16_t h) {
     return sign ? -result : result;
 }
 
-// Convert single-precision float to IEEE 754 half-precision (16-bit), round-to-nearest-even.
-// Vision's view_texture() is float32 RGBA but finalOutputImage is RGBA16_FLOAT (half);
-// HardwareImage::copyFrom() raw-copies sized by the destination format, so the float32
-// readback MUST be narrowed to half here or the bytes get reinterpreted and the image scrambles.
-uint16_t float_to_half(float f) {
-    uint32_t x;
-    static_assert(sizeof(x) == sizeof(f), "float must be 32-bit");
-    std::memcpy(&x, &f, sizeof(x));
-
-    const uint32_t sign = (x >> 16) & 0x8000u;
-    int32_t exponent = static_cast<int32_t>((x >> 23) & 0xFF) - 127 + 15;
-    uint32_t mantissa = x & 0x7FFFFFu;
-
-    if (((x >> 23) & 0xFF) == 0xFF) {
-        // Inf / NaN: preserve (NaN keeps a non-zero mantissa).
-        return static_cast<uint16_t>(sign | 0x7C00u | (mantissa ? 0x200u : 0u));
-    }
-    if (exponent >= 0x1F) {
-        return static_cast<uint16_t>(sign | 0x7C00u);  // overflow -> half inf
-    }
-    if (exponent <= 0) {
-        if (exponent < -10) {
-            return static_cast<uint16_t>(sign);  // underflow -> signed zero
-        }
-        // Subnormal half: add implicit leading 1, then shift into place with rounding.
-        mantissa |= 0x800000u;
-        const int32_t shift = 14 - exponent;
-        const uint32_t halfMant = mantissa >> shift;
-        const uint32_t remainder = mantissa & ((1u << shift) - 1u);
-        const uint32_t roundBias = (1u << (shift - 1));
-        uint32_t rounded = halfMant;
-        if (remainder > roundBias || (remainder == roundBias && (halfMant & 1u))) {
-            ++rounded;  // round-to-nearest-even
-        }
-        return static_cast<uint16_t>(sign | rounded);
-    }
-    // Normalized half: round mantissa to 10 bits, round-to-nearest-even.
-    uint32_t halfMant = mantissa >> 13;
-    const uint32_t remainder = mantissa & 0x1FFFu;
-    if (remainder > 0x1000u || (remainder == 0x1000u && (halfMant & 1u))) {
-        ++halfMant;
-        if (halfMant == 0x400u) {  // mantissa overflow carries into exponent
-            halfMant = 0;
-            ++exponent;
-            if (exponent >= 0x1F) {
-                return static_cast<uint16_t>(sign | 0x7C00u);
-            }
-        }
-    }
-    return static_cast<uint16_t>(sign | (static_cast<uint32_t>(exponent) << 10) | halfMant);
-}
-
 }  // namespace
 
 std::optional<OpticsSystem::ActorPickRequest> OpticsSystem::take_pending_actor_pick(std::uintptr_t camera_handle) {
@@ -937,6 +957,12 @@ void OpticsSystem::shutdown() {
     }
 
     offscreen_image_ = HardwareImage();
+#ifdef CORONA_ENABLE_VISION
+    // Release the zero-copy bridge (imported Vulkan buffer + exported CUDA buffer)
+    // before the Vision pipeline/device is torn down, so the import never outlives
+    // its backing allocation.
+    vision_zero_copy_bridge_.reset();
+#endif
     hardware_.reset();
 
     CFW_LOG_INFO("OpticsSystem: Hardware resources released");
@@ -1177,6 +1203,7 @@ bool OpticsSystem::init_vision_lazy() {
             return false;
         }
         vision_initialized_ = true;
+        CORONA_VPROBE("demo.after_prepare", *renderPipeline);
         CFW_LOG_INFO("OpticsSystem: Vision import-scene demo initialized successfully");
         return true;
 #else
@@ -1188,8 +1215,22 @@ bool OpticsSystem::init_vision_lazy() {
 
         // Populate Vision scene directly from CoronaEngine scene data.
         auto& scene = renderPipeline->scene();
+#if defined(CORONA_VISION_EXP_SKIP_GEOMETRY)
+        // Stage 1.5「空几何天光测试」：刻意跳过几何导入，只留天光。若此后能看见
+        // 灰色天空，说明输出/光照/相机链路在非 DEMO 路径同样正常，黑屏根因 100%
+        // 在几何导入；若仍全黑，则问题在 env_light_/输出/相机，而非几何。
+        Vision::VisionBuildResult build_result{};
+        CFW_LOG_WARNING(
+            "OpticsSystem: [EXP] CORONA_VISION_EXP_SKIP_GEOMETRY enabled — skipping "
+            "build_vision_geometry (empty-geometry sky test)");
+#else
         Vision::VisionBuildResult build_result = Vision::build_vision_geometry(scene);
+#endif
         int geom_count = build_result.instance_count;
+
+        // 主机侧探针：build_vision_geometry 之后、prepare 之前。此时 accel/BVH 尚未
+        // 构建，DEV 段应为 0，但 HOST 段（inst/mesh_reg）已应反映导入结果。
+        CORONA_VPROBE("prod.host_built", *renderPipeline);
 
         // Always inject lights. Vision's UniformLightSampler divides by light_num()
         // and indexes the light buffer; an empty light set (no environment in the
@@ -1222,8 +1263,13 @@ bool OpticsSystem::init_vision_lazy() {
         // call prepare_view_texture() right after prepare().
         renderPipeline->frame_buffer()->prepare_view_texture();
 
+        // 设备侧探针：prepare() 之后 accel/BVH 已构建。把这条与上面 prod.host_built、
+        // 以及 DEMO 路径的 demo.after_prepare 三方对比，即可判定 mesh 导入是否成功：
+        //   - DEV tri==0 而 HOST inst>0  => 设备侧上传/BVH 失败（或 transform 致 AABB 退化）
+        //   - DEV 数字与 demo.after_prepare 同量级 => mesh 导入成功，黑屏在下游
+        CORONA_VPROBE("prod.after_prepare", *renderPipeline);
 
-        // sensor->update_device_data()/change_resolution()/invalidate(), all of
+
         // which upload to GPU device buffers. Those device buffers are only
         // allocated during Pipeline::prepare() (Scene::prepare -> Sensor::prepare
         // -> EncodedObject::prepare_data -> reset_device_buffer). Running it
@@ -1259,6 +1305,33 @@ bool OpticsSystem::init_vision_lazy() {
 
 void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
     if (!renderPipeline) return;
+
+#if defined(CORONA_VISION_IMPORT_DEMO) && defined(CORONA_VISION_EXP_GRAFT_GEOMETRY)
+    // Stage 2「几何嫁接」：在已被证明能正常出图、能操控相机的 DEMO 台子上，先渲染
+    // 若干帧确认台子正常，再调用 rebuild_vision_scene() 把 demo 几何替换成 Corona
+    // 几何（复用现成的「build_vision_geometry + setup_vision_lights + 增量 prepare」
+    // 序列）。这是直接验证 mesh 导入是否成功的决定性实验：
+    //   - 嫁接后能看见 Corona 物体并可飞行 => mesh 导入 + 几何路径完全正常，
+    //     非 DEMO 黑屏的根因在 create_vision_pipeline 或首次 prepare，而非几何；
+    //   - 嫁接后变全黑 => Corona 几何派生的场景本身有问题，回看 graft.after 探针的
+    //     HOST/DEV 数字定位（主机侧没建出来 vs 设备侧没上传 vs transform 甩飞）。
+    {
+        static constexpr uint64_t kGraftAtFrame = 120;  // 跑 ~2s 确认 DEMO 正常后再嫁接
+        static bool s_grafted = false;
+        if (!s_grafted && frame_index >= kGraftAtFrame) {
+            s_grafted = true;
+            CFW_LOG_WARNING(
+                "OpticsSystem: [EXP] Stage2 grafting Corona geometry into demo pipeline at frame {}",
+                frame_index);
+            CORONA_VPROBE("graft.before", *renderPipeline);
+            const Vision::VisionBuildResult graft = rebuild_vision_scene();
+            CFW_LOG_WARNING(
+                "OpticsSystem: [EXP] Stage2 graft result instances={} candidates={} skipped={}",
+                graft.instance_count, graft.candidate_count, graft.skipped_no_data);
+            CORONA_VPROBE("graft.after", *renderPipeline);
+        }
+    }
+#endif
 
 #ifndef CORONA_VISION_IMPORT_DEMO
     // Detect and apply dynamic scene changes (object import/export, transform,
@@ -1302,6 +1375,14 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                                 // matching the reference apps (vision-gui / vision-eval).
                                 renderPipeline->upload_data();
                                 renderPipeline->display(1.0 / 60.0);
+#if CORONA_VISION_EXP_PROBE
+                // 运行时探针（每 120 帧一次）：display() 已 synchronize/commit，读取安全。
+                // 重点观察 frame_idx 是否单调增长（累积收敛）还是每帧归 0（invalidate
+                // 误触发），以及 accel/light/相机在运行中是否被动态重建意外清空。
+                if ((frame_index % 120) == 0) {
+                    dump_vision_state("runtime", *renderPipeline);
+                }
+#endif
                 //vdiag_rendered_any = true;
                 //if ((frame_index % 120) == 0) {
                 //    CFW_LOG_INFO("OpticsSystem: [VDIAG-B2] frame={} stage=render done", frame_index);
@@ -1312,40 +1393,26 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 uint32_t w = res.x;
                 uint32_t h = res.y;
 
-                // [MANUAL-READBACK] Manually expand fill_window_buffer() for debuggability.
-                // fill_window_buffer() internally does:
-                //     view_texture_.download_immediately(window_buffer_.data());
-                //     visualizer_->draw(window_buffer_.data());   // overlays (gizmos etc.)
-                // Here we download view_texture() directly into a locally-owned buffer and
-                // SKIP visualizer_->draw(), so the bytes we inspect/upload are exactly the
-                // raytraced + tone-mapped final picture (mirrors the reference snippet's
-                // view_buffer()/download_immediately() flow, since this workspace's Vision
-                // FrameBuffer exposes view_texture() rather than view_buffer()).
-                // view_texture() holds the FINAL tone-mapped color (see render_final()).
-                const ocarina::Texture2D& view_tex = fb->view_texture();
-                const uint64_t pixel_count = static_cast<uint64_t>(w) * static_cast<uint64_t>(h);
-                // vision_readback_buffer_ is a flat std::vector<float> (4 floats = 1 RGBA pixel),
-                // owned by this system to avoid leaking ocarina::float4 into the public header.
-                vision_readback_buffer_.resize(pixel_count * 4ull);
-                view_tex.download_immediately(
-                    reinterpret_cast<ocarina::float4*>(vision_readback_buffer_.data()));
-                static_assert(sizeof(vision_readback_buffer_[0]) == sizeof(float),
-                    "vision_readback_buffer_ must be a flat float buffer (4 floats per pixel)");
-
-                // Vision's view_texture() is PixelStorage::FLOAT4 (float32 RGBA), but the
-                // display image is RGBA16_FLOAT (half). HardwareImage::copyFrom() raw-copies
-                // sized by the DESTINATION format, so we must narrow float32 -> half here;
-                // uploading the float32 bytes directly makes copyFrom reinterpret them as
-                // half (and read only the first half of the buffer) -> scrambled picture.
-                vision_half_buffer_.resize(pixel_count * 4ull);
-                for (uint64_t i = 0; i < pixel_count * 4ull; ++i) {
-                    vision_half_buffer_[i] = float_to_half(vision_readback_buffer_[i]);
+                // [ZERO-COPY] Share Vision's pre-tonemap linear color buffer with
+                // Vulkan instead of the GPU->CPU->half->GPU readback. The bridge
+                // copies accumulation_buffer_/rt_buffer_ on-device into a CUDA
+                // exportable buffer, exports its Win32 handle, and imports it as a
+                // Vulkan HardwareBuffer; the vision_resolve compute pass below
+                // applies Vision's exposure+ACES and writes finalOutputImage.
+                // NOTE: no cross-API semaphore yet (tearing/flicker possible).
+                if (!vision_zero_copy_bridge_) {
+                    vision_zero_copy_bridge_ =
+                        std::make_unique<Vision::VisionZeroCopyBridge>();
+                }
+                if (!vision_zero_copy_bridge_->ensure(*renderPipeline, w, h) ||
+                    !vision_zero_copy_bridge_->copy_from_framebuffer(*renderPipeline)) {
+                    CFW_LOG_WARNING(
+                        "OpticsSystem: Vision zero-copy bridge unavailable this frame "
+                        "(w={} h={}), skipping frame", w, h);
+                    ++consecutive_vision_failures_;
+                    break;
                 }
 
-                // Vision is synchronized to camera.width/camera.height above, and both
-                // backends intentionally reuse hardware_->finalOutputImage so switching
-                // Native/Vision compares the same output surface. copyFrom() strides by
-                // destination size, so keep the image exactly matched to the Vision frame.
                 if (image_handle_ != 0) {
                     if (auto consumed_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
                         hardware_->executor.wait(consumed_device->consumed_executor);
@@ -1353,9 +1420,21 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 }
                 ensure_camera_render_resources(w, h);
 
-                // Upload the REAL tone-mapped Vision pixels to the shared display image.
-                hardware_->executor << hardware_->finalOutputImage.copyFrom(vision_half_buffer_.data())
-                                    << hardware_->executor.commit();
+                // Resolve: imported linear float4 -> exposure+ACES -> finalOutputImage.
+                {
+                    auto& visionResolve = *hardware_->visionResolvePipeline;
+                    visionResolve.pushConsts.gbufferSize = hardware_->gbufferSize;
+                    visionResolve.pushConsts.srcBufferIndex =
+                        vision_zero_copy_bridge_->imported().storeDescriptor();
+                    visionResolve.pushConsts.outputImage =
+                        hardware_->finalOutputImage.storeDescriptor();
+                    visionResolve.pushConsts.exposure = 1.0f;  // Vision FrameBuffer default
+
+                    const uint32_t dispatchX = (w + 7u) / 8u;
+                    const uint32_t dispatchY = (h + 7u) / 8u;
+                    hardware_->executor << visionResolve(dispatchX, dispatchY, 1)
+                                        << hardware_->executor.commit();
+                }
 
                 last_render_cam_handle_ = cam_handle;
                 consecutive_vision_failures_ = 0;

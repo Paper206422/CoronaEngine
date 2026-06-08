@@ -282,10 +282,10 @@
 11. src/systems/optics/vision/vision_camera_adapter.h
 12. src/systems/optics/vision/vision_camera_adapter.cpp
 
-13. src/systems/optics/vision/vision_output_bridge.h
-14. src/systems/optics/vision/vision_output_bridge.cpp
+13. src/systems/optics/vision/vision_zero_copy_bridge.h
+14. src/systems/optics/vision/vision_zero_copy_bridge.cpp
 
-说明：geometry / light / material / output bridge 已存在独立文件，camera adapter 建议补成同级独立文件，不再继续把职责留在 `optics_system.cpp` 内。
+说明：geometry / light / material / camera adapter 均已存在独立文件。输出路径由 `vision_zero_copy_bridge`（CUDA↔Vulkan 外部内存共享 + `vision_resolve` compute pass）承担，已取代早期基于 CPU 回读的 `vision_output_bridge`（该文件已移除）。
 
 目录约束：
 - 优先将所有新增适配代码放在 src/systems/optics/vision/ 下。

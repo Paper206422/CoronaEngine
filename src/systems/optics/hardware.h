@@ -18,6 +18,9 @@ using uint = uint32_t;
 #include GLSL(../../../assets/shaders/tonemap.comp.glsl)
 #include GLSL(../../../assets/shaders/debug_resolve.comp.glsl)
 #include GLSL(../../../assets/shaders/actor_pick.comp.glsl)
+#ifdef CORONA_ENABLE_VISION
+#include GLSL(../../../assets/shaders/vision_resolve.comp.glsl)
+#endif
 // clang-format on
 
 struct Hardware {
@@ -46,6 +49,9 @@ struct Hardware {
     std::optional<ComputePipeline<tonemap_comp_glsl>> tonemapPipeline;
     std::optional<ComputePipeline<debug_resolve_comp_glsl>> debugResolvePipeline;
     std::optional<ComputePipeline<actor_pick_comp_glsl>> actorPickPipeline;
+#ifdef CORONA_ENABLE_VISION
+    std::optional<ComputePipeline<vision_resolve_comp_glsl>> visionResolvePipeline;
+#endif
 
     // === CPU-side uniform data ===
     struct UniformBufferObject {

@@ -22,6 +22,7 @@ namespace Corona::Systems {
 #ifdef CORONA_ENABLE_VISION
 namespace Vision {
 struct VisionBuildResult;  // 定义见 vision/vision_geometry_adapter.h
+class VisionZeroCopyBridge;  // 定义见 vision/vision_zero_copy_bridge.h
 }  // namespace Vision
 #endif
 
@@ -119,18 +120,12 @@ class OpticsSystem : public Kernel::SystemBase {
 
     // Vision 后端状态
 #ifdef CORONA_ENABLE_VISION
-    // [MANUAL-READBACK] Locally-owned CPU staging buffer for the manual expansion of
-    // FrameBuffer::fill_window_buffer(). Stored flat as 4 floats (RGBA) per pixel to
-    // avoid leaking ocarina::float4 into this public header; the .cpp reinterpret_casts
-    // data() to ocarina::float4* for view_texture().download_immediately().
-    std::vector<float> vision_readback_buffer_;
-
-    // [MANUAL-READBACK] Half-precision staging buffer for the upload step. Vision's
-    // view_texture() is PixelStorage::FLOAT4 (float32 RGBA), but finalOutputImage is
-    // RGBA16_FLOAT (half). HardwareImage::copyFrom() does a raw byte copy sized by
-    // the destination format, so we must convert float32 -> half here before upload;
-    // otherwise the float32 bytes are reinterpreted as half and the picture scrambles.
-    std::vector<uint16_t> vision_half_buffer_;
+    // Zero-copy path: shares Vision's pre-tonemap linear color buffer with Vulkan
+    // (CUDA exported buffer -> imported HardwareBuffer) and resolves it via the
+    // vision_resolve compute pass. This is the sole display path for Vision frames;
+    // the previous GPU->CPU->GPU readback (download float4 -> float_to_half -> upload)
+    // has been removed.
+    std::unique_ptr<Vision::VisionZeroCopyBridge> vision_zero_copy_bridge_;
 
     // 启用 Vision 编译时，首帧 update() 检测到 pending != current 会自动触发
     // init_vision_lazy() 切换到 Vision；若初始化失败仍会回退 Native。

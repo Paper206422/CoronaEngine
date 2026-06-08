@@ -41,6 +41,8 @@
 
 ### 2.3 阶段 C：Vision 输出桥接
 
+> ⚠️ 已过时（历史记录）：本节描述的 `VisionOutputBridge`（GPU→CPU 下载 + `float_to_half` + 上传的 CPU 回读路径）已被移除，由零拷贝桥 `VisionZeroCopyBridge`（CUDA↔Vulkan 外部内存共享 + `vision_resolve` compute pass）取代。当前架构以 `docs/vision_integration.md` 为准。
+
 新增文件 `src/systems/optics/vision/vision_output_bridge.h/.cpp`：
 
 - `VisionOutputBridge::upload_to_hardware_image()`：保留为通用 helper，可将 Vision `FrameBuffer` 输出的 `float4 RGBA32F` 逐通道转换为 `RGBA16F` 并上传到 `HardwareImage`。当前 `run_vision_frame()` 为便于调试直接下载 `FrameBuffer::view_texture()`，在 `optics_system.cpp` 内完成同样的 float32→half 转换后写回复用的 `finalOutputImage`。
@@ -192,8 +194,9 @@
 |------|------|------|
 | `include/corona/systems/optics/optics_system.h` | ✅ 已改 | 后端枚举、字段、公开 API 声明 |
 | `src/systems/optics/optics_system.cpp` | ✅ 已改 | 后端分支调度、相机同步、懒初始化骨架 |
-| `src/systems/optics/vision/vision_output_bridge.h` | ✅ 新增 | RGBA32F→RGBA16F 转换接口声明 |
-| `src/systems/optics/vision/vision_output_bridge.cpp` | ✅ 新增 | 转换与上传实现 |
+| `src/systems/optics/vision/vision_output_bridge.h` | ⛔ 已移除 | 早期 RGBA32F→RGBA16F CPU 转换接口；已被零拷贝桥取代 |
+| `src/systems/optics/vision/vision_output_bridge.cpp` | ⛔ 已移除 | 早期 CPU 转换与上传实现；已被零拷贝桥取代 |
+| `src/systems/optics/vision/vision_zero_copy_bridge.h/.cpp` | ✅ 现行 | CUDA↔Vulkan 外部内存共享，替代 CPU 回读输出路径 |
 | `include/corona/systems/script/corona_engine_api.h` | ✅ 已改 | Python API 声明 |
 | `src/systems/script/python/corona_engine_api.cpp` | ✅ 已改 | Python API 实现 |
 | `src/systems/script/python/engine_bindings.cpp` | ✅ 已改 | nanobind 模块注册 |
