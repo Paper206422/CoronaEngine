@@ -148,8 +148,8 @@ bool NetworkSystem::start_session(const std::string& instance_name,
     // 2. SyncEngine
     impl_->sync_engine.initialize(impl_->peer_manager.local_peer_id());
 
-    // 3. Discovery
-    if (!impl_->discovery.start(port, instance_name, project_id)) {
+    // 3. Discovery (use port + 1 to avoid bind conflict with ENet)
+    if (!impl_->discovery.start(port + Network::kDiscoveryPortOffset, instance_name, project_id)) {
         impl_->peer_manager.stop();
         impl_->session_state = SessionState::Error;
         CFW_LOG_ERROR("NetworkSystem: Failed to start Discovery");

@@ -90,18 +90,18 @@ bool PeerManager::start(uint16_t port, const std::string& instance_name) {
 void PeerManager::stop() {
     if (!impl_->host) return;
 
-    // Disconnect all peers (forceful)
+    // Disconnect all peers (forceful, no wait)
     {
         std::lock_guard lock(impl_->peer_mutex);
         for (auto& p : impl_->peer_list) {
-            if (p.peer) enet_peer_disconnect(p.peer, 0);
+            if (p.peer) enet_peer_disconnect_now(p.peer, 0);
         }
     }
 
-    // Flush pending disconnects
+    // Flush
     enet_host_flush(impl_->host);
 
-    // Destroy host
+    // Destroy host (any remaining peers are forcefully dropped)
     enet_host_destroy(impl_->host);
     impl_->host = nullptr;
 

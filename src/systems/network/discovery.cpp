@@ -9,6 +9,7 @@
 #  include <ws2tcpip.h>
 #  pragma comment(lib, "ws2_32.lib")
 using socklen_t = int;
+static int last_error() { return WSAGetLastError(); }
 #else
 #  include <sys/socket.h>
 #  include <netinet/in.h>
@@ -18,6 +19,7 @@ using socklen_t = int;
 #  define INVALID_SOCKET (-1)
 #  define SOCKET_ERROR   (-1)
 using SOCKET = int;
+static int last_error() { return errno; }
 #endif
 
 #include <cstring>
@@ -65,7 +67,10 @@ struct Discovery::Impl {
 
     bool create_socket() {
         sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        if (sock == INVALID_SOCKET) return false;
+        if (sock == INVALID_SOCKET) {
+            CFW_LOG_ERROR("Discovery: socket() failed, errno={}", last_error());
+            return false;
+        }
 
         // Allow multiple instances on the same port (SO_REUSEADDR)
         int reuse = 1;
@@ -94,6 +99,8 @@ struct Discovery::Impl {
 
         if (bind(sock, reinterpret_cast<struct sockaddr*>(&listen_addr),
                  sizeof(listen_addr)) == SOCKET_ERROR) {
+            int err = last_error();
+            CFW_LOG_ERROR("Discovery: bind(port={}) failed, errno={}", port, err);
             return false;
         }
 
@@ -121,10 +128,12 @@ struct Discovery::Impl {
         bool expected = true;
         if (!running.compare_exchange_strong(expected, false)) return false;
 
+        // Shutdown the socket first so broadcast thread's sendto() unblocks
+        close_socket();
+
         if (broadcast_thread.joinable()) {
             broadcast_thread.join();
         }
-        close_socket();
         cleanup_sockets();
         return true;
     }

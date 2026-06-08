@@ -18,6 +18,12 @@ constexpr uint8_t kProtocolVersion = 1;
 constexpr uint16_t kDefaultPort = 27960;
 
 // ============================================================================
+// Discovery uses a separate port to avoid bind conflict with ENet host.
+// Discovery port = main_port + 1 (e.g. 27960 → 27961)
+// ============================================================================
+constexpr uint16_t kDiscoveryPortOffset = 1;
+
+// ============================================================================
 // Discovery broadcast interval (ms)
 // ============================================================================
 constexpr int kDiscoveryIntervalMs = 500;

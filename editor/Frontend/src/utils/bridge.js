@@ -356,9 +356,9 @@ export const projectSettingsService = {
 export const networkService = {
   /** 启动 LAN 协同编辑会话 */
   startSession: (instanceName, projectId, port = 27960) =>
-    Bridge.callCEF('Network', 'start_session', [instanceName, projectId, port]),
+    Bridge.callCEF('Network', 'start_session', [instanceName, projectId, port]).then(_unwrap),
   /** 停止会话 */
-  stopSession: () => Bridge.callCEF('Network', 'stop_session'),
+  stopSession: () => Bridge.callCEF('Network', 'stop_session').then(_unwrap),
   /** 获取当前 peer 数量 */
-  getPeerCount: () => Bridge.callCEF('Network', 'get_peer_count'),
+  getPeerCount: () => Bridge.callCEF('Network', 'get_peer_count').then(_unwrap),
 };

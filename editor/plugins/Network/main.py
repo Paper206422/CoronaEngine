@@ -8,9 +8,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# The plugin base lives in CoronaPlugin.core
 from CoronaCore.core.corona_editor import CoronaEditor
 from CoronaPlugin.core.corona_plugin_base import PluginBase
+from CoronaCore.utils.corona_engine_fallback import CoronaEngine as FallbackEngine
 
 
 # ---------------------------------------------------------------------------
@@ -27,6 +27,14 @@ def _push_to_frontend(event: dict) -> None:
         logger.exception("[Network] Failed to push event to frontend")
 
 
+def _get_engine():
+    """Return the engine module (real or fallback)."""
+    eng = CoronaEditor.CoronaEngine
+    if eng is None:
+        eng = FallbackEngine
+    return eng
+
+
 # ---------------------------------------------------------------------------
 # Plugin
 # ---------------------------------------------------------------------------
@@ -38,8 +46,11 @@ class NetworkPlugin(PluginBase):
     def start_session(cls, instance_name: str, project_id: int, port: int = 27960) -> dict:
         """Start a LAN collaborative editing session."""
         try:
-            engine = CoronaEditor.CoronaEngine
-            ok = engine.network_start_session(instance_name, project_id, port)
+            engine = _get_engine()
+            logger.info("[Network] start_session: name=%s project=%s port=%s engine=%s",
+                        instance_name, project_id, port, type(engine).__module__)
+            ok = engine.network_start_session(instance_name, int(project_id), int(port))
+            logger.info("[Network] start_session result: %s", ok)
             return {"ok": ok}
         except Exception as exc:
             logger.exception("[Network] start_session failed")
@@ -49,7 +60,7 @@ class NetworkPlugin(PluginBase):
     def stop_session(cls) -> dict:
         """Stop the LAN collaborative editing session."""
         try:
-            engine = CoronaEditor.CoronaEngine
+            engine = _get_engine()
             engine.network_stop_session()
             return {"ok": True}
         except Exception as exc:
@@ -60,7 +71,7 @@ class NetworkPlugin(PluginBase):
     def get_peer_count(cls) -> dict:
         """Get the number of currently connected peers."""
         try:
-            engine = CoronaEditor.CoronaEngine
+            engine = _get_engine()
             count = engine.network_peer_count()
             return {"ok": True, "peer_count": count}
         except Exception as exc:
