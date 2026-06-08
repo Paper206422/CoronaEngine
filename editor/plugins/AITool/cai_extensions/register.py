@@ -98,6 +98,7 @@ class CabbageWorkflowPlugin:
     enabled = True
 
     flow_modules = (
+        ".agent",
         ".flows.scene_composition_workflow",
         ".flows.model_retrieval_workflow",
         ".flows.full_pipeline_workflow",

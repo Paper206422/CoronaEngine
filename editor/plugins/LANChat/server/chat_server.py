@@ -31,6 +31,104 @@ logger = logging.getLogger(__name__)
 # 房主本机事件回调签名：接收一个前端事件 dict（已含 channel 标记）
 LocalEventCallback = Callable[[dict], None]
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 场景指令关键词（与 cai_extensions.agent.agent_adapter 保持一致）
+# ═══════════════════════════════════════════════════════════════════════════
+
+_SCENE_KEYWORDS = [
+    (r"(?:加个?|添加|放个?|增加|创建|新[增建]|导入)", "添加物体"),
+    (r"(?:删[掉除]|移除|去掉|清除)", "删除物体"),
+    (r"(?:把|将).{1,10}(?:移[动到]?|挪[动到]?)", "移动物体"),
+    (r"(?:放大|缩小|变大|变小|旋转|改成?|调整|修改)", "修改物体"),
+    (r"(?:布置|摆放|排列|安排|设计|规划|装饰|重新布置)", "布置场景"),
+    (r"(?:灯光|光照|照明|氛围|环境光|光源|灯带|霓虹)", "调整灯光"),
+    (r"(?:绿植|植物|盆栽|花|绿化)", "添加绿植"),
+]
+
+# 隐式指令模式：未 @ 也能触发 agent 的场景/生成类指令
+import re as _re_module
+_IMPLICIT_COMMAND_PATTERNS = [
+    r"生成.{0,6}(?:3d|3D|模型|物体|场景)",
+    r"(?:开始|帮我|请|麻烦).{0,4}(?:生成|制作|创建|布置|搭建|建模)",
+    r"(?:加个?|添加|放个?|删[掉除]|移除).{1,20}",
+    r"把.{1,15}(?:移|挪|放大|缩小|旋转|调整)",
+    r"(?:布置|装饰|设计).{0,15}(?:场景|房间|卧室|客厅|酒吧)",
+    r"^/(?:sc_agent|scene_agent)\b",
+    r"执行.{0,10}(?:指令|操作|清单|方案)",
+    # 场景组合类
+    r"(?:按|根据|依据).{0,10}清单",
+    r"清单.{0,6}(?:生成|布置|组合|导入|放|搭建)",
+    r"(?:组合|搭建|布置|生成).{0,8}(?:整个|这个|场景|房间|卧室|客厅)",
+    r"把.{0,12}(?:都|全部|所有).{0,8}(?:生成|放|布置|导入|建模)",
+    r"一键(?:生成|布置|组合)",
+]
+
+
+def _is_implicit_agent_command(text: str) -> bool:
+    """判断消息是否为可隐式触发 agent 的场景/生成指令（无需 @）。"""
+    t = (text or "").strip()
+    if not t or len(t) < 3:
+        return False
+    for pat in _IMPLICIT_COMMAND_PATTERNS:
+        if _re_module.search(pat, t):
+            return True
+    return False
+
+
+# 从 agent 回复中提取混元/3D 生成模型目录（用于生成完成后自动导入引擎）
+_MODEL_DIR_PATTERNS = [
+    r"(models[/\\]hunyuan_\d{8}_\d{6})",
+    r"(models[/\\][A-Za-z0-9_\-]+[/\\]?)",
+    r"目录[：:]\s*[`\"]?([^\s`\"]+)",
+]
+
+
+def _extract_model_dirs(text: str) -> list[str]:
+    """从 agent 回复文本中提取 3D 模型目录路径（去重，保序）。"""
+    if not text:
+        return []
+    seen: set[str] = set()
+    dirs: list[str] = []
+    for pat in _MODEL_DIR_PATTERNS:
+        for m in _re_module.finditer(pat, text):
+            raw = (m.group(1) or "").strip().rstrip("/\\")
+            # 只接受看起来像 hunyuan/模型目录的路径
+            if not raw or "hunyuan" not in raw.lower() and "models" not in raw.lower():
+                continue
+            if raw not in seen:
+                seen.add(raw)
+                dirs.append(raw)
+    return dirs
+
+
+def _extract_scene_instructions(batch: list[dict]) -> list[str]:
+    """从一批聊天消息中提取可能的场景操作指令。
+
+    返回去重后的指令描述列表（最多5条），供自动摘要后询问用户。
+    """
+    import re
+    seen: set[str] = set()
+    instructions: list[str] = []
+
+    for msg in batch:
+        text = (msg.get("text", "") or "").strip()
+        if not text or len(text) < 2:
+            continue
+        for pattern, label in _SCENE_KEYWORDS:
+            m = re.search(pattern, text)
+            if m:
+                # 用匹配到的原文 + 标签生成可读描述
+                snippet = text[:60].replace("\n", " ")
+                key = f"{label}:{snippet}"
+                if key not in seen:
+                    seen.add(key)
+                    instructions.append(f"「{snippet}…」→ {label}")
+                    if len(instructions) >= 5:
+                        return instructions
+                break  # 一条消息只归属一种类型
+
+    return instructions
+
 
 class ChatServer:
     """房主侧 WebSocket 服务端。"""
@@ -192,32 +290,91 @@ class ChatServer:
         """owner 回交 agent 结果：对账 trigger_id → 广播（from=agent名）。"""
         trigger_id = msg.get("trigger_id", "")
         agent_id = self._pending_triggers.pop(trigger_id, None)
+        logger.info("[LANChat] _on_agent_reply: trigger_id=%s, agent_id=%s", trigger_id, agent_id)
         if agent_id is None or agent_id != msg.get("agent_id"):
+            logger.warning("[LANChat] _on_agent_reply: agent_id mismatch or unknown trigger")
             return  # 未知/重复 trigger，丢弃防串话
         agent = self.room.get_agent(agent_id)
         name = agent.name if agent is not None else "助手"
         error = msg.get("error")
         if error:
+            logger.warning("[LANChat] _on_agent_reply: error=%s", error)
             await self._broadcast(protocol.build_message("系统", f"🤖 {name} 暂时无法回复"))
             return
         text = msg.get("text", "")
+        logger.info("[LANChat] _on_agent_reply: got text from %s, length=%d", name, len(text))
         if not text:
+            logger.warning("[LANChat] _on_agent_reply: empty text, skipping")
             return
         # agent 回复入历史并广播；不再做 @ 解析（杜绝 agent↔agent 连锁）
         stamped = self.room_manager.stamp_and_record(self.room, name, text)
+        logger.info("[LANChat] _on_agent_reply: broadcasting reply: %r", text[:100])
         await self._broadcast(stamped)
         self._maybe_compress()
 
+        # 自动导入：回复中若含 3D 模型目录，后台等待模型就绪后导入引擎
+        model_dirs = _extract_model_dirs(text)
+        if model_dirs:
+            logger.info("[LANChat] _on_agent_reply: detected model dirs %s, auto-import", model_dirs)
+            self._auto_import_models(model_dirs, name)
+
+    def _auto_import_models(self, model_dirs: list[str], agent_name: str) -> None:
+        """后台等待 3D 模型文件就绪后导入引擎场景，完成后广播结果。"""
+        if self._loop_runner is None:
+            return
+
+        def _job():
+            from .scene_import_helper import import_model_dirs_blocking
+            return import_model_dirs_blocking(model_dirs)
+
+        def _on_done(result):
+            if result and result.get("imported"):
+                names = "、".join(result["imported"])
+                msg = f"🎉 已将生成的 3D 模型导入场景：{names}"
+            elif result and result.get("error"):
+                msg = f"⚠️ 模型导入失败：{result['error']}"
+            else:
+                msg = "⚠️ 模型文件未就绪或导入失败"
+            self._loop_runner.run_coro_nowait(
+                self._broadcast(self.room_manager.stamp_and_record(self.room, "系统", msg))
+            )
+
+        def _on_exc(exc):
+            logger.warning("[LANChat] auto-import 异常: %s", exc, exc_info=True)
+            self._loop_runner.run_coro_nowait(
+                self._broadcast(self.room_manager.stamp_and_record(
+                    self.room, "系统", f"⚠️ 模型导入出错：{exc}"))
+            )
+
+        self._loop_runner.submit_blocking(_job, _on_done, swallow_exc=True, on_exc=_on_exc)
+
     async def _dispatch_mentions(self, stamped: dict) -> None:
-        """解析消息中的 @agent，对每个命中 agent 派发触发。"""
-        for agent_id in self.room.resolve_mentions(stamped.get("text", "")):
+        """解析消息中的 @agent，对每个命中 agent 派发触发。
+
+        增强：消息未显式 @ 但属于场景/生成指令时，自动派发给房间内第一个 agent
+        （便于承接前面 AI 生成的物品清单，直接说"生成3d模型"即可）。
+        """
+        text = stamped.get("text", "")
+        mentions = self.room.resolve_mentions(text)
+        # 无显式 @ 但是场景指令 → fallback 到第一个 agent
+        if not mentions and _is_implicit_agent_command(text):
+            roster = self.room.agent_roster()
+            if roster:
+                first_id = roster[0]["agent_id"]
+                mentions = [first_id]
+                logger.info("[LANChat] 隐式指令派发: text=%r → agent %s", text, first_id)
+        logger.info("[LANChat] _dispatch_mentions: text=%r, mentions=%s", text, mentions)
+        for agent_id in mentions:
             agent = self.room.get_agent(agent_id)
             if agent is None:
+                logger.warning("[LANChat] agent_id %s not found", agent_id)
                 continue
             trigger_id = uuid.uuid4().hex
             self._pending_triggers[trigger_id] = agent_id
             view = self.room.history_view()
+            logger.info("[LANChat] dispatching agent %s (owner=%s, HOST=%s)", agent.name, agent.owner, protocol.HOST_NICKNAME)
             if agent.owner == protocol.HOST_NICKNAME:
+                logger.info("[LANChat] running local agent %s", agent.name)
                 self._run_local_agent(agent, trigger_id, view, stamped)
             else:
                 conn = self._connection_of(agent.owner)
@@ -247,17 +404,26 @@ class ChatServer:
         """房主自有 agent：丢线程池跑，完成后经 run_coro_nowait 把结果
         当 agent_reply 处理。异步调度，不阻塞；调用方不等待回复。"""
         if self._agent_runner is None or self._loop_runner is None:
+            logger.warning("[LANChat] _run_local_agent: agent_runner or loop_runner is None")
             self._pending_triggers.pop(trigger_id, None)
             return
 
+        logger.info("[LANChat] _run_local_agent: submitting job for agent %s", agent.name)
         def _job():
+            logger.info("[LANChat] _job: running agent inference for %s", agent.name)
             return self._agent_runner.run(agent.persona, view, stamped)
 
         def _on_done(text):
             reply = protocol.build_agent_reply(agent.agent_id, trigger_id, text=text)
             self._loop_runner.run_coro_nowait(self._on_agent_reply(None, reply))
 
-        self._loop_runner.submit_blocking(_job, _on_done)
+        def _on_exc(exc):
+            # 推理抛异常时回交 error，确保群聊收到提示而非静默卡住
+            logger.warning("[LANChat] local agent %s 推理异常: %s", agent.name, exc, exc_info=True)
+            reply = protocol.build_agent_reply(agent.agent_id, trigger_id, error=str(exc))
+            self._loop_runner.run_coro_nowait(self._on_agent_reply(None, reply))
+
+        self._loop_runner.submit_blocking(_job, _on_done, swallow_exc=True, on_exc=_on_exc)
 
     def _maybe_compress(self) -> None:
         """历史越界则把最老一批丢后台压缩；不阻塞。失败退化为文本截断。
@@ -265,6 +431,8 @@ class ChatServer:
         关键：take_compress_batch 会加 _compressing 锁，因此必须保证
         apply_summary（成功）或 append_summary_fallback（失败）总会被调用，
         否则锁永久卡死且 batch 丢失。用 swallow_exc + on_exc 兜底。
+
+        增强：摘要成功后自动扫描对话中的场景指令，询问用户是否需要执行。
         """
         if self._summary_service is None or self._loop_runner is None:
             return
@@ -281,12 +449,45 @@ class ChatServer:
                 self.room.append_summary_fallback(batch)
             else:
                 self.room.apply_summary(result)
+                # 扫描对话中的场景指令
+                instructions = _extract_scene_instructions(batch)
+                if instructions:
+                    # 有场景指令 → 询问用户是否需要执行
+                    self._loop_runner.run_coro_nowait(
+                        self._ask_execute_instructions(instructions)
+                    )
+                else:
+                    # 无场景指令 → 把摘要广播到聊天室
+                    self._loop_runner.run_coro_nowait(
+                        self._broadcast_summary(result)
+                    )
 
         self._loop_runner.submit_blocking(
             _job, _on_done,
             swallow_exc=True,
             on_exc=lambda e: self.room.append_summary_fallback(batch),
         )
+
+    async def _ask_execute_instructions(self, instructions: list[str]) -> None:
+        """摘要后广播：询问用户是否需要执行历史中的场景指令。"""
+        if not instructions:
+            return
+        items = "\n".join(f"  • {i}" for i in instructions[:5])
+        tip = (
+            f"📋 自动摘要完成！检测到讨论中可能包含以下场景指令：\n"
+            f"{items}\n\n"
+            f"需要我执行吗？直接 @我 并回复「执行」或指定某一条即可。"
+        )
+        stamped = self.room_manager.stamp_and_record(self.room, "系统", tip)
+        await self._broadcast(stamped)
+
+    async def _broadcast_summary(self, summary: str) -> None:
+        """摘要完成后广播到聊天室（无场景指令时的静默总结）。"""
+        if not summary or not summary.strip():
+            return
+        text = f"📋 聊天自动总结：\n{summary.strip()}"
+        stamped = self.room_manager.stamp_and_record(self.room, "系统", text)
+        await self._broadcast(stamped)
 
     async def _on_disconnect(self, ws: ServerConnection) -> None:
         """连接断开：移除成员及其名下 agent，广播成员与名册变更。"""

@@ -154,27 +154,96 @@ def _detect_local_ip() -> str:
 
 
 def _make_agent_ai_chat():
-    """构造 agent 推理回调 (system, messages)->str，调用本机 AITool/CAIApp。"""
-    def ai_chat(system: str, messages: list) -> str:
-        from plugins.AITool.main import AITool
-        from Quasar.cai.protocol.request import ChatRequest
-        convo = "\n".join(messages)
+    """构造 agent 推理回调 (system, messages)->str。
+
+    使用 Master Agent — 统一接管场景编辑 + 聊天 + 讨论总结 + 风格巡检。
+    """
+    from plugins.AITool.main import AITool
+    from Quasar.cai.protocol.request import ChatRequest
+    from cai_extensions.agent.agent_adapter import create_master_agent
+    import json
+
+    def fallback_chat(system: str, messages: list) -> str:
+        """调用本机 AITool/CAIApp — MasterAgent 内部导入失败时的回退。
+
+        对 SSL / 网络瞬时错误做有限重试，避免一次抖动就失败。
+        """
+        import time as _time
+        convo = "\n".join(messages) if isinstance(messages, list) else str(messages)
         text = f"{system}\n\n以下是群聊上下文：\n{convo}\n\n请以你的身份回复最新消息。"
-        req = ChatRequest.from_text(text=text, metadata={"skip_conversation_store": True})
-        chunks = AITool._cai_app.chat(req)
-        return "".join(chunks).strip()
-    return ai_chat
+
+        last_err = None
+        for attempt in range(3):  # 1 次 + 2 次重试
+            try:
+                req = ChatRequest.from_text(text=text, metadata={"skip_conversation_store": True})
+                chunks = AITool._cai_app.chat(req)
+                # 解析流式响应，提取文本内容
+                result_text = []
+                for chunk in chunks:
+                    try:
+                        data = json.loads(chunk)
+                        for content in data.get("llm_content", []):
+                            for part in content.get("part", []):
+                                if part.get("content_type") == "text":
+                                    result_text.append(part.get("content_text", ""))
+                    except (json.JSONDecodeError, KeyError, TypeError):
+                        continue
+                reply = "".join(result_text).strip()
+                if reply:
+                    return reply
+                last_err = "空回复"
+            except Exception as e:
+                last_err = e
+                msg = str(e).lower()
+                # 仅对网络/SSL 瞬时错误重试
+                if any(k in msg for k in ("ssl", "eof", "timeout", "connection",
+                                          "reset", "refused", "unreachable")):
+                    import logging as _log
+                    _log.getLogger(__name__).warning(
+                        "[LANChat] AI 调用网络错误，重试 %d/2: %s", attempt + 1, e)
+                    _time.sleep(1.0 * (attempt + 1))
+                    continue
+                break  # 非网络错误不重试
+        # 多次重试仍失败 → 友好降级，不把原始异常丢给用户
+        import logging as _log
+        _log.getLogger(__name__).warning("[LANChat] AI 调用最终失败: %s", last_err)
+        return "🌐 网络好像不太稳定，我没能连上 AI 服务，请稍后再发一次～"
+
+    return create_master_agent(fallback_chat=fallback_chat)
 
 
 def _make_summary_ai_chat():
-    """构造摘要回调 (prompt)->str，调用本机 AITool/CAIApp。"""
-    def ai_chat(prompt: str) -> str:
-        from plugins.AITool.main import AITool
-        from Quasar.cai.protocol.request import ChatRequest
+    """构造摘要回调 (prompt)->str。
+
+    使用 SummaryAgent — 增强版群聊压缩，融入场景上下文。
+    """
+    from plugins.AITool.main import AITool
+    from Quasar.cai.protocol.request import ChatRequest
+    from cai_extensions.agent.agent_adapter import create_summary_agent
+    import json
+
+    def fallback_chat(prompt: str) -> str:
+        """调用本机 AITool/CAIApp — SummaryAgent 内部导入失败时的回退。"""
         req = ChatRequest.from_text(text=prompt, metadata={"skip_conversation_store": True})
         chunks = AITool._cai_app.chat(req)
-        return "".join(chunks).strip()
-    return ai_chat
+
+        # 解析流式响应，提取文本内容
+        result_text = []
+        for chunk in chunks:
+            try:
+                data = json.loads(chunk)
+                llm_content = data.get("llm_content", [])
+                for content in llm_content:
+                    parts = content.get("part", [])
+                    for part in parts:
+                        if part.get("content_type") == "text":
+                            result_text.append(part.get("content_text", ""))
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+
+        return "".join(result_text).strip()
+
+    return create_summary_agent(fallback_chat=fallback_chat)
 
 
 @PluginBase.register_web("LANChat")
@@ -341,6 +410,8 @@ class LANChat(PluginBase):
                 room = cls._server.room
                 stamped = cls._server.room_manager.stamp_and_record(room, HOST_NICKNAME, text)
                 cls._loop_thread.run_coro_nowait(cls._server._broadcast(stamped))
+                # 触发 @agent 派发（修复：房主消息也需要触发 agent）
+                cls._loop_thread.run_coro_nowait(cls._server._dispatch_mentions(stamped))
                 return {"ok": True}
             if cls._client is not None:
                 cls._loop_thread.run_coro_nowait(cls._client.send_message(text))
