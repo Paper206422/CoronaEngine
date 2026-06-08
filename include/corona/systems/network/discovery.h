@@ -3,6 +3,7 @@
 #include <corona/systems/network/protocol.h>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 

@@ -290,8 +290,8 @@ void SyncEngine::handle_incoming(const std::string& sender_peer_id,
 
     if (type == MessageType::SYNC_DIRTY) {
         if (!r.has_remaining(16)) return;
-        uint32_t /*seq*/ = r.read_u32();
-        uint64_t /*remote_ts*/ = r.read_u64();
+        (void)r.read_u32();  // seq
+        (void)r.read_u64();  // remote_ts
         uint32_t count = r.read_u32();
 
         auto& hub = impl_->hub;
@@ -299,7 +299,7 @@ void SyncEngine::handle_incoming(const std::string& sender_peer_id,
         for (uint32_t i = 0; i < count; ++i) {
             if (!r.has_remaining(2 + 8 + 2 + 2)) break;
             auto storage_id = static_cast<StorageID>(r.read_u16());
-            uint64_t /*entity_id*/ = r.read_u64();
+            (void)r.read_u64();  // entity_id
             uint16_t key_len = r.read_u16();
             uint16_t value_len = r.read_u16();
 
@@ -347,7 +347,7 @@ void SyncEngine::handle_incoming(const std::string& sender_peer_id,
     }
     else if (type == MessageType::SYNC_FULL) {
         if (!r.has_remaining(8)) return;
-        uint32_t /*seq*/ = r.read_u32();
+        (void)r.read_u32();  // seq
         uint32_t count = r.read_u32();
         CFW_LOG_INFO("SyncEngine: Received SYNC_FULL ({} entries) from {}",
                      count, sender_peer_id);
