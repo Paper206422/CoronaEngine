@@ -152,6 +152,10 @@ class ChatServer:
         self._summary_service = None   # SummaryService（房主摘要用）
         self._loop_runner = None       # 提交阻塞任务的线程池（main.py 注入）
         self._pending_triggers: dict[str, str] = {}  # trigger_id -> agent_id（对账防重）
+        self._intent_classifier = None  # IntentClassifier（每条消息主动判别；懒初始化）
+        self._plan_session = None        # PlanSession（讨论→Plan协商→定稿；懒初始化）
+        # 防止同一总结建议在短时间内重复推送
+        self._last_summary_suggest_ts: float = 0.0
 
     # ---- 生命周期 -------------------------------------------------------
     async def start(self) -> None:
@@ -257,8 +261,159 @@ class ChatServer:
         await self._broadcast(stamped)
         # 人类消息触发 @ 派发（agent 回复不会走到这里，故无连锁）
         await self._dispatch_mentions(stamped)
-        # 历史越界则异步压缩（不阻塞）
+        # Plan 协商状态机：讨论→Plan协商→定稿（每条消息驱动）
+        await self._drive_plan_session(sender, text)
+        # 每条消息主动判别：是否需要执行 / 是否该总结（类主流 AI 助手）
+        await self._classify_and_react(sender, text)
+        # 历史越界则异步压缩（定量兜底，防内存爆）
         self._maybe_compress()
+
+    def _get_plan_session(self):
+        """懒初始化 Plan 协商会话，复用 SummaryService 的 LLM 通道。"""
+        if getattr(self, "_plan_session", None) is None:
+            try:
+                from .plan_session import PlanSession
+                ai_chat = getattr(self._summary_service, "_ai_chat", None)
+                self._plan_session = PlanSession(ai_chat=ai_chat)
+            except Exception as e:
+                logger.warning("[LANChat] PlanSession 初始化失败: %s", e)
+                return None
+        return self._plan_session
+
+    async def _drive_plan_session(self, sender: str, text: str) -> None:
+        """根据房间所处阶段驱动 Plan 协商状态机。
+
+        - 系统/agent 消息不参与（防自触发）。
+        - 讨论中 + 有人说"执行" → 进入 Plan 模式，汇总全部记录生成 plan v1。
+        - Plan协商中 → 每条新消息实时修订/确认/否定。
+        - LLM 调用丢后台线程，不阻塞事件循环。
+        """
+        if self._loop_runner is None:
+            return
+        if sender in ("系统", "system") or text.startswith(("📋", "🏗️", "🎉", "🌐", "🤖", "✅", "💡", "📝")):
+            return
+
+        from .plan_session import STATE_PLANNING
+        session = self._get_plan_session()
+        if session is None:
+            return
+
+        # 讨论阶段：检测"执行"触发 → 进入 Plan
+        if session.state != STATE_PLANNING:
+            if session.is_execute_trigger(text):
+                # 汇总全部历史（summary + recent）
+                view = self.room.history_view()
+                all_msgs = []
+                if view.get("summary"):
+                    all_msgs.append({"from": "（历史摘要）", "text": view["summary"]})
+                all_msgs.extend(view.get("recent", []))
+
+                def _job_enter():
+                    return session.enter_planning(all_msgs)
+
+                def _on_done_enter(plan):
+                    msg = session._format_plan(prefix="📋 已根据讨论整理出方案") if plan \
+                        else "⚠️ 暂时无法整理出方案，请再补充些细节。"
+                    self._loop_runner.run_coro_nowait(
+                        self._broadcast(self.room_manager.stamp_and_record(self.room, "系统", msg)))
+
+                self._loop_runner.submit_blocking(_job_enter, _on_done_enter, swallow_exc=True,
+                                                  on_exc=lambda e: logger.warning("[LANChat] enter_planning 失败: %s", e))
+            return
+
+        # Plan 协商阶段：每条消息驱动修订/确认/否定
+        def _job_msg():
+            return session.on_planning_message(sender, text)
+
+        def _on_done_msg(result):
+            if result and result.get("message"):
+                self._loop_runner.run_coro_nowait(
+                    self._broadcast(self.room_manager.stamp_and_record(self.room, "系统", result["message"])))
+
+        self._loop_runner.submit_blocking(_job_msg, _on_done_msg, swallow_exc=True,
+                                          on_exc=lambda e: logger.warning("[LANChat] plan 修订失败: %s", e))
+
+        # 安排"讨论停顿"检测：若之后一段时间无人说话且有累积改动，主动输出一次
+        import asyncio as _asyncio
+        _asyncio.get_event_loop().create_task(self._schedule_idle_emit(session))
+
+    async def _schedule_idle_emit(self, session) -> None:
+        """延迟检查讨论停顿：到点若仍处于 Planning 且有累积改动，输出当前方案。"""
+        import asyncio as _asyncio
+        try:
+            await _asyncio.sleep(session._IDLE_EMIT_SECONDS + 0.5)
+        except Exception:
+            return
+
+        def _job_idle():
+            return session.check_idle_emit()
+
+        def _on_done_idle(result):
+            if result and result.get("message"):
+                self._loop_runner.run_coro_nowait(
+                    self._broadcast(self.room_manager.stamp_and_record(self.room, "系统", result["message"])))
+
+        if self._loop_runner is not None:
+            self._loop_runner.submit_blocking(_job_idle, _on_done_idle, swallow_exc=True,
+                                              on_exc=lambda e: logger.warning("[LANChat] idle emit 失败: %s", e))
+
+    async def _classify_and_react(self, sender: str, text: str) -> None:
+        """对单条用户消息做意图判别，按结果主动反应。
+
+        - execute   : 已被 _dispatch_mentions 的隐式触发覆盖，这里只兜底提示
+        - summarize : 主动询问是否要总结（带防抖，不打扰）
+        - none      : 不做任何事
+        系统/agent 自己的消息不参与判别。
+        """
+        if self._loop_runner is None:
+            return
+        if sender in ("系统", "system") or text.startswith(("📋", "🏗️", "🎉", "🌐", "🤖")):
+            return
+
+        classifier = self._get_intent_classifier()
+        if classifier is None:
+            return
+
+        recent = self.room.history_view().get("recent", [])
+        try:
+            result = await classifier.classify(text, recent)
+        except Exception as e:
+            logger.warning("[LANChat] 意图判别异常（忽略）: %s", e)
+            return
+
+        intent = result.get("intent", "none")
+        if intent == "summarize":
+            await self._maybe_suggest_summary(reason=result.get("reason", ""))
+        # execute 由隐式触发链处理；none 不处理
+
+    def _get_intent_classifier(self):
+        """懒初始化意图分类器，复用 SummaryService 的 LLM 通道。"""
+        if self._intent_classifier is None:
+            try:
+                from .intent_classifier import IntentClassifier
+                ai_chat = getattr(self._summary_service, "_ai_chat", None)
+                self._intent_classifier = IntentClassifier(ai_chat=ai_chat)
+            except Exception as e:
+                logger.warning("[LANChat] IntentClassifier 初始化失败: %s", e)
+                return None
+        return self._intent_classifier
+
+    async def _maybe_suggest_summary(self, reason: str = "") -> None:
+        """判别认为该总结时，主动询问用户（带防抖，避免反复打扰）。"""
+        import time as _time
+        now = _time.time()
+        # 60s 内不重复建议总结
+        if now - self._last_summary_suggest_ts < 60.0:
+            return
+        # 内容太少不建议
+        recent = self.room.history_view().get("recent", [])
+        human_msgs = [m for m in recent if m.get("from") not in ("系统", "system")]
+        if len(human_msgs) < 4:
+            return
+        self._last_summary_suggest_ts = now
+        tip = "💡 看你们聊得差不多了，需要我把刚才的讨论总结成方案吗？回复「总结」即可。"
+        stamped = self.room_manager.stamp_and_record(self.room, "系统", tip)
+        await self._broadcast(stamped)
 
     # ---- agent 编排 -----------------------------------------------------
     async def _on_agent_register(self, ws: ServerConnection, msg: dict) -> None:
