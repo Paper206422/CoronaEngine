@@ -23,6 +23,17 @@
         </div>
 
         <div class="flex flex-col gap-1">
+          <label class="text-gray-400">协同会话 ID</label>
+          <input
+            v-model="sessionToken"
+            type="text"
+            maxlength="63"
+            placeholder="输入相同的会话 ID 即可互联..."
+            class="bg-[#1e1e1e] border border-gray-600 rounded px-2 py-1 text-white focus:border-[#4a9eff] focus:outline-none"
+          />
+        </div>
+
+        <div class="flex flex-col gap-1">
           <label class="text-gray-400">端口 (UDP)</label>
           <input
             v-model.number="port"
@@ -151,7 +162,7 @@
       <div class="border-t border-gray-700 pt-3 text-gray-500 leading-relaxed">
         <p class="mb-1 font-medium text-gray-400">使用说明</p>
         <ul class="list-disc list-inside space-y-1">
-          <li>输入实例名称和端口，点击"启动会话"</li>
+          <li>输入"协同会话 ID"（所有参与者需填写相同的 ID）</li>
           <li>同一局域网内的实例会自动发现彼此</li>
           <li>也可在"手动连接"中输入对方 IP 地址直接连接</li>
           <li>同时编辑同一物体时，最后写入者胜出 (LWW)</li>
@@ -171,6 +182,7 @@ import { coronaEventBus } from '@/utils/eventBus';
 const dock = useDockStore();
 const isDocked = ref(true);
 const instanceName = ref('');
+const sessionToken = ref('');
 const port = ref(27960);
 const sessionActive = ref(false);
 const errorMsg = ref('');
@@ -188,22 +200,24 @@ let pollTimer = null;
 async function startSession() {
   errorMsg.value = '';
   try {
-    // Use a stable project_id so peers on the same project can find each other.
-    // Derive from the project root path when available, otherwise use a fixed default.
-    let projectId;
+    // project_id is derived from the session token (user-chosen string).
+    // All peers must enter the same token to discover each other.
+    // This is independent of project directory paths, so two editors
+    // with different project root paths can still collaborate.
+    const token = sessionToken.value.trim() || 'corona-collab';
+    const projectId = hashString(token);
+
+    // Also set project root for file transfer
     try {
       const mod = await import('@/utils/bridge');
       const raw = await mod.projectSettingsService.getActiveProjectInfo();
       const info = raw?.data || raw || {};
       const projPath = info?.project_path || '';
-      projectId = projPath ? hashString(projPath) : hashString('corona-project');
-      // Also notify C++ of project root for file transfer
       if (projPath) {
         await networkService.setProjectRoot(projPath);
       }
-    } catch (_) {
-      projectId = hashString('corona-project');
-    }
+    } catch (_) { /* best effort */ }
+
     const res = await networkService.startSession(instanceName.value, projectId, port.value);
     if (res && res.ok) {
       sessionActive.value = true;
