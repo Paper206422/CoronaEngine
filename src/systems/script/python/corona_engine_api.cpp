@@ -1,4 +1,5 @@
 #include <Horizon.h>
+#include <corona/events/acoustics_system_events.h>
 #include <corona/events/display_system_events.h>
 #include <corona/events/optics_system_events.h>
 #include <corona/kernel/core/kernel_context.h>
@@ -2013,6 +2014,37 @@ MediaInfo import_media(const std::string& path) {
 
     CFW_LOG_ERROR("[import_media] Imported resource is neither video nor audio: {}", path);
     return info;
+}
+
+// ########################
+//     Audio Playback
+// ########################
+void play_audio(std::uint64_t resource_id, bool loop) {
+    if (resource_id == 0) {
+        CFW_LOG_WARNING("[play_audio] Invalid resource_id (0)");
+        return;
+    }
+    auto* event_bus = Kernel::KernelContext::instance().event_bus();
+    if (!event_bus) {
+        CFW_LOG_ERROR("[play_audio] event_bus not available");
+        return;
+    }
+    CFW_LOG_INFO("[play_audio] Playing resource {} loop={}", resource_id, loop);
+    event_bus->publish<Events::PlayAudioEvent>({resource_id, loop});
+}
+
+void stop_audio(std::uint64_t resource_id) {
+    if (resource_id == 0) {
+        CFW_LOG_WARNING("[stop_audio] Invalid resource_id (0)");
+        return;
+    }
+    auto* event_bus = Kernel::KernelContext::instance().event_bus();
+    if (!event_bus) {
+        CFW_LOG_ERROR("[stop_audio] event_bus not available");
+        return;
+    }
+    CFW_LOG_INFO("[stop_audio] Stopping resource {}", resource_id);
+    event_bus->publish<Events::StopAudioEvent>({resource_id});
 }
 
 }  // namespace Corona::API

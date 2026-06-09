@@ -433,7 +433,7 @@
               class="group flex items-center px-2 py-0.5 hover:bg-[#3c3c3c]/50 cursor-pointer border-l-2 border-transparent hover:border-[#84a65b]"
               :class="{ 'bg-[#264f78]/60': selectedItem === scene.name }"
               @click="FocusOnActor(scene)"
-              @dblclick="ControlObject(scene)"
+              @dblclick="scene.type === 'audio' ? handlePlayToggle(scene) : scene.type === 'video' ? null : ControlObject(scene)"
             >
               <!-- 图标 -->
               <span class="w-5 flex-shrink-0">
@@ -527,6 +527,39 @@
                   />
                 </svg>
               </button>
+              <!-- 音频播放 / 停止按钮 -->
+              <button
+                v-if="scene.type === 'audio'"
+                class="w-5 h-5 flex items-center justify-center rounded transition-all mr-0.5"
+                :class="
+                  (playingStates[scene.name] ?? scene._playing)
+                    ? 'text-[#f48771] hover:text-[#f48771] hover:bg-red-400/20'
+                    : 'text-[#dcdcaa] hover:text-[#dcdcaa] hover:bg-yellow-400/20'
+                "
+                :title="
+                  (playingStates[scene.name] ?? scene._playing) ? '停止' : '播放'
+                "
+                @click.stop="handlePlayToggle(scene)"
+              >
+                <!-- 播放 ▶ -->
+                <svg
+                  v-if="!(playingStates[scene.name] ?? scene._playing)"
+                  class="w-3.5 h-3.5"
+                  fill="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+                <!-- 停止 ■ -->
+                <svg
+                  v-else
+                  class="w-3.5 h-3.5"
+                  fill="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path d="M6 6h12v12H6z" />
+                </svg>
+              </button>
               <!-- 删除按钮 -->
               <button
                 class="w-5 h-5 flex items-center justify-center text-[#666] hover:text-red-400 hover:bg-red-400/20 rounded transition-all"
@@ -565,7 +598,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from 'vue';
+import { ref, reactive, onMounted, onUnmounted, computed } from 'vue';
 import { useRoute } from 'vue-router';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
 import { appService, sceneService, projectService, resourceService } from '@/utils/bridge.js';
@@ -612,6 +645,7 @@ const camerasExpanded = ref(true);
 const actorsExpanded = ref(true);
 
 const sceneImages = ref([]);
+const playingStates = reactive({});  // { name: true/false } — 音频播放状态
 const route = useRoute();
 const currentSceneName = ref('');
 const px = ref('1.0'),
@@ -817,6 +851,36 @@ const FocusOnActor = async (scene) => {
     await appService.callDockFunction('', 'syncCameraState', []);
   } catch (e) {
     logWarn('Failed to focus on actor', e);
+  }
+};
+
+/// 切换音频播放/停止
+const handlePlayToggle = async (scene) => {
+  const rid = scene.resourceId;
+  if (!rid) {
+    logWarn('[audio] No resource_id for', scene.name);
+    return;
+  }
+  const key = scene.name;
+  const playing = playingStates[key] ?? scene._playing ?? false;
+  if (playing) {
+    // 停止
+    try {
+      await sceneService.stopAudio(rid);
+    } catch (e) {
+      logError('[audio] stop failed', e);
+    }
+    playingStates[key] = false;
+    if (scene._playing !== undefined) scene._playing = false;
+  } else {
+    // 播放（单次，不循环）
+    try {
+      await sceneService.playAudio(rid, false);
+    } catch (e) {
+      logError('[audio] play failed', e);
+    }
+    playingStates[key] = true;
+    if (scene._playing !== undefined) scene._playing = true;
   }
 };
 

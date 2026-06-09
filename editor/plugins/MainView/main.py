@@ -241,7 +241,9 @@ class MainView(PluginBase):
             "name": name,
             "path": file_path,
             "type": media_type,  # "video" / "audio"
-            "resource_id": resource_id,
+            # resource_id 是 64 位整数，超过 JS Number.MAX_SAFE_INTEGER（约 9e15）会
+            # 在前端被 double 截断，故以字符串形式传递，全程当字符串处理。
+            "resource_id": str(resource_id),
             "duration": getattr(info, 'duration_seconds', 0.0),
             "codec": getattr(info, 'codec', ''),
             "width": getattr(info, 'width', 0),

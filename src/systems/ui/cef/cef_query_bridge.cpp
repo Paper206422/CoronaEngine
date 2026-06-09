@@ -1,6 +1,7 @@
 #include "browser_manager.h"
 #include "cef_client.h"
 
+#include <corona/events/acoustics_system_events.h>
 #include <corona/kernel/core/kernel_context.h>
 #include <corona/systems/network/network_system.h>
 
@@ -101,6 +102,61 @@ bool BrowserSideJSHandler::OnQuery(CefRefPtr<CefBrowser> browser,
                                    CefRefPtr<Callback> callback) {
     CEF_REQUIRE_UI_THREAD();
     std::string req = request.ToString();
+
+    // ── SceneTools.play_audio / stop_audio：C++ 快速通道，不走 Python ──
+    // 前端 Bridge.callCEF(\"SceneTools\", \"play_audio\", [rid, loop]) 直接在此处理，
+    // 避免持有 GIL 阻塞 Python 线程。
+    if (req.find("\"SceneTools\"") != std::string::npos) {
+        try {
+            auto j = nlohmann::json::parse(req);
+            if (j.value("module", "") == "SceneTools") {
+                std::string func = j.value("function", "");
+                auto args = j.value("args", nlohmann::json::array());
+
+                if (func == "play_audio" || func == "stop_audio") {
+                    auto* event_bus = Corona::Kernel::KernelContext::instance().event_bus();
+                    if (!event_bus) {
+                        callback->Failure(2, "event_bus unavailable");
+                        return true;
+                    }
+
+                    // resource_id 以字符串传递（JS number 无法精确表示 64 位整数）。
+                    // 兼容字符串和数字两种 JSON 形态。
+                    uint64_t rid = 0;
+                    if (args.size() > 0) {
+                        if (args[0].is_string()) {
+                            try {
+                                rid = std::stoull(args[0].get<std::string>());
+                            } catch (...) {
+                                rid = 0;
+                            }
+                        } else if (args[0].is_number_unsigned()) {
+                            rid = args[0].get<uint64_t>();
+                        }
+                    }
+                    if (rid == 0) {
+                        callback->Failure(2, "invalid resource_id");
+                        return true;
+                    }
+
+                    if (func == "play_audio") {
+                        bool loop = args.size() > 1 ? args[1].get<bool>() : false;
+                        event_bus->publish<::Corona::Events::PlayAudioEvent>({rid, loop});
+                    } else {
+                        event_bus->publish<::Corona::Events::StopAudioEvent>({rid});
+                    }
+
+                    nlohmann::json payload;
+                    payload["ok"] = true;
+                    callback->Success(create_success_json(func, payload));
+                    return true;
+                }
+            }
+        } catch (...) {
+            callback->Failure(2, "SceneTools fast path error");
+            return true;
+        }
+    }
 
     // ── Network 模块：C++ 直接处理，不走 Python ──
     // LAN 协同编辑的 start/stop/peer_count 全部由 C++ 直接响应，避免高频

@@ -391,5 +391,19 @@ struct MediaInfo {
 /// 导入音频或视频文件，返回资源信息。失败时 media_type 为空、resource_id 为 0。
 [[nodiscard]] MediaInfo import_media(const std::string& path);
 
+// ============================================================================
+// Audio playback (global, not spatialized)
+// ============================================================================
+
+/// 播放已导入的音频资源。resource_id 来自 import_media 返回的 MediaInfo。
+/// 通过 EventBus 通知 AcousticsSystem，在独立线程上播放。
+/// @param resource_id 音频资源 ID（由 import_media 返回）
+/// @param loop 是否循环播放（默认 false）
+void play_audio(std::uint64_t resource_id, bool loop = false);
+
+/// 停止播放指定资源。
+/// @param resource_id 音频资源 ID
+void stop_audio(std::uint64_t resource_id);
+
 }  // namespace API
 }  // namespace Corona

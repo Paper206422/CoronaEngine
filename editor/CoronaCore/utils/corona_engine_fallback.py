@@ -505,3 +505,12 @@ class CoronaEngine:
         # 无引擎后端时返回空 MediaInfo（resource_id=0 / media_type=''），上层据此报错
         return MediaInfo()
 
+    @staticmethod
+    def play_audio(resource_id, loop=False):
+        _log(f"[Fallback][play_audio] rid={resource_id} loop={loop}")
+        # 无引擎后端时无声，不报错
+
+    @staticmethod
+    def stop_audio(resource_id):
+        _log(f"[Fallback][stop_audio] rid={resource_id}")
+

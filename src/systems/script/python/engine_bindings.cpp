@@ -416,6 +416,11 @@ void BindAll(nanobind::module_& m) {
           "Import an audio or video file as a standalone resource. "
           "Returns a MediaInfo (resource_id is 0 / media_type is '' on failure).");
 
+    m.def("play_audio", &play_audio, nb::arg("resource_id"), nb::arg("loop") = false,
+          "Play an imported audio resource. Pass the resource_id from MediaInfo.");
+    m.def("stop_audio", &stop_audio, nb::arg("resource_id"),
+          "Stop playing an audio resource.");
+
     // ============================================================================
     // Engine lifecycle
     // ============================================================================

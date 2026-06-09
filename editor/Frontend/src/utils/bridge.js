@@ -87,6 +87,12 @@ export const sceneService = {
   /** 鼠标在3D视口中拾取物体（异步：首次调用设置拾取，~50ms后重试获取结果） */
   pickActor: (sceneName, x, y, vpWidth, vpHeight) =>
     Bridge.callCEF('SceneTools', 'pick_actor_at_pixel', [sceneName, x, y, vpWidth, vpHeight]),
+  /** 播放已导入的音频资源 */
+  playAudio: (resourceId, loop) =>
+    Bridge.callCEF('SceneTools', 'play_audio', [resourceId, loop]),
+  /** 停止播放音频资源 */
+  stopAudio: (resourceId) =>
+    Bridge.callCEF('SceneTools', 'stop_audio', [resourceId]),
 
   getScene: (sceneId) => Bridge.callCEF('SceneDatas', 'get_scene', [sceneId]),
   getActor: (sceneId, actorId) => Bridge.callCEF('SceneDatas', 'get_actor', [sceneId, actorId]),

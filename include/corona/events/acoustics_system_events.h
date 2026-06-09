@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace Corona::Events {
 
 /**
@@ -21,6 +23,21 @@ struct EngineToAcousticsDemoEvent {
  */
 struct AcousticsToEngineDemoEvent {
     float delta_time;
+};
+
+// ============================================================================
+// 音频播放事件（单线程 EventBus）
+// ============================================================================
+
+/// 请求播放音频资源
+struct PlayAudioEvent {
+    std::uint64_t resource_id{0};
+    bool loop{false};
+};
+
+/// 请求停止音频资源
+struct StopAudioEvent {
+    std::uint64_t resource_id{0};
 };
 
 }  // namespace Corona::Events
