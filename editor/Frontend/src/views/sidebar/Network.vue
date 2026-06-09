@@ -188,19 +188,26 @@ let pollTimer = null;
 async function startSession() {
   errorMsg.value = '';
   try {
-    // Generate a simple project_id from the instance name
-    const projectId = hashString(instanceName.value || 'corona-project');
+    // Use a stable project_id so peers on the same project can find each other.
+    // Derive from the project root path when available, otherwise use a fixed default.
+    let projectId;
+    try {
+      const mod = await import('@/utils/bridge');
+      const raw = await mod.projectSettingsService.getActiveProjectInfo();
+      const info = raw?.data || raw || {};
+      const projPath = info?.project_path || '';
+      projectId = projPath ? hashString(projPath) : hashString('corona-project');
+      // Also notify C++ of project root for file transfer
+      if (projPath) {
+        await networkService.setProjectRoot(projPath);
+      }
+    } catch (_) {
+      projectId = hashString('corona-project');
+    }
     const res = await networkService.startSession(instanceName.value, projectId, port.value);
     if (res && res.ok) {
       sessionActive.value = true;
       startPolling();
-      // Notify NetworkSystem of project root for file transfer
-      try {
-        const projRoot = await window.coronaAPI?.getProjectPath?.();
-        if (projRoot) {
-          await networkService.setProjectRoot(projRoot);
-        }
-      } catch (_) { /* best effort */ }
     } else {
       errorMsg.value = (res && res.error) || '启动失败';
     }
@@ -296,11 +303,10 @@ onMounted(() => {
   // needs to be forwarded to remote peers)
   coronaEventBus.on('actor-sync-broadcast', (actorData) => {
     if (!sessionActive.value) return;
-    // Forward to all connected peers via C++ NetworkSystem
-    // Use the current scene name from the actor data's path context
-    const sceneName = 'Scene/default.scene'; // TODO: get from actor context
     const modelPath = actorData.path || actorData.model || '';
     if (!modelPath) return;
+    // Get scene name from the actor's parent scene if available
+    const sceneName = actorData.scene || 'Scene/default.scene';
     networkService.broadcastActorCreate(sceneName, modelPath, actorData).catch(() => {});
   });
 

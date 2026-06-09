@@ -256,7 +256,7 @@ void Discovery::poll() {
         // instance_name check above — catches edge cases like empty names).
         if (sender_addr.sin_addr.s_addr == impl_->own_ip) {
             continue;
-        }
+        }  
 
         // Get sender IP
         char ip_str[INET_ADDRSTRLEN];

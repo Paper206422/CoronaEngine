@@ -181,7 +181,6 @@ class Actor:
     def _broadcast_actor_created(self):
         """通过 NetworkSystem 广播 Actor 创建事件到已连接的 peer。"""
         try:
-            from CoronaCore.utils.bridge import networkService
             import json as _json
             # Use the same format as to_dict() for the actor data
             actor_data = self.to_dict()

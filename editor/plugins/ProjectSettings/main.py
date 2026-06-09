@@ -42,7 +42,7 @@ class ProjectSettings(PluginBase):
                 if key not in project_info or not project_info[key]:
                     project_info[key] = default_value
 
-            return {"data": project_info, "success": True}
+            return {"data": project_info, "success": True, "project_path": str(settings_manager.active_project_path)}
         except Exception as e:
             logger.error(f"读取项目配置失败: {e}")
             return {"error": str(e), "data": {}}
