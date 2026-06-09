@@ -7,9 +7,12 @@
 #include <corona/systems/ui/vulkan_backend.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <future>
 #include <limits>
+#include <memory>
 #include <type_traits>
 #include <vector>
 
@@ -41,12 +44,19 @@ inline uint32_t texture_id_to_descriptor(ImTextureID tex_id) {
 namespace Corona::Systems {
 
 // Per-secondary-viewport data stored in ImGuiViewport::RendererUserData.
+//
+// 改造2: secondary viewports no longer own a swapchain. DisplaySystem owns the
+// per-surface HardwareDisplayer and composites Optics+UI before presenting, exactly
+// like the main window. Here we only render the ImGui UI into a render target and
+// publish it as a UIFrameReadyEvent keyed by this window's native handle (surface).
 struct ViewportData {
-    HardwareDisplayer displayer;                                    // per-window swapchain/presentation
     ViewportRenderResources resources;                              // per-window render target + geometry buffers
     RasterizerPipeline<imgui_vert_glsl, imgui_frag_glsl> pipeline;  // independent pipeline instance
     bool pipeline_ready = false;
-    bool pending_show = false;  // deferred show: wait until first frame is rendered
+    bool pending_show = false;          // deferred show: wait until first frame is published
+    void* surface = nullptr;            // native window handle (HWND/NSWindow*); the DisplaySystem surface key
+    std::uintptr_t image_handle = 0;    // image_storage handle carrying this viewport's UI layer
+    uint64_t frame_index = 0;           // monotonic UI frame counter for this viewport
 };
 
 // Deferred Platform_ShowWindow: intercept to delay OS window visibility until after the
@@ -581,13 +591,7 @@ void VulkanBackend::renderer_create_window(ImGuiViewport* vp) {
     }
 
     auto* vd = IM_NEW(ViewportData)();
-    vd->displayer = HardwareDisplayer(vp->PlatformHandleRaw);
-
-    if (vd->displayer.getDisplayerID() == 0) {
-        CFW_LOG_ERROR("VulkanBackend: failed to create HardwareDisplayer for viewport {}", vp->ID);
-        IM_DELETE(vd);
-        return;
-    }
+    vd->surface = vp->PlatformHandleRaw;
 
     // Initialize per-viewport pipeline (shares compiled VkPipeline via global ID,
     // but has independent renderTargets/geomMeshesRecord state).
@@ -599,16 +603,58 @@ void VulkanBackend::renderer_create_window(ImGuiViewport* vp) {
         return;
     }
 
+    // 改造2: this viewport's UI layer flows through DisplaySystem. Allocate a shared
+    // image_storage handle for it (mirrors the main window's image_handle_) and register
+    // the surface so DisplaySystem creates the per-surface displayer that owns the swapchain.
+    vd->image_handle = SharedDataHub::instance().image_storage().allocate();
+    if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(vd->image_handle)) {
+        // keep-alive only; per-frame image/executor set in renderer_render_window
+    }
+
     vp->RendererUserData = vd;
-    CFW_LOG_INFO("VulkanBackend: secondary viewport {} created (pipeline_id={})",
-                 vp->ID, vd->pipeline.getRasterizerPipelineID());
+
+    if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
+        event_bus->publish<Events::DisplaySurfaceChangedEvent>({vd->surface});
+    }
+
+    CFW_LOG_INFO("VulkanBackend: secondary viewport {} created (pipeline_id={}, ui_handle={})",
+                 vp->ID, vd->pipeline.getRasterizerPipelineID(), vd->image_handle);
 }
 
 void VulkanBackend::renderer_destroy_window(ImGuiViewport* vp) {
-    if (auto* vd = static_cast<ViewportData*>(vp->RendererUserData)) {
-        vd->resources.executor.waitForDeferredResources();
-        IM_DELETE(vd);
+    auto* vd = static_cast<ViewportData*>(vp->RendererUserData);
+    if (vd == nullptr) {
+        vp->RendererUserData = nullptr;
+        return;
     }
+
+    // Finish any GPU work referencing this viewport's UI render target before teardown.
+    vd->resources.executor.waitForDeferredResources();
+
+    // 改造2: DisplaySystem owns the swapchain for this surface. It must destroy that
+    // swapchain + VkSurfaceKHR BEFORE we let ImGui/SDL destroy the OS window, or the
+    // Display thread could present to a dead window. EventBus dispatch is synchronous and
+    // runs the handler on THIS (main) thread, so the handler only buffers the request;
+    // the actual teardown + promise fulfillment happens on the Display thread's update().
+    // Block here on the promise so destruction is ordered. Bounded wait avoids a hang if
+    // the Display thread has already stopped (e.g. during shutdown).
+    if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
+        auto done = std::make_shared<std::promise<void>>();
+        auto fut = done->get_future();
+        event_bus->publish<Events::DisplaySurfaceRemovedEvent>({vd->surface, done});
+        if (fut.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+            CFW_LOG_WARNING(
+                "VulkanBackend: viewport {} surface teardown timed out; proceeding to destroy window",
+                vp->ID);
+        }
+    }
+
+    if (vd->image_handle != 0) {
+        SharedDataHub::instance().image_storage().deallocate(vd->image_handle);
+        vd->image_handle = 0;
+    }
+
+    IM_DELETE(vd);
     vp->RendererUserData = nullptr;
 }
 
@@ -621,7 +667,9 @@ void VulkanBackend::renderer_set_window_size(ImGuiViewport* vp, ImVec2 size) {
     const auto w = static_cast<uint32_t>(size.x);
     const auto h = static_cast<uint32_t>(size.y);
     if (w > 0 && h > 0) {
-        ensure_render_target(vd->resources, w, h, ImageUsage::StorageImage);
+        // SampledImage: the UI layer is consumed as the composite shader's fg (sampled),
+        // matching the main window. DisplaySystem owns/recreates the swapchain on resize.
+        ensure_render_target(vd->resources, w, h, ImageUsage::SampledImage);
     }
 }
 
@@ -642,27 +690,57 @@ void VulkanBackend::renderer_render_window(ImGuiViewport* vp, void* /*render_arg
         return;
     }
 
+    // Back-pressure: wait for DisplaySystem to finish consuming the previous frame's image
+    // before overwriting it (mirrors VulkanBackend::new_frame() for the main window).
+    if (vd->image_handle != 0) {
+        if (auto image_device =
+                SharedDataHub::instance().image_storage().acquire_write(vd->image_handle)) {
+            vd->resources.executor.wait(image_device->consumed_executor);
+        }
+    }
+
     vd->resources.executor.cleanupDeferredResources();
 
-    render_draw_data(draw_data, vd->resources, vd->pipeline, s_instance_->font_atlas_image_,
-                     ImageUsage::StorageImage);
-}
-
-void VulkanBackend::renderer_swap_buffers(ImGuiViewport* vp, void* /*render_arg*/) {
-    auto* vd = static_cast<ViewportData*>(vp->RendererUserData);
-    if (vd == nullptr || !vd->resources.render_target) {
+    if (!render_draw_data(draw_data, vd->resources, vd->pipeline, s_instance_->font_atlas_image_,
+                          ImageUsage::SampledImage)) {
         return;
     }
 
-    vd->displayer.wait(vd->resources.executor) << vd->resources.render_target;
+    // Publish this viewport's UI layer to DisplaySystem (keyed by its native surface),
+    // mirroring VulkanBackend::present_frame() for the main window.
+    if (vd->image_handle != 0) {
+        if (auto image_device =
+                SharedDataHub::instance().image_storage().acquire_write(vd->image_handle)) {
+            image_device->image = vd->resources.render_target;
+            image_device->executor = vd->resources.executor;
+        } else {
+            return;
+        }
 
-    // Deferred show: make the OS window visible now that the first frame has been presented.
+        if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
+            ++vd->frame_index;
+            event_bus->publish<Events::UIFrameReadyEvent>({vd->surface,
+                                                           vd->image_handle,
+                                                           vd->frame_index,
+                                                           vd->resources.width,
+                                                           vd->resources.height});
+        }
+    }
+
+    // Deferred show: make the OS window visible once its first frame has been queued for
+    // compositing. DisplaySystem presents asynchronously, so we no longer gate on present.
     if (vd->pending_show) {
         if (s_original_platform_show_window) {
             s_original_platform_show_window(vp);
         }
         vd->pending_show = false;
     }
+}
+
+void VulkanBackend::renderer_swap_buffers(ImGuiViewport* vp, void* /*render_arg*/) {
+    // 改造2: presentation is owned by DisplaySystem (per-surface composite of Optics+UI).
+    // Nothing to present here; the UI layer was published in renderer_render_window.
+    (void)vp;
 }
 
 }  // namespace Corona::Systems

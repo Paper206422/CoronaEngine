@@ -70,6 +70,7 @@ class DisplaySystem : public Kernel::SystemBase {
     bool ensure_composite_resources(uint32_t width, uint32_t height);
 
     Kernel::EventId surface_changed_sub_id_ = 0;
+    Kernel::EventId surface_removed_sub_id_ = 0;
     Kernel::EventId optics_frame_sub_id_ = 0;
     Kernel::EventId ui_frame_sub_id_ = 0;
 
@@ -80,6 +81,17 @@ class DisplaySystem : public Kernel::SystemBase {
     std::unordered_map<uint64_t, HardwareDisplayer> displayers_;
     std::unordered_map<uint64_t, SurfaceState> surface_states_;
     std::vector<void*> pending_surfaces_;  ///< Surfaces awaiting displayer creation (deferred to update thread)
+
+    // Surfaces awaiting teardown (ImGui secondary viewport closed). The removal event
+    // is published synchronously from the main thread; its handler only buffers the
+    // request here (+ a promise) and returns, then update() on the Display thread
+    // GPU-idles and destroys the displayer/state before fulfilling the promise so the
+    // main thread can safely destroy the OS window. See DisplaySurfaceRemovedEvent.
+    struct PendingRemoval {
+        void* surface = nullptr;
+        std::shared_ptr<std::promise<void>> done;
+    };
+    std::vector<PendingRemoval> pending_removals_;
 
     // Compositing resources
     ComputePipeline<composite_comp_glsl> composite_pipeline_;

@@ -30,6 +30,27 @@ bool DisplaySystem::initialize(Kernel::ISystemContext* ctx) {
             pending_surfaces_.push_back(event.surface);
         });
 
+    // Published synchronously on the MAIN thread when an ImGui secondary viewport window
+    // is being destroyed. We only buffer the request (+ promise) here and return; the
+    // actual GPU-idle + displayer teardown happens in update() on the Display thread,
+    // which then fulfills the promise. The publisher (main thread) blocks on that promise
+    // so the OS window is not destroyed until our swapchain is gone. Must NOT block here:
+    // this handler runs on the main thread, and blocking while holding frame_mutex_ would
+    // deadlock against update()'s own frame_mutex_ acquisition.
+    surface_removed_sub_id_ = event_bus->subscribe<Events::DisplaySurfaceRemovedEvent>(
+        [this](const Events::DisplaySurfaceRemovedEvent& event) {
+            if (event.surface == nullptr) {
+                // Nothing to tear down; fulfill immediately so the publisher does not hang.
+                if (event.done) {
+                    event.done->set_value();
+                }
+                return;
+            }
+
+            std::lock_guard<std::mutex> lock(frame_mutex_);
+            pending_removals_.push_back({event.surface, event.done});
+        });
+
     optics_frame_sub_id_ = event_bus->subscribe<Events::OpticsFrameReadyEvent>(
         [this](const Events::OpticsFrameReadyEvent& event) {
             if (event.surface == nullptr ||
@@ -104,8 +125,32 @@ void DisplaySystem::update() {
     // then release before GPU work. displayers_ is only modified here, so
     // iterating it after the lock is safe.
     std::unordered_map<uint64_t, SurfaceState> states_snapshot;
+    std::vector<PendingRemoval> removals;
     {
         std::lock_guard<std::mutex> lock(frame_mutex_);
+
+        // Drain teardown requests first. Drop any matching state and any not-yet-created
+        // surface so the creation loop below does not resurrect a surface being removed.
+        removals.swap(pending_removals_);
+        if (!removals.empty()) {
+            for (const auto& r : removals) {
+                const auto surface_id = reinterpret_cast<uint64_t>(r.surface);
+                surface_states_.erase(surface_id);
+            }
+            pending_surfaces_.erase(
+                std::remove_if(pending_surfaces_.begin(), pending_surfaces_.end(),
+                               [&](void* s) {
+                                   const auto sid = reinterpret_cast<uint64_t>(s);
+                                   for (const auto& r : removals) {
+                                       if (reinterpret_cast<uint64_t>(r.surface) == sid) {
+                                           return true;
+                                       }
+                                   }
+                                   return false;
+                               }),
+                pending_surfaces_.end());
+        }
+
         for (auto* surface : pending_surfaces_) {
             const auto surface_id = reinterpret_cast<uint64_t>(surface);
             if (!displayers_.contains(surface_id)) {
@@ -115,6 +160,21 @@ void DisplaySystem::update() {
         }
         pending_surfaces_.clear();
         states_snapshot = surface_states_;
+    }
+
+    // Destroy displayers OUTSIDE the lock (displayers_ is touched only on this thread).
+    // ~HardwareDisplayer → cleanUpDisplayManager() runs vkDeviceWaitIdle before destroying
+    // the swapchain + VkSurfaceKHR, so no present is in flight and the surface is gone
+    // before the main thread destroys the OS window. Fulfilling the promise unblocks the
+    // main thread (the publisher of DisplaySurfaceRemovedEvent) to proceed with that.
+    for (auto& r : removals) {
+        const auto surface_id = reinterpret_cast<uint64_t>(r.surface);
+        if (displayers_.erase(surface_id) > 0) {
+            CFW_LOG_INFO("DisplaySystem: Tore down displayer for surface {}", surface_id);
+        }
+        if (r.done) {
+            r.done->set_value();
+        }
     }
 
     for (auto& [surface_id, displayer] : displayers_) {
@@ -309,12 +369,27 @@ void DisplaySystem::shutdown() {
         if (surface_changed_sub_id_ != 0) {
             event_bus->unsubscribe(surface_changed_sub_id_);
         }
+        if (surface_removed_sub_id_ != 0) {
+            event_bus->unsubscribe(surface_removed_sub_id_);
+        }
         if (optics_frame_sub_id_ != 0) {
             event_bus->unsubscribe(optics_frame_sub_id_);
         }
         if (ui_frame_sub_id_ != 0) {
             event_bus->unsubscribe(ui_frame_sub_id_);
         }
+    }
+
+    // Fulfill any outstanding teardown promises so a main thread blocked in
+    // renderer_destroy_window cannot hang past Display-thread shutdown.
+    {
+        std::lock_guard<std::mutex> lock(frame_mutex_);
+        for (auto& r : pending_removals_) {
+            if (r.done) {
+                r.done->set_value();
+            }
+        }
+        pending_removals_.clear();
     }
 
     composite_pipeline_ready_ = false;
