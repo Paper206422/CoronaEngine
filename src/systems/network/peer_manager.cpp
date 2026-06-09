@@ -13,6 +13,7 @@ struct PeerManager::Impl {
     bool enet_initialized = false;
     std::string local_id;
     std::string instance_name;
+    uint16_t listen_port = 0;
 
     // Peer tracking
     std::vector<PeerInfo> peer_list;
@@ -43,6 +44,13 @@ struct PeerManager::Impl {
         }
         return nullptr;
     }
+
+    PeerInfo* find_peer_by_stable_id_unsafe(const std::string& sid) {
+        for (auto& p : peer_list) {
+            if (p.hello_done && p.stable_id == sid) return &p;
+        }
+        return nullptr;
+    }
 };
 
 // ============================================================================
@@ -68,11 +76,11 @@ bool PeerManager::start(uint16_t port, const std::string& instance_name) {
     }
 
     impl_->instance_name = instance_name;
+    impl_->listen_port = port;
 
-    // Build local ID from a placeholder IP (we don't know our LAN IP yet;
-    // it will be populated when we accept or connect to a peer).
-    // In practice it's used as a tiebreaker; localhost + port is fine.
-    impl_->local_id = "127.0.0.1:" + std::to_string(port);
+    // Local stable id: "name@port". The IP is filled per-peer from the
+    // observed remote address; locally we only need name+port for HELLO.
+    impl_->local_id = instance_name + "@" + std::to_string(port);
 
     // Create the ENet host
     // address.port = port, maxPeers = 64, maxChannels = 2
@@ -145,27 +153,33 @@ void PeerManager::connect_to_peer(const std::string& ip, uint16_t port,
         return;
     }
 
-    // Reject empty or invalid IPs
-    if (ip.empty() || ip == "0.0.0.0" || ip == "127.0.0.1") {
+    // Reject empty / wildcard IPs (but allow loopback for same-machine testing)
+    if (ip.empty() || ip == "0.0.0.0") {
         CFW_LOG_WARNING("PeerManager: Reject connection to invalid IP '{}'", ip);
         return;
     }
 
-    // ID-based connection ordering: smaller ID waits, larger ID initiates
     std::string remote_id = make_peer_id(ip.c_str(), port);
 
-    // Reject self-connection (same IP:port as local)
+    // Reject self-connection (same IP:port as our own listen address)
     if (remote_id == impl_->local_id) {
         CFW_LOG_WARNING("PeerManager: Reject self-connection to {}", remote_id);
         return;
     }
 
-    // Skip ID-ordering when force=true (manual connection).
-    if (!force && impl_->local_id < remote_id) {
-        // We have the smaller ID — wait for them to connect to us
-        CFW_LOG_DEBUG("PeerManager: {} < {} — waiting for inbound connection",
-                      impl_->local_id, remote_id);
-        return;
+    // Connection ordering (auto-discovery only): when two peers discover each
+    // other, exactly one must initiate, else they either both wait (deadlock)
+    // or both connect (duplicate pair). We order by instance name, which is
+    // symmetric and available on both sides: the lexicographically smaller
+    // name waits for the inbound connection, the larger initiates.
+    // force=true (manual connect) always initiates.
+    if (!force && !peer_name.empty() && !impl_->instance_name.empty()
+        && impl_->instance_name != peer_name) {
+        if (impl_->instance_name < peer_name) {
+            CFW_LOG_DEBUG("PeerManager: '{}' < '{}' — waiting for inbound connection",
+                          impl_->instance_name, peer_name);
+            return;
+        }
     }
 
     // Check if already connected
@@ -193,6 +207,7 @@ void PeerManager::connect_to_peer(const std::string& ip, uint16_t port,
         info.name = peer_name;
         info.peer = peer;
         info.connected = false;
+        info.outbound = true;  // we initiated this connection
         impl_->peer_list.push_back(info);
     }
 
@@ -269,57 +284,78 @@ void PeerManager::poll() {
     while (enet_host_service(impl_->host, &event, 0) > 0) {
         switch (event.type) {
         case ENET_EVENT_TYPE_CONNECT: {
-            // Build peer ID from the remote address
+            // ENet only exposes the remote's ephemeral source port here, not
+            // its listen port, so this id is provisional. We send HELLO and
+            // rekey to a stable id once the peer's HELLO arrives.
             char ip[64];
             enet_address_get_host_ip(&event.peer->address, ip, sizeof(ip));
             std::string remote_id = make_peer_id(ip, event.peer->address.port);
 
-            // Find our pending PeerInfo or create one (for inbound connections)
-            std::string name;
             {
                 std::lock_guard lock(impl_->peer_mutex);
-                auto* info = impl_->find_peer_by_id_unsafe(remote_id);
-                if (info) {
-                    info->connected = true;
-                    name = info->name;
-                } else {
-                    // Inbound connection: store it
+                auto* info = impl_->find_peer_unsafe(event.peer);
+                if (!info) {
+                    // Inbound connection (or pending entry keyed differently):
+                    // store a provisional entry keyed by ephemeral ip:port.
                     PeerInfo pinfo;
                     pinfo.id = remote_id;
-                    pinfo.name = remote_id; // will be filled when we match discovery
+                    pinfo.name = remote_id;
                     pinfo.peer = event.peer;
                     pinfo.connected = true;
                     impl_->peer_list.push_back(pinfo);
+                } else {
+                    info->connected = true;
+                    info->peer = event.peer;
                 }
             }
-            handle_connect(event.peer, remote_id, name);
+
+            // Send our HELLO (stable identity) immediately. on_connected is
+            // deferred until we receive the peer's HELLO and rekey.
+            auto hello = build_hello(impl_->instance_name, impl_->listen_port);
+            send_to(event.peer, kChannelReliable, hello.data(), hello.size(), true);
+            CFW_LOG_DEBUG("PeerManager: Sent HELLO to {} (provisional)", remote_id);
             break;
         }
 
         case ENET_EVENT_TYPE_DISCONNECT: {
-            std::lock_guard lock(impl_->peer_mutex);
-            auto* info = impl_->find_peer_unsafe(event.peer);
-            if (info) {
-                handle_disconnect(*info);
-                // Remove from list
-                impl_->peer_list.erase(
-                    std::remove_if(impl_->peer_list.begin(), impl_->peer_list.end(),
-                        [&](const PeerInfo& p) { return p.id == info->id; }),
-                    impl_->peer_list.end());
+            PeerInfo disconnected;
+            bool found = false;
+            {
+                std::lock_guard lock(impl_->peer_mutex);
+                auto* info = impl_->find_peer_unsafe(event.peer);
+                if (info) {
+                    disconnected = *info;
+                    found = info->hello_done;  // only notify if it was fully up
+                    impl_->peer_list.erase(
+                        std::remove_if(impl_->peer_list.begin(), impl_->peer_list.end(),
+                            [&](const PeerInfo& p) { return p.peer == event.peer; }),
+                        impl_->peer_list.end());
+                }
             }
+            if (found) handle_disconnect(disconnected);
             break;
         }
 
         case ENET_EVENT_TYPE_RECEIVE: {
-            std::string peer_id;
-            {
-                std::lock_guard lock(impl_->peer_mutex);
-                auto* info = impl_->find_peer_unsafe(event.peer);
-                if (info) peer_id = info->id;
-            }
-            if (!peer_id.empty() && impl_->on_data) {
-                impl_->on_data(peer_id, event.packet->data,
-                               event.packet->dataLength);
+            // Intercept HELLO internally; everything else goes to on_data.
+            bool is_hello = event.packet->dataLength >= 1 &&
+                static_cast<MessageType>(event.packet->data[0]) == MessageType::HELLO;
+
+            if (is_hello) {
+                handle_hello(event.peer, event.packet->data, event.packet->dataLength);
+            } else {
+                std::string peer_id;
+                bool ready = false;
+                {
+                    std::lock_guard lock(impl_->peer_mutex);
+                    auto* info = impl_->find_peer_unsafe(event.peer);
+                    if (info) { peer_id = info->id; ready = info->hello_done; }
+                }
+                // Drop data from peers that haven't completed HELLO yet
+                if (ready && !peer_id.empty() && impl_->on_data) {
+                    impl_->on_data(peer_id, event.packet->data,
+                                   event.packet->dataLength);
+                }
             }
             enet_packet_destroy(event.packet);
             break;
@@ -328,6 +364,97 @@ void PeerManager::poll() {
         default:
             break;
         }
+    }
+}
+
+// ============================================================================
+void PeerManager::handle_hello(ENetPeer* peer, const uint8_t* data, size_t len) {
+    BufferReader r(data + 1, len - 1);
+    if (!r.has_remaining(2)) return;
+    uint16_t name_len = r.read_u16();
+    if (!r.has_remaining(name_len + 2)) return;
+    std::string remote_name = r.read_string(name_len);
+    uint16_t remote_listen_port = r.read_u16();
+
+    // Build stable id from the OBSERVED remote IP + advertised listen port +
+    // name. The IP is reliable (it's the real source address); only the port
+    // in the CONNECT event was ephemeral, which is why HELLO carries the
+    // listen port explicitly.
+    char ip[64];
+    enet_address_get_host_ip(&peer->address, ip, sizeof(ip));
+    std::string stable_id = remote_name + "@" + std::string(ip) + ":" +
+                            std::to_string(remote_listen_port);
+
+    PeerInfo notify_info;
+    bool should_notify = false;
+    bool should_drop = false;
+    {
+        std::lock_guard lock(impl_->peer_mutex);
+
+        auto* existing = impl_->find_peer_by_stable_id_unsafe(stable_id);
+        auto* self = impl_->find_peer_unsafe(peer);
+
+        if (existing && self && existing->peer != peer) {
+            // Cross-connect duplicate (A→B and B→A simultaneously).
+            // Deterministic tiebreak: keep the connection where the end with
+            // the lexicographically smaller stable_id is the one that
+            // INITIATED (outbound). On that end, existing is the one we
+            // initiated, so we DROP `self` (the inbound duplicate).
+            // On the OTHER end, `self` IS the outbound one, so `existing`
+            // won't be found yet (we're holding the only mutex lock across
+            // both connections... actually no — these are two separate
+            // enet_host_service events; they run sequentially on the same
+            // thread so there IS no race).  The simplest correct rule:
+            // `self->outbound` takes priority; drop inbound extras.
+            if (self->outbound) {
+                // SELF is our outbound — keep it, drop existing
+                existing->peer = nullptr;
+                existing->connected = false;
+                existing->hello_done = false;
+                // Remove existing from peer_list so it won't be found again
+                impl_->peer_list.erase(
+                    std::remove_if(impl_->peer_list.begin(), impl_->peer_list.end(),
+                        [&](const PeerInfo& p) { return p.peer == existing->peer; }),
+                    impl_->peer_list.end());
+                // Rekey self
+                self->stable_id = stable_id;
+                self->id = stable_id;
+                self->name = remote_name;
+                self->hello_done = true;
+                notify_info = *self;
+                should_notify = true;
+                // The duplicate inbound connection that delivered THIS HELLO
+                // will be dropped below via should_drop check on `existing`
+            } else {
+                // SELF is an inbound duplicate — drop it
+                should_drop = true;
+            }
+        } else if (self && self->hello_done) {
+            // Already handled — duplicate HELLO (shouldn't happen)
+            return;
+        } else if (self) {
+            self->stable_id = stable_id;
+            self->id = stable_id;       // rekey lookup key to the stable id
+            self->name = remote_name;
+            self->hello_done = true;
+            notify_info = *self;
+            should_notify = true;
+        }
+    }
+
+    if (should_drop) {
+        CFW_LOG_INFO("PeerManager: Duplicate connection to {} — dropping extra", stable_id);
+        enet_peer_disconnect_later(peer, 0);
+        // Ensure the outbound entry is used for data routing
+        if (existing && existing->hello_done && impl_->on_connected) {
+            handle_connect(existing->peer, existing->id, existing->name);
+        }
+        return;
+    }
+
+    if (should_notify) {
+        CFW_LOG_INFO("PeerManager: HELLO from {} — peer rekeyed and ready", stable_id);
+        handle_connect(peer, notify_info.id, notify_info.name);
     }
 }
 

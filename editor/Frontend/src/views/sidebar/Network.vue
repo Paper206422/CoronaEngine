@@ -245,11 +245,9 @@ async function stopSession() {
 async function pollPeers() {
   try {
     const res = await networkService.getPeerCount();
-    // In future, replace with a full peer list API
     if (res && res.peer_count !== undefined) {
       const count = res.peer_count;
       if (peers.value.length < count) {
-        // Add placeholder peers (real names will come from peer events)
         while (peers.value.length < count) {
           peers.value.push({
             name: `Peer ${peers.value.length + 1}`,
@@ -260,6 +258,24 @@ async function pollPeers() {
         peers.value.pop();
       }
     }
+
+    // Poll for pending remote actor creation (file transfer completed)
+    try {
+      const pending = await networkService.pollPendingActorCreate();
+      if (pending && pending.has_pending) {
+        // Pause sync, create actor, then resume
+        await networkService.setSyncPaused(true);
+        try {
+          const { default: mod } = await import('@/utils/bridge');
+          // Call Python SceneTools.create_actor_internal
+          await Bridge.callCEF('SceneTools', 'create_actor_internal',
+            [pending.scene_name, pending.model_path, 'model', pending.actor_data]
+          );
+        } finally {
+          await networkService.setSyncPaused(false);
+        }
+      }
+    } catch (_) { /* best effort — actor creation polling is secondary */ }
   } catch (e) {
     // ignore polling errors
   }

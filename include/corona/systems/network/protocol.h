@@ -52,6 +52,7 @@ enum class MessageType : uint8_t {
     SYNC_DIRTY    = 0x01,  // Incremental dirty sync
     SYNC_FULL     = 0x02,  // Full state snapshot (new peer joins)
     HEARTBEAT     = 0x03,  // Keep-alive
+    HELLO         = 0x04,  // Post-connect handshake: exchange stable identity
     ACTOR_CREATE  = 0x10,  // Actor creation event (scene_name + model_path + transform + optics)
     FILE_REQUEST  = 0x11,  // Request model file from peer
     FILE_CHUNK    = 0x12,  // File chunk transfer
@@ -255,6 +256,26 @@ inline std::vector<uint8_t> build_heartbeat(uint32_t seq) {
     buf.reserve(1 + 4);
     write_u8(buf, static_cast<uint8_t>(MessageType::HEARTBEAT));
     write_u32(buf, seq);
+    return buf;
+}
+
+// ============================================================================
+// HELLO handshake packet
+// ============================================================================
+// Sent immediately after an ENet connection is established, in both directions.
+// Carries the sender's stable identity so the receiver can rekey the peer:
+// ENet's inbound CONNECT event only exposes the remote's ephemeral source port,
+// not its listen port, so peer ids would otherwise be asymmetric between the
+// two ends. After HELLO, both ends agree on stable_id = "name@listen_port".
+//   [1B type=0x04] [2B name_len] [instance_name] [2B listen_port]
+// ============================================================================
+inline std::vector<uint8_t> build_hello(const std::string& instance_name,
+                                        uint16_t listen_port) {
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + instance_name.size() + 2);
+    write_u8(buf, static_cast<uint8_t>(MessageType::HELLO));
+    write_string(buf, instance_name);
+    write_u16(buf, listen_port);
     return buf;
 }
 

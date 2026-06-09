@@ -522,6 +522,11 @@ void SyncEngine::handle_incoming(const std::string& sender_peer_id,
                     if (handle.valid()) {
                         deserialize_mt(*handle, value_ptr, value_len);
                     }
+                } else {
+                    CFW_LOG_DEBUG("SyncEngine: ST_MODEL_TRANSFORM seq={} not found "
+                                  "in local map (local={} entries) — entity may not "
+                                  "exist yet on this peer",
+                                  entity_seq, impl_->mt_seq_to_id.size());
                 }
                 break;
             }
@@ -533,6 +538,10 @@ void SyncEngine::handle_incoming(const std::string& sender_peer_id,
                     if (handle.valid()) {
                         deserialize_mr(*handle, value_ptr, value_len);
                     }
+                } else {
+                    CFW_LOG_DEBUG("SyncEngine: ST_MODEL_RESOURCE seq={} not found "
+                                  "in local map (local={} entries)",
+                                  entity_seq, impl_->mr_seq_to_id.size());
                 }
                 break;
             }
@@ -544,6 +553,10 @@ void SyncEngine::handle_incoming(const std::string& sender_peer_id,
                     if (handle.valid()) {
                         deserialize_geo(*handle, value_ptr, value_len);
                     }
+                } else {
+                    CFW_LOG_DEBUG("SyncEngine: ST_GEOMETRY seq={} not found "
+                                  "in local map (local={} entries)",
+                                  entity_seq, impl_->geo_seq_to_id.size());
                 }
                 break;
             }
@@ -555,6 +568,10 @@ void SyncEngine::handle_incoming(const std::string& sender_peer_id,
                     if (handle.valid()) {
                         deserialize_opt(*handle, value_ptr, value_len);
                     }
+                } else {
+                    CFW_LOG_DEBUG("SyncEngine: ST_OPTICS seq={} not found "
+                                  "in local map (local={} entries)",
+                                  entity_seq, impl_->opt_seq_to_id.size());
                 }
                 break;
             }
@@ -566,6 +583,10 @@ void SyncEngine::handle_incoming(const std::string& sender_peer_id,
                     if (handle.valid()) {
                         deserialize_env(*handle, value_ptr, value_len);
                     }
+                } else {
+                    CFW_LOG_DEBUG("SyncEngine: ST_ENVIRONMENT seq={} not found "
+                                  "in local map (local={} entries)",
+                                  entity_seq, impl_->env_seq_to_id.size());
                 }
                 break;
             }

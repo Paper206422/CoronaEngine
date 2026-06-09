@@ -97,6 +97,13 @@ public:
     /// 检查是否有待完成的文件传输（需要在 update 中处理）
     [[nodiscard]] bool has_pending_transfers() const;
 
+    /// 暂停或恢复数据同步（Actor 创建期间暂停以避免 seq_id 碰撞）
+    void set_sync_paused(bool paused);
+
+    /// 消费一个待创建的 Actor 数据。返回 true 表示有数据被消费。
+    bool pop_pending_actor_create(std::string& scene_name, std::string& model_path,
+                                  void* actor_packed_out, size_t packed_size);
+
     /**
      * @brief 设置当前项目的绝对路径（用于文件传输的目标目录）。
      * 接收到的模型文件将写入 active_project_path + model_path。

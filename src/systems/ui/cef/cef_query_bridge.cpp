@@ -228,6 +228,47 @@ bool BrowserSideJSHandler::OnQuery(CefRefPtr<CefBrowser> browser,
                     return true;
                 }
 
+                if (func == "poll_pending_actor_create") {
+                    // Called by frontend every ~500ms when session is active.
+                    // Returns the next pending actor create entry, so Python
+                    // can call SceneTools.create_actor_internal.
+                    nlohmann::json payload;
+                    std::string scene_name, model_path;
+                    Network::ActorCreatePacked packed;
+                    if (sys->pop_pending_actor_create(scene_name, model_path,
+                                                       &packed, sizeof(packed))) {
+                        payload["has_pending"] = true;
+                        payload["scene_name"] = scene_name;
+                        payload["model_path"] = model_path;
+                        // Convert transform (9 floats) and optics for Python
+                        nlohmann::json actor_data;
+                        actor_data["geometry"]["position"] = {
+                            packed.transform[0], packed.transform[1], packed.transform[2]
+                        };
+                        actor_data["geometry"]["rotation"] = {
+                            packed.transform[3], packed.transform[4], packed.transform[5]
+                        };
+                        actor_data["geometry"]["scale"] = {
+                            packed.transform[6], packed.transform[7], packed.transform[8]
+                        };
+                        payload["actor_data"] = actor_data;
+                    } else {
+                        payload["has_pending"] = false;
+                    }
+                    payload["ok"] = true;
+                    callback->Success(create_success_json("poll_pending_actor_create", payload));
+                    return true;
+                }
+
+                if (func == "set_sync_paused") {
+                    bool paused = args.size() > 0 ? args[0].get<bool>() : false;
+                    sys->set_sync_paused(paused);
+                    nlohmann::json payload;
+                    payload["ok"] = true;
+                    callback->Success(create_success_json("set_sync_paused", payload));
+                    return true;
+                }
+
                 if (func == "broadcast_actor_create") {
                     // args: [scene_name, model_path, actor_data_dict]
                     std::string scene_name = args.size() > 0 ? args[0].get<std::string>() : "";

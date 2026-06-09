@@ -40,6 +40,7 @@ struct NetworkSystem::Impl {
     // File transfer state
     struct IncomingTransfer {
         std::string model_path;
+        std::string sender_peer_id;  // isolate chunks from multi-sender
         uint32_t total_size = 0;
         uint32_t chunk_count = 0;
         std::vector<bool> received_chunks;
@@ -47,6 +48,7 @@ struct NetworkSystem::Impl {
         Clock::time_point last_chunk_time;
         bool complete = false;
     };
+    // key = sender_peer_id + "/" + model_path (first responder wins)
     std::unordered_map<std::string, IncomingTransfer> incoming_transfers;
 
     // Outgoing transfer: for each model_path, cache the file data
@@ -59,6 +61,9 @@ struct NetworkSystem::Impl {
 
     // Project root for file write destination
     std::string project_root;
+
+    // Sync pause (suppress poll_and_sync during incoming actor creation)
+    bool sync_paused = false;
 
     // Deferred actions to execute in update() (avoid GIL in network thread)
     struct PendingAction {
@@ -143,8 +148,9 @@ void NetworkSystem::update() {
         impl_->last_discovery_poll = now;
     }
 
-    // Sync engine tick (~60 Hz)
-    if (now - impl_->last_sync_time >=
+    // Sync engine tick (~60 Hz) — paused during remote actor creation
+    // to ensure both peers build identical storage layouts (seq_id alignment).
+    if (!impl_->sync_paused && now - impl_->last_sync_time >=
         std::chrono::milliseconds(Network::kSyncIntervalMs)) {
         impl_->sync_engine.poll_and_sync();
         impl_->last_sync_time = now;
@@ -194,10 +200,20 @@ bool NetworkSystem::start_session(const std::string& instance_name,
     impl_->sync_engine.initialize(impl_->peer_manager.local_peer_id());
 
     // 3. Discovery (use port + 1 to avoid bind conflict with ENet)
-    if (!impl_->discovery.start(port + Network::kDiscoveryPortOffset, instance_name, project_id)) {
+    // If Discovery fails (port already in use by another instance), retry
+    // with port+2, port+3 (same-machine multi-instance).
+    uint16_t disc_port = port + Network::kDiscoveryPortOffset;
+    bool disc_ok = impl_->discovery.start(disc_port, instance_name, project_id);
+    for (int retry = 1; !disc_ok && retry <= 2; ++retry) {
+        disc_port = port + Network::kDiscoveryPortOffset + static_cast<uint16_t>(retry);
+        CFW_LOG_WARNING("NetworkSystem: Discovery port {} in use, retrying on {}",
+                         port + Network::kDiscoveryPortOffset, disc_port);
+        disc_ok = impl_->discovery.start(disc_port, instance_name, project_id);
+    }
+    if (!disc_ok) {
         impl_->peer_manager.stop();
         impl_->session_state = SessionState::Error;
-        CFW_LOG_ERROR("NetworkSystem: Failed to start Discovery");
+        CFW_LOG_ERROR("NetworkSystem: Failed to start Discovery on any port");
         return false;
     }
 
@@ -273,6 +289,29 @@ void NetworkSystem::broadcast_actor_create(const std::string& scene_name,
 
 bool NetworkSystem::has_pending_transfers() const {
     return !impl_->pending_actor_creates.empty();
+}
+
+void NetworkSystem::set_sync_paused(bool paused) {
+    impl_->sync_paused = paused;
+    if (paused) {
+        CFW_LOG_DEBUG("NetworkSystem: Sync paused (actor creation in progress)");
+    } else {
+        CFW_LOG_DEBUG("NetworkSystem: Sync resumed");
+    }
+}
+
+bool NetworkSystem::pop_pending_actor_create(std::string& scene_name,
+                                              std::string& model_path,
+                                              void* actor_packed_out, size_t packed_size) {
+    if (impl_->pending_actor_creates.empty()) return false;
+    auto& pa = impl_->pending_actor_creates.front();
+    scene_name = pa.scene_name;
+    model_path = pa.model_path;
+    if (actor_packed_out && packed_size <= sizeof(Network::ActorCreatePacked)) {
+        std::memcpy(actor_packed_out, &pa.actor_packed, packed_size);
+    }
+    impl_->pending_actor_creates.erase(impl_->pending_actor_creates.begin());
+    return true;
 }
 
 void NetworkSystem::set_project_root(const std::string& project_root) {
@@ -443,10 +482,13 @@ void NetworkSystem::handle_file_chunk(const std::string& sender_peer_id,
     if (!r.has_remaining(chunk_data_len)) return;
     const uint8_t* chunk_data = r.data + r.pos;
 
-    // Get or create transfer state
-    auto& tx = impl_->incoming_transfers[model_path];
+    // Get or create transfer state — isolate by sender+path to prevent
+    // chunk interleaving when multiple peers respond to one FILE_REQUEST.
+    std::string tx_key = sender_peer_id + "/" + model_path;
+    auto& tx = impl_->incoming_transfers[tx_key];
     if (tx.model_path.empty()) {
         tx.model_path = model_path;
+        tx.sender_peer_id = sender_peer_id;
         tx.total_size = total_size;
         tx.chunk_count = chunk_count;
         tx.received_chunks.resize(chunk_count, false);
@@ -495,11 +537,17 @@ void NetworkSystem::handle_file_chunk(const std::string& sender_peer_id,
         return;
     }
 
-    impl_->incoming_transfers.erase(model_path);
+    impl_->incoming_transfers.erase(tx_key);
 
-    // Queue for deferred creation — see cef_query_bridge for Python callback
-    // For now, just notify via event bus
-    CFW_LOG_INFO("NetworkSystem: File '{}' transfer complete from {} — ready for actor creation",
+    // Re-broadcast FILE_REQUEST to request ACTOR_CREATE re-send.
+    // The peer that originally sent ACTOR_CREATE will re-send it, and
+    // this time the file exists locally, so the handler will push a
+    // PendingAction which the frontend will poll and create the actor.
+    auto pkt = Network::build_file_request(model_path);
+    impl_->peer_manager.broadcast(Network::kChannelReliable,
+                                  pkt.data(), pkt.size(), true);
+    CFW_LOG_INFO("NetworkSystem: File '{}' transfer complete from {} — "
+                 "requesting ACTOR_CREATE re-send for actor creation",
                  model_path, sender_peer_id);
 }
 

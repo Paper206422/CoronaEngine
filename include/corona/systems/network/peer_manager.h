@@ -25,10 +25,13 @@ class PeerManager {
 public:
     /// Metadata for one connected peer.
     struct PeerInfo {
-        std::string id;      // "ip:port"
-        std::string name;    // instance_name from discovery
+        std::string id;         // current lookup key (= stable_id after HELLO)
+        std::string stable_id;  // "name@ip:listen_port" — identical on both ends
+        std::string name;       // instance_name (from HELLO)
         _ENetPeer* peer = nullptr;
         bool connected = false;
+        bool hello_done = false;  // true once HELLO exchanged and peer rekeyed
+        bool outbound = false;    // true if WE initiated this connection
     };
 
     /// Called when a new peer connects (after discovery handshake completes).
@@ -123,6 +126,7 @@ private:
     void handle_connect(_ENetPeer* peer, const std::string& remote_id,
                         const std::string& name);
     void handle_disconnect(const PeerInfo& info);
+    void handle_hello(_ENetPeer* peer, const uint8_t* data, size_t len);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
