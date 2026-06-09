@@ -202,15 +202,6 @@ bool OpticsSystem::initialize_vision_backend_if_enabled() {
 bool OpticsSystem::initialize_hardware_resources() {
     try {
         hardware_ = std::make_unique<Hardware>();
-        image_handle_ = SharedDataHub::instance().image_storage().allocate();
-        if (auto accessor = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
-            // Keep storage entry alive; per-frame image/executor values are updated after render submit.
-        } else {
-            CFW_LOG_ERROR("[OpticsSystem] Failed to acquire write access to image storage");
-            SharedDataHub::instance().image_storage().deallocate(image_handle_);
-            image_handle_ = 0;
-            return false;
-        }
 
         hardware_->gbufferSize.x = 1920;
         hardware_->gbufferSize.y = 1080;
@@ -218,7 +209,7 @@ bool OpticsSystem::initialize_hardware_resources() {
         const auto w = hardware_->gbufferSize.x;
         const auto h = hardware_->gbufferSize.y;
 
-        // --- Visibility Buffer ---
+        // --- Visibility Buffer (逐相机共享的中间产物) ---
         hardware_->visibilityImage = HardwareImage(w, h, ImageFormat::RGBA32_UINT, ImageUsage::StorageImage);
         hardware_->depthImage = HardwareImage(w, h, ImageFormat::D32_FLOAT, ImageUsage::DepthImage);
 
@@ -239,7 +230,8 @@ bool OpticsSystem::initialize_hardware_resources() {
             BufferUsage::StorageBuffer);
         hardware_->actorPickBuffer = HardwareBuffer(sizeof(std::uint32_t), BufferUsage::StorageBuffer);
 
-        hardware_->finalOutputImage = HardwareImage(w, h, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
+        // finalOutputImage 不再在此创建：每个 surface 的最终输出由
+        // acquire_surface_target() 按需创建（改造1: per-surface 输出）。
     } catch (const std::exception&) {
         CFW_LOG_CRITICAL("OpticsSystem: Failed to initialize hardware resources");
         return false;
@@ -276,7 +268,7 @@ void OpticsSystem::ensure_camera_render_resources(uint32_t width, uint32_t heigh
     height = std::max(height, 1u);
 
     if (hardware_->gbufferSize.x == width && hardware_->gbufferSize.y == height &&
-        hardware_->visibilityImage && hardware_->depthImage && hardware_->finalOutputImage) {
+        hardware_->visibilityImage && hardware_->depthImage) {
         return;
     }
 
@@ -286,10 +278,59 @@ void OpticsSystem::ensure_camera_render_resources(uint32_t width, uint32_t heigh
                                                ImageUsage::StorageImage);
     hardware_->depthImage = HardwareImage(width, height, ImageFormat::D32_FLOAT,
                                           ImageUsage::DepthImage);
-    hardware_->finalOutputImage = HardwareImage(width, height, ImageFormat::RGBA16_FLOAT,
-                                                ImageUsage::StorageImage);
 
-    CFW_LOG_INFO("OpticsSystem: Render targets resized to camera resolution {}x{}", width, height);
+    CFW_LOG_INFO("OpticsSystem: Shared visibility/depth resized to camera resolution {}x{}",
+                 width, height);
+}
+
+OpticsSystem::SurfaceRenderTarget& OpticsSystem::acquire_surface_target(void* surface,
+                                                                        uint32_t width,
+                                                                        uint32_t height,
+                                                                        uint64_t frame_index) {
+    width = std::max(width, 1u);
+    height = std::max(height, 1u);
+
+    auto& target = surface_targets_[surface];
+
+    // 首次出现该 surface：分配独立的 image_storage 句柄。
+    if (target.image_handle == 0) {
+        target.image_handle = SharedDataHub::instance().image_storage().allocate();
+        // 触碰一次写句柄以保活存储项；逐帧的 image/executor 在渲染提交后更新。
+        if (auto accessor =
+                SharedDataHub::instance().image_storage().acquire_write(target.image_handle)) {
+            // keep-alive only
+        }
+    }
+
+    // 分辨率变化或首次：创建/重建该 surface 的最终输出图。
+    if (!target.final_output || target.width != width || target.height != height) {
+        target.final_output =
+            HardwareImage(width, height, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
+        target.width = width;
+        target.height = height;
+    }
+
+    target.last_used_frame = frame_index;
+    return target;
+}
+
+void OpticsSystem::evict_idle_surface_targets(uint64_t frame_index) {
+    for (auto it = surface_targets_.begin(); it != surface_targets_.end();) {
+        const auto& target = it->second;
+        const bool idle =
+            frame_index > target.last_used_frame &&
+            (frame_index - target.last_used_frame) > kSurfaceTargetIdleEvictFrames;
+        if (idle) {
+            if (target.image_handle != 0) {
+                SharedDataHub::instance().image_storage().deallocate(target.image_handle);
+            }
+            CFW_LOG_INFO("OpticsSystem: Evicted idle surface target {} (idle {} frames)",
+                         it->first, frame_index - target.last_used_frame);
+            it = surface_targets_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 bool OpticsSystem::initialize(Kernel::ISystemContext* ctx) {
@@ -419,8 +460,16 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
 
         for (auto cam_handle : scene.camera_handles) {
             if (auto camera = SharedDataHub::instance().camera_storage().try_acquire_read(cam_handle)) {
-                if (image_handle_ != 0) {
-                    if (auto consumed_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
+                void* surface = camera->surface;
+                const bool is_offscreen = (surface == nullptr);
+
+                // 显示相机：在覆写其 surface 专属输出前，等待上一帧合成器消费完成。
+                // 离屏相机不发布、无 consumed_executor，故无需等待。
+                if (!is_offscreen) {
+                    auto& target = acquire_surface_target(surface, camera->width,
+                                                          camera->height, frame_index);
+                    if (auto consumed_device =
+                            SharedDataHub::instance().image_storage().acquire_write(target.image_handle)) {
                         hardware_->executor.wait(consumed_device->consumed_executor);
                     }
                 }
@@ -614,8 +663,8 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                 const uint32_t depthDescriptor = visibility.getDepthImage().storeDescriptor();
 
                 // Offscreen cameras (no surface) render to a dedicated image so
-                // they never overwrite the display pipeline's finalOutputImage.
-                const bool is_offscreen = (camera->surface == nullptr);
+                // they never collide with the display pipeline's per-surface output.
+                // Display cameras render into their own surface target (改造1).
                 if (is_offscreen) {
                     if (!offscreen_image_ ||
                         offscreen_w_ != hardware_->gbufferSize.x ||
@@ -627,9 +676,9 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                         offscreen_h_ = hardware_->gbufferSize.y;
                     }
                 }
-                HardwareImage& render_target = is_offscreen
-                                                   ? offscreen_image_
-                                                   : hardware_->finalOutputImage;
+                HardwareImage& render_target =
+                    is_offscreen ? offscreen_image_
+                                 : surface_targets_[surface].final_output;
                 const uint32_t finalOutputDescriptor = render_target.storeDescriptor();
 
                 // ================================================================
@@ -759,22 +808,23 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                     complete_actor_pick(*actor_pick_request);
                 }
 
-                if (image_handle_ != 0) {
-                    process_pending_screenshots(cam_handle, render_target);
+                // 截图对任意相机（显示/离屏）都适用，从其 render_target 读取。
+                process_pending_screenshots(cam_handle, render_target);
 
-                    if (camera->surface != nullptr) {
-                        if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
-                            image_device->image = hardware_->finalOutputImage;
-                            image_device->executor = hardware_->executor;
-                        }
+                // 显示相机把自己 surface 的输出发布给 DisplaySystem（按 surface 区分）。
+                if (!is_offscreen) {
+                    auto& target = surface_targets_[surface];
+                    if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(target.image_handle)) {
+                        image_device->image = target.final_output;
+                        image_device->executor = hardware_->executor;
+                    }
 
-                        if (auto* event_bus = context()->event_bus()) {
-                            event_bus->publish<Events::OpticsFrameReadyEvent>({camera->surface,
-                                                                               image_handle_,
-                                                                               frame_index,
-                                                                               hardware_->gbufferSize.x,
-                                                                               hardware_->gbufferSize.y});
-                        }
+                    if (auto* event_bus = context()->event_bus()) {
+                        event_bus->publish<Events::OpticsFrameReadyEvent>({surface,
+                                                                           target.image_handle,
+                                                                           frame_index,
+                                                                           hardware_->gbufferSize.x,
+                                                                           hardware_->gbufferSize.y});
                     }
                 }
 
@@ -784,6 +834,9 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
             }
         }
     }
+
+    // 回收长期空闲（相机解绑 / 视口关闭）的 surface 目标，约束动态开关下的显存占用。
+    evict_idle_surface_targets(frame_index);
 }
 
 namespace {
@@ -951,10 +1004,13 @@ void OpticsSystem::shutdown() {
         }
     }
 
-    if (image_handle_ != 0) {
-        SharedDataHub::instance().image_storage().deallocate(image_handle_);
-        image_handle_ = 0;
+    // 释放所有 per-surface 渲染目标的存储句柄与 GPU 图（改造1）。
+    for (auto& [surface, target] : surface_targets_) {
+        if (target.image_handle != 0) {
+            SharedDataHub::instance().image_storage().deallocate(target.image_handle);
+        }
     }
+    surface_targets_.clear();
 
     offscreen_image_ = HardwareImage();
 #ifdef CORONA_ENABLE_VISION
@@ -1413,21 +1469,38 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                     break;
                 }
 
-                if (image_handle_ != 0) {
-                    if (auto consumed_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
-                        hardware_->executor.wait(consumed_device->consumed_executor);
-                    }
-                }
+                void* surface = camera->surface;
+                const bool is_offscreen = (surface == nullptr);
+
                 ensure_camera_render_resources(w, h);
 
-                // Resolve: imported linear float4 -> exposure+ACES -> finalOutputImage.
+                // 选定该相机的最终输出：显示相机用其 surface 专属目标，离屏用共享离屏图。
+                HardwareImage* resolve_target = nullptr;
+                if (!is_offscreen) {
+                    auto& target = acquire_surface_target(surface, w, h, frame_index);
+                    if (auto consumed_device =
+                            SharedDataHub::instance().image_storage().acquire_write(target.image_handle)) {
+                        hardware_->executor.wait(consumed_device->consumed_executor);
+                    }
+                    resolve_target = &target.final_output;
+                } else {
+                    if (!offscreen_image_ || offscreen_w_ != w || offscreen_h_ != h) {
+                        offscreen_image_ = HardwareImage(w, h, ImageFormat::RGBA16_FLOAT,
+                                                         ImageUsage::StorageImage);
+                        offscreen_w_ = w;
+                        offscreen_h_ = h;
+                    }
+                    resolve_target = &offscreen_image_;
+                }
+
+                // Resolve: imported linear float4 -> exposure+ACES -> resolve_target.
                 {
                     auto& visionResolve = *hardware_->visionResolvePipeline;
                     visionResolve.pushConsts.gbufferSize = hardware_->gbufferSize;
                     visionResolve.pushConsts.srcBufferIndex =
                         vision_zero_copy_bridge_->imported().storeDescriptor();
                     visionResolve.pushConsts.outputImage =
-                        hardware_->finalOutputImage.storeDescriptor();
+                        resolve_target->storeDescriptor();
                     visionResolve.pushConsts.exposure = 1.0f;  // Vision FrameBuffer default
 
                     const uint32_t dispatchX = (w + 7u) / 8u;
@@ -1442,20 +1515,19 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 last_vision_frame_width_ = w;
                 last_vision_frame_height_ = h;
 
-                if (image_handle_ != 0) {
-                    if (camera->surface != nullptr) {
-                        if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
-                            image_device->image = hardware_->finalOutputImage;
-                            image_device->executor = hardware_->executor;
-                        }
+                if (!is_offscreen) {
+                    auto& target = surface_targets_[surface];
+                    if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(target.image_handle)) {
+                        image_device->image = target.final_output;
+                        image_device->executor = hardware_->executor;
+                    }
 
-                        if (auto* event_bus = context()->event_bus()) {
-                            event_bus->publish<Events::OpticsFrameReadyEvent>({camera->surface,
-                                                                               image_handle_,
-                                                                               frame_index,
-                                                                               w,
-                                                                               h});
-                        }
+                    if (auto* event_bus = context()->event_bus()) {
+                        event_bus->publish<Events::OpticsFrameReadyEvent>({surface,
+                                                                           target.image_handle,
+                                                                           frame_index,
+                                                                           w,
+                                                                           h});
                     }
                 }
 

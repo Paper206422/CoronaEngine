@@ -12,6 +12,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // 前向声明 Hardware 结构体
@@ -85,7 +86,6 @@ class OpticsSystem : public Kernel::SystemBase {
     void ensure_camera_render_resources(uint32_t width, uint32_t height);
     void optics_pipeline(float frame_count, uint64_t frame_index);
     void process_pending_screenshots(std::uintptr_t camera_handle, HardwareImage& render_target);
-
 #ifdef CORONA_ENABLE_VISION
     // Vision 相关私有方法（在 CORONA_ENABLE_VISION 宏保护下实现）
     bool init_vision_lazy();  ///< 首次切换到 Vision 时的 lazy 初始化
@@ -113,10 +113,39 @@ class OpticsSystem : public Kernel::SystemBase {
     std::optional<ActorPickRequest> take_pending_actor_pick(std::uintptr_t camera_handle);
     void complete_actor_pick(const ActorPickRequest& request);
 
-    std::unique_ptr<Hardware> hardware_;
-    std::uintptr_t image_handle_{};
-    HardwareImage offscreen_image_;  ///< Dedicated render target for offscreen cameras (no surface)
+    // ========================================================================
+    // Per-surface render output (改造1: optics 输出 per-surface 化)
+    // ========================================================================
+    // 每个被绑定到某个 surface 的相机拥有独立的最终输出图与共享存储句柄，
+    // 这样逐相机遍历时不再互相覆盖；DisplaySystem 也已按 surface 独立合成。
+    // visibility/depth 仍是逐相机的中间产物，继续由 hardware_ 共享。
+    struct SurfaceRenderTarget {
+        HardwareImage final_output;        ///< 该 surface 专属的 RGBA16F 最终输出
+        std::uintptr_t image_handle = 0;   ///< 该 surface 专属的 image_storage 句柄
+        uint32_t width = 0;                ///< 该输出图当前分辨率
+        uint32_t height = 0;
+        uint64_t last_used_frame = 0;      ///< 最近一次被渲染的帧号，用于空闲回收
+    };
+
+    /// 取得（必要时创建/扩缩）给定 surface 的渲染目标，并刷新 last_used_frame。
+    /// width/height 为本次相机分辨率；surface 不可为 nullptr。
+    SurfaceRenderTarget& acquire_surface_target(void* surface, uint32_t width,
+                                                uint32_t height, uint64_t frame_index);
+
+    /// 回收连续多帧未被任何相机使用的 surface 目标（释放 GPU 图与存储句柄），
+    /// 应对“任意多个、自由开关”的视口生命周期，避免长期累积泄漏。
+    void evict_idle_surface_targets(uint64_t frame_index);
+
+    std::unordered_map<void*, SurfaceRenderTarget> surface_targets_;
+    /// 空闲多少帧后回收一个 surface 目标（约 2s @120fps）。
+    static constexpr uint64_t kSurfaceTargetIdleEvictFrames = 240;
+
+    // 无 surface 的离屏相机（仅截图，不显示）继续共用一张离屏图：截图在渲染后
+    // 同步处理，逐相机串行，无需 per-surface。
+    HardwareImage offscreen_image_;
     uint32_t offscreen_w_{0}, offscreen_h_{0};
+
+    std::unique_ptr<Hardware> hardware_;
 
     // Vision 后端状态
 #ifdef CORONA_ENABLE_VISION
