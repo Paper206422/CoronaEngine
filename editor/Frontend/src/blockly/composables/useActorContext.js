@@ -10,12 +10,16 @@ import { ref } from 'vue';
 
 const STORAGE_KEY_SCENE = '__bl_actor_ctx_scene__';
 const STORAGE_KEY_ACTOR = '__bl_actor_ctx_actor__';
+const STORAGE_KEY_TARGET_TYPE = '__bl_target_type__';
 
 /** 当前选中的场景名称 */
 export const currentSceneName = ref(localStorage.getItem(STORAGE_KEY_SCENE) || '');
 
 /** 当前选中的 Actor 名称 */
 export const currentActorName = ref(localStorage.getItem(STORAGE_KEY_ACTOR) || '');
+
+/** 当前积木目标类型：actor | project */
+export const currentTargetType = ref(localStorage.getItem(STORAGE_KEY_TARGET_TYPE) || 'actor');
 
 /**
  * 设置当前目标 Actor。
@@ -24,18 +28,34 @@ export const currentActorName = ref(localStorage.getItem(STORAGE_KEY_ACTOR) || '
 export function setActorContext(sceneName, actorName) {
   const s = sceneName || '';
   const a = actorName || '';
+  currentTargetType.value = 'actor';
   currentSceneName.value = s;
   currentActorName.value = a;
+  localStorage.setItem(STORAGE_KEY_TARGET_TYPE, 'actor');
   localStorage.setItem(STORAGE_KEY_SCENE, s);
   localStorage.setItem(STORAGE_KEY_ACTOR, a);
+}
+
+/**
+ * 切换到项目级全局积木目标。
+ */
+export function setProjectGlobalContext() {
+  currentTargetType.value = 'project';
+  currentSceneName.value = '';
+  currentActorName.value = '';
+  localStorage.setItem(STORAGE_KEY_TARGET_TYPE, 'project');
+  localStorage.removeItem(STORAGE_KEY_SCENE);
+  localStorage.removeItem(STORAGE_KEY_ACTOR);
 }
 
 /**
  * 清除 Actor 上下文。
  */
 export function clearActorContext() {
+  currentTargetType.value = 'actor';
   currentSceneName.value = '';
   currentActorName.value = '';
+  localStorage.setItem(STORAGE_KEY_TARGET_TYPE, 'actor');
   localStorage.removeItem(STORAGE_KEY_SCENE);
   localStorage.removeItem(STORAGE_KEY_ACTOR);
 }
@@ -45,6 +65,7 @@ export function clearActorContext() {
  * 用于 BlocklyWorkspace 等跨标签页实例在挂载或运行前拉取最新状态。
  */
 export function syncActorContextFromStorage() {
+  currentTargetType.value = localStorage.getItem(STORAGE_KEY_TARGET_TYPE) || 'actor';
   currentSceneName.value = localStorage.getItem(STORAGE_KEY_SCENE) || '';
   currentActorName.value = localStorage.getItem(STORAGE_KEY_ACTOR) || '';
 }
@@ -59,4 +80,17 @@ export function getActorContext() {
   const actor =
     currentActorName.value || localStorage.getItem(STORAGE_KEY_ACTOR) || '';
   return { scene, actor };
+}
+
+/**
+ * 获取当前积木目标。项目全局目标不携带 scene/actor。
+ */
+export function getBlockTargetContext() {
+  const targetType =
+    currentTargetType.value || localStorage.getItem(STORAGE_KEY_TARGET_TYPE) || 'actor';
+  if (targetType === 'project') {
+    return { targetType: 'project', scene: '', actor: '' };
+  }
+  const { scene, actor } = getActorContext();
+  return { targetType: 'actor', scene, actor };
 }

@@ -258,6 +258,34 @@
           </div>
         </div>
       </div>
+
+      <div class="ml-auto flex items-center gap-2">
+        <button
+          class="px-2.5 py-1 rounded border transition-colors duration-200 whitespace-nowrap"
+          :class="previewRunning || previewBusy
+            ? 'border-gray-600 text-gray-500 bg-[#252525] cursor-not-allowed'
+            : 'border-green-500/50 text-green-200 bg-green-700/20 hover:bg-green-600/30'"
+          :disabled="previewRunning || previewBusy"
+          title="开始项目预览"
+          @click="handleStartGamePreview"
+        >
+          开始预览
+        </button>
+        <button
+          class="px-2.5 py-1 rounded border transition-colors duration-200 whitespace-nowrap"
+          :class="!previewRunning || previewBusy
+            ? 'border-gray-600 text-gray-500 bg-[#252525] cursor-not-allowed'
+            : 'border-red-500/50 text-red-200 bg-red-700/20 hover:bg-red-600/30'"
+          :disabled="!previewRunning || previewBusy"
+          title="结束项目预览"
+          @click="handleStopGamePreview"
+        >
+          结束预览
+        </button>
+        <span v-if="previewStatusText" class="text-xs text-[#b8c7b0] whitespace-nowrap">
+          {{ previewStatusText }}
+        </span>
+      </div>
     </div>
 
     <!-- 场景栏 -->
@@ -441,7 +469,7 @@
 import { computed, ref, onMounted, onUnmounted, reactive, watch, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
 import { DEFAULT_SCENE_NAME } from '@/utils/constants.js';
-import { Bridge, appService, sceneService, projectService } from '@/utils/bridge.js';
+import { Bridge, appService, sceneService, projectService, scriptingService } from '@/utils/bridge.js';
 import { useErrorHandler } from '@/composables/useErrorHandler.js';
 import { useDockStore } from '@/stores/dockStore.js';
 import { PLUGIN_MANIFEST } from '@/config/pluginManifest.js';
@@ -523,6 +551,10 @@ const inputState = reactive({
 
 // 新增：菜单状态
 const activeMenu = ref(null);
+const previewRunning = ref(false);
+const previewBusy = ref(false);
+const previewStatusText = ref('');
+let previewPollTimer = null;
 
 // 物理参数状态
 const physicsParams = ref({
@@ -1308,6 +1340,108 @@ const toggleViewTool = (tool) => {
   dockStore.togglePanel(tool.id);
 };
 
+const unwrapBridgeData = (result) => result?.data ?? result;
+
+const clearPreviewPoll = () => {
+  if (previewPollTimer) {
+    clearTimeout(previewPollTimer);
+    previewPollTimer = null;
+  }
+};
+
+const pollGamePreviewStatus = () => {
+  clearPreviewPoll();
+  const poll = async () => {
+    try {
+      const result = await scriptingService.getGamePreviewStatus();
+      const status = unwrapBridgeData(result);
+      const state = status?.status || 'idle';
+      const count = status?.running_count || 0;
+      const hasSnapshot = !!status?.has_snapshot;
+      previewRunning.value = state === 'running' || state === 'stopping' || count > 0 || hasSnapshot;
+      previewStatusText.value = previewRunning.value
+        ? (count > 0 ? `预览中 ${count}` : '预览已停止，等待恢复')
+        : state === 'error'
+          ? '预览出错'
+          : '';
+      if (previewRunning.value) {
+        previewPollTimer = setTimeout(poll, 1000);
+      }
+    } catch (error) {
+      previewRunning.value = false;
+      previewStatusText.value = '预览状态异常';
+      logError('查询预览状态失败', error);
+    }
+  };
+  previewPollTimer = setTimeout(poll, 800);
+};
+
+const handleStartGamePreview = async () => {
+  if (previewRunning.value || previewBusy.value) return;
+  previewBusy.value = true;
+  previewStatusText.value = '准备预览...';
+  try {
+    if (typeof window.__coronaBlocklyFlushSave === 'function') {
+      await window.__coronaBlocklyFlushSave();
+    }
+    const result = await scriptingService.startGamePreview({ scope: 'project' });
+    const payload = unwrapBridgeData(result);
+    if (payload?.status === 'error') {
+      previewRunning.value = false;
+      previewStatusText.value = '预览启动失败';
+      logError('开始预览失败', payload.message);
+      return;
+    }
+    previewRunning.value = payload?.status === 'running' || (payload?.started_count || 0) > 0;
+    previewStatusText.value = previewRunning.value
+      ? `预览中 ${payload?.started_count || 0}`
+      : '没有可运行积木';
+    if (previewRunning.value) pollGamePreviewStatus();
+  } catch (error) {
+    previewRunning.value = false;
+    previewStatusText.value = '预览启动失败';
+    logError('开始预览失败', error);
+  } finally {
+    previewBusy.value = false;
+    activeMenu.value = null;
+  }
+};
+
+const handleStopGamePreview = async () => {
+  if (!previewRunning.value || previewBusy.value) return;
+  previewBusy.value = true;
+  previewStatusText.value = '正在恢复预览前参数...';
+  let keepPreviewActive = false;
+  try {
+    const result = await scriptingService.stopGamePreview();
+    const payload = unwrapBridgeData(result);
+    if (payload?.restore_error) {
+      keepPreviewActive = true;
+      previewStatusText.value = '预览恢复失败';
+      logError('结束预览恢复失败', payload.restore_error);
+      return;
+    }
+    if (payload?.restored) {
+      previewStatusText.value = '已恢复预览前参数';
+      setTimeout(() => {
+        if (!previewRunning.value && !previewBusy.value && previewStatusText.value === '已恢复预览前参数') {
+          previewStatusText.value = '';
+        }
+      }, 2000);
+    } else {
+      previewStatusText.value = '';
+    }
+  } catch (error) {
+    previewStatusText.value = '结束预览失败';
+    logError('结束预览失败', error);
+  } finally {
+    clearPreviewPoll();
+    previewRunning.value = keepPreviewActive;
+    previewBusy.value = false;
+    activeMenu.value = null;
+  }
+};
+
 // 修改：运行菜单的处理函数
 const handleRunProject = async () => {
   try {
@@ -1501,6 +1635,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  clearPreviewPoll();
   stopStageHints();
   coronaEventBus.off('scene-add');
   coronaEventBus.off('scene-rename');

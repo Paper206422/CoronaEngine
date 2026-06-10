@@ -5,7 +5,7 @@ import os
 import shutil
 import threading
 from functools import wraps
-from typing import Callable, Dict
+from typing import Any, Callable, Dict, Tuple
 
 from utils.settings import version
 
@@ -196,7 +196,43 @@ def append_project_scene(ini_path: str, scene_route: str) -> None:
         set_project_scenes(ini_path, scenes)
 
 
-_save_timers: Dict[int, threading.Timer] = {}
+_save_timers: Dict[int, Tuple[threading.Timer, Any]] = {}
+_save_timers_lock = threading.RLock()
+
+
+def flush_pending_auto_saves() -> int:
+    """
+    同步执行所有仍在防抖队列中的 save_data。
+    用于预览快照前，确保磁盘状态已经追上内存状态。
+    """
+    with _save_timers_lock:
+        pending = list(_save_timers.items())
+        _save_timers.clear()
+
+    flushed = 0
+    for _, (timer, target) in pending:
+        timer.cancel()
+        try:
+            if hasattr(target, 'save_data'):
+                target.save_data()
+                flushed += 1
+        except Exception:
+            logger.exception("flush pending auto-save failed")
+    return flushed
+
+
+def cancel_pending_auto_saves() -> int:
+    """
+    取消所有仍在防抖队列中的 save_data。
+    用于预览恢复前，避免运行时状态在恢复后再次写回磁盘。
+    """
+    with _save_timers_lock:
+        pending = list(_save_timers.values())
+        _save_timers.clear()
+
+    for timer, _ in pending:
+        timer.cancel()
+    return len(pending)
 
 
 def auto_save(func: Callable) -> Callable:
@@ -209,9 +245,10 @@ def auto_save(func: Callable) -> Callable:
         result = func(self, *args, **kwargs)
         if result is True and hasattr(self, 'save_data'):
             obj_key = id(self)
-            old = _save_timers.pop(obj_key, None)
+            with _save_timers_lock:
+                old = _save_timers.pop(obj_key, None)
             if old is not None:
-                old.cancel()
+                old[0].cancel()
 
             def _do_save():
                 try:
@@ -219,10 +256,14 @@ def auto_save(func: Callable) -> Callable:
                 except Exception:
                     pass
                 finally:
-                    _save_timers.pop(obj_key, None)
+                    with _save_timers_lock:
+                        current = _save_timers.get(obj_key)
+                        if current and current[0] is timer:
+                            _save_timers.pop(obj_key, None)
 
             timer = threading.Timer(0.5, _do_save)
-            _save_timers[obj_key] = timer
+            with _save_timers_lock:
+                _save_timers[obj_key] = (timer, self)
             timer.start()
         return result
     return wrapper
