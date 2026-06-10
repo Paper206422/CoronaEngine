@@ -19,6 +19,7 @@ Makefile
 .idea/
 .vs/
 .claude/
+codex.md
 
 # Tool caches
 **/.cache/
