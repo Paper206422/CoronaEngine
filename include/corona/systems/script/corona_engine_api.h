@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -80,6 +81,14 @@ class Mechanics {
     // 碰撞检测开关：false 时物体不参与碰撞检测（不与其他物体或地面碰撞）
     void set_collision_enabled(bool enabled);
     [[nodiscard]] bool get_collision_enabled() const;
+
+    // 轴锁定：锁定指定轴上的线性运动（平移）
+    void set_linear_lock(bool lock_x, bool lock_y, bool lock_z);
+    [[nodiscard]] std::tuple<bool, bool, bool> get_linear_lock() const;
+
+    // 轴锁定：锁定指定轴上的角度运动（旋转）
+    void set_angular_lock(bool lock_x, bool lock_y, bool lock_z);
+    [[nodiscard]] std::tuple<bool, bool, bool> get_angular_lock() const;
 
     // 设置碰撞回调（参数为对方 actor 句柄、began(true=enter,false=exit)、法线、碰撞点）
     void set_collision_callback(std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)> callback);

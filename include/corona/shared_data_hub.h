@@ -84,6 +84,10 @@ struct MechanicsDevice {
     // 力学碰撞检测开关：false 时完全禁用该物体的碰撞检测（物体不与其他物体或地面碰撞）
     bool bEnableCollision{true};
 
+    // 轴锁定位掩码：bit0=锁定X轴, bit1=锁定Y轴, bit2=锁定Z轴
+    uint8_t linear_lock_mask{0};   // 锁定线性运动（平移）的轴
+    uint8_t angular_lock_mask{0};  // 锁定角度运动（旋转）的轴
+
     // 碰撞回调函数
     std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)> collision_callback;
 

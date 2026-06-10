@@ -20,6 +20,26 @@ include(FetchContent)
 set(CORONA_RESOURCE_FFMPEG_ROOT "" CACHE PATH
     "Path to a prebuilt FFmpeg dev package (include/ + lib/ [+ bin/]). Leave empty to auto-fetch on Windows.")
 
+set(_CORONA_RESOURCE_FFMPEG_DEFAULT_DOWNLOAD_DIR "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/download")
+set(_CORONA_RESOURCE_FFMPEG_DEFAULT_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/src")
+
+set(CORONA_RESOURCE_FFMPEG_DOWNLOAD_DIR "${_CORONA_RESOURCE_FFMPEG_DEFAULT_DOWNLOAD_DIR}" CACHE PATH
+    "Directory used to cache the downloaded FFmpeg archive.")
+
+set(CORONA_RESOURCE_FFMPEG_SOURCE_DIR "${_CORONA_RESOURCE_FFMPEG_DEFAULT_SOURCE_DIR}" CACHE PATH
+    "Directory used to cache the extracted FFmpeg package.")
+
+set(_CORONA_RESOURCE_FFMPEG_LEGACY_DOWNLOAD_DIR "${PROJECT_SOURCE_DIR}/third_party/ffmpeg/download")
+set(_CORONA_RESOURCE_FFMPEG_LEGACY_SOURCE_DIR "${PROJECT_SOURCE_DIR}/third_party/ffmpeg/src")
+if(NOT _CORONA_RESOURCE_FFMPEG_LEGACY_SOURCE_DIR STREQUAL _CORONA_RESOURCE_FFMPEG_DEFAULT_SOURCE_DIR
+        AND CORONA_RESOURCE_FFMPEG_SOURCE_DIR STREQUAL _CORONA_RESOURCE_FFMPEG_LEGACY_SOURCE_DIR
+        AND EXISTS "${_CORONA_RESOURCE_FFMPEG_DEFAULT_SOURCE_DIR}")
+    set(CORONA_RESOURCE_FFMPEG_DOWNLOAD_DIR "${_CORONA_RESOURCE_FFMPEG_DEFAULT_DOWNLOAD_DIR}" CACHE PATH
+        "Directory used to cache the downloaded FFmpeg archive." FORCE)
+    set(CORONA_RESOURCE_FFMPEG_SOURCE_DIR "${_CORONA_RESOURCE_FFMPEG_DEFAULT_SOURCE_DIR}" CACHE PATH
+        "Directory used to cache the extracted FFmpeg package." FORCE)
+endif()
+
 # BtbN rolling LGPL shared build. Pin to a different asset/URL if reproducibility
 # across machines matters more than tracking upstream.
 set(CORONA_RESOURCE_FFMPEG_URL
@@ -38,25 +58,39 @@ if(CORONA_RESOURCE_FFMPEG_ROOT)
     set(_corona_ffmpeg_root "${CORONA_RESOURCE_FFMPEG_ROOT}")
     message(STATUS "[FFmpeg] Using user-provided root: ${_corona_ffmpeg_root}")
 elseif(WIN32)
-    message(STATUS "[FFmpeg] Fetching prebuilt package: ${CORONA_RESOURCE_FFMPEG_URL}")
-    FetchContent_Declare(
-        ffmpeg_prebuilt
-        URL "${CORONA_RESOURCE_FFMPEG_URL}"
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-    FetchContent_MakeAvailable(ffmpeg_prebuilt)
+    file(GLOB_RECURSE _corona_ffmpeg_cached_avcodec_hdr
+        "${CORONA_RESOURCE_FFMPEG_SOURCE_DIR}/*/include/libavcodec/avcodec.h"
+        "${CORONA_RESOURCE_FFMPEG_SOURCE_DIR}/include/libavcodec/avcodec.h")
 
-    # BtbN archives wrap everything in a single top-level directory; locate the
-    # actual root by searching for a known header.
-    file(GLOB_RECURSE _corona_ffmpeg_avcodec_hdr
-        "${ffmpeg_prebuilt_SOURCE_DIR}/*/include/libavcodec/avcodec.h"
-        "${ffmpeg_prebuilt_SOURCE_DIR}/include/libavcodec/avcodec.h")
-    if(_corona_ffmpeg_avcodec_hdr)
-        list(GET _corona_ffmpeg_avcodec_hdr 0 _corona_ffmpeg_hdr)
-        # .../<root>/include/libavcodec/avcodec.h -> <root>
+    if(_corona_ffmpeg_cached_avcodec_hdr)
+        list(GET _corona_ffmpeg_cached_avcodec_hdr 0 _corona_ffmpeg_hdr)
         get_filename_component(_corona_ffmpeg_inc "${_corona_ffmpeg_hdr}" DIRECTORY)
         get_filename_component(_corona_ffmpeg_inc "${_corona_ffmpeg_inc}" DIRECTORY)
         get_filename_component(_corona_ffmpeg_root "${_corona_ffmpeg_inc}" DIRECTORY)
+        message(STATUS "[FFmpeg] Using cached prebuilt root: ${_corona_ffmpeg_root}")
+    else()
+        message(STATUS "[FFmpeg] Fetching prebuilt package: ${CORONA_RESOURCE_FFMPEG_URL}")
+        FetchContent_Declare(
+            ffmpeg_prebuilt
+            URL "${CORONA_RESOURCE_FFMPEG_URL}"
+            DOWNLOAD_DIR "${CORONA_RESOURCE_FFMPEG_DOWNLOAD_DIR}"
+            SOURCE_DIR "${CORONA_RESOURCE_FFMPEG_SOURCE_DIR}"
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        )
+        FetchContent_MakeAvailable(ffmpeg_prebuilt)
+
+        # BtbN archives wrap everything in a single top-level directory; locate the
+        # actual root by searching for a known header.
+        file(GLOB_RECURSE _corona_ffmpeg_avcodec_hdr
+            "${ffmpeg_prebuilt_SOURCE_DIR}/*/include/libavcodec/avcodec.h"
+            "${ffmpeg_prebuilt_SOURCE_DIR}/include/libavcodec/avcodec.h")
+        if(_corona_ffmpeg_avcodec_hdr)
+            list(GET _corona_ffmpeg_avcodec_hdr 0 _corona_ffmpeg_hdr)
+            # .../<root>/include/libavcodec/avcodec.h -> <root>
+            get_filename_component(_corona_ffmpeg_inc "${_corona_ffmpeg_hdr}" DIRECTORY)
+            get_filename_component(_corona_ffmpeg_inc "${_corona_ffmpeg_inc}" DIRECTORY)
+            get_filename_component(_corona_ffmpeg_root "${_corona_ffmpeg_inc}" DIRECTORY)
+        endif()
     endif()
     message(STATUS "[FFmpeg] Prebuilt root: ${_corona_ffmpeg_root}")
 endif()

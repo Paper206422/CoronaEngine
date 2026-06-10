@@ -121,31 +121,45 @@
 
 <script>
 // ============================================================
-// 模块级持久状态（组件挂载/卸载后保持）
-// 必须放在独立的 <script> 块中（非 setup），否则会被编译到 setup()
-// 函数作用域内，导致每次组件挂载都重新初始化
+// 模块级只保留跨组件注册表。每个 BlocklyWorkspace 的目标、计时器、
+// workspace 状态都必须留在组件实例内，避免多个详情窗口串台。
 // ============================================================
-
-/** 存储每个 actor 的工作区序列化状态 key: "scene_name/actor_name" → state JSON */
-const workspaceStates = new Map();
-
-/** localStorage 键前缀 */
-const LS_WS_PREFIX = '__bl_ws__';
-
-/** 当前已加载的 actor key */
-let loadedActorKey = '';
-
-/** 当前编辑的 Actor 名称（给积木定义 getter 用） */
-let currentActorNameVar = '';
-
-/** 脚本状态轮询定时器 */
-let pollTimer = null;
-
-/** 自动保存防抖定时器 */
-let autoSaveTimer = null;
 
 /** 自动保存间隔（毫秒） */
 const AUTO_SAVE_DELAY = 3000;
+
+const mountedBlocklyWorkspaces = new Set();
+
+function refreshBlocklyGlobalHooks() {
+  if (typeof window === 'undefined') return;
+
+  if (mountedBlocklyWorkspaces.size === 0) {
+    delete window.__coronaBlocklyFlushSave;
+    delete window.__coronaBlocklyReloadAll;
+    delete window.__coronaBlocklyClearCaches;
+    return;
+  }
+
+  window.__coronaBlocklyFlushSave = () => Promise.all(
+    Array.from(mountedBlocklyWorkspaces, (api) => api.flushSave())
+  );
+  window.__coronaBlocklyReloadAll = () => Promise.all(
+    Array.from(mountedBlocklyWorkspaces, (api) => api.reloadFromProject())
+  );
+  window.__coronaBlocklyClearCaches = () => {
+    mountedBlocklyWorkspaces.forEach((api) => api.clearCache());
+  };
+}
+
+function registerBlocklyWorkspace(api) {
+  mountedBlocklyWorkspaces.add(api);
+  refreshBlocklyGlobalHooks();
+}
+
+function unregisterBlocklyWorkspace(api) {
+  mountedBlocklyWorkspaces.delete(api);
+  refreshBlocklyGlobalHooks();
+}
 </script>
 
 <script setup>
@@ -161,7 +175,13 @@ import Search from './Search.vue';
 import Zoom from './Zoom.vue';
 import Trashcan from './Trashcan.vue';
 import { useStore } from '../store/store.js';
-import { currentSceneName, currentActorName, getActorContext, syncActorContextFromStorage } from '../composables/useActorContext.js';
+import {
+  currentSceneName,
+  currentActorName,
+  currentTargetType,
+  getBlockTargetContext,
+  syncActorContextFromStorage,
+} from '../composables/useActorContext.js';
 
 const props = defineProps({
   actorName: { type: String, default: '' },
@@ -199,7 +219,15 @@ let blocksRegistered = false;
 // 保存 store 引用，供 onUnmounted 清理共享状态
 let sharedStore = null;
 
+let loadedActorKey = '';
+let loadedTargetInfo = null;
+let currentActorNameVar = '';
+let pollTimer = null;
+let autoSaveTimer = null;
+let isLoadingWorkspace = false;
+let targetSwitchSeq = 0;
 let pythonGenerator = null;
+let latestBlocklySavePromise = Promise.resolve(true);
 
 // CEF 键盘事件转发：在 OSR 模式下 Blockly FieldTextInput 的 HTML widget
 // 无法接收原生键盘事件，需要在 document 层面拦截并手动转发
@@ -319,6 +347,27 @@ async function updateGeneratedCode() {
   }
 }
 
+function getCurrentTarget() {
+  if (props.embedded) {
+    return {
+      targetType: 'actor',
+      scene: props.sceneName || '',
+      actor: props.actorName || '',
+    };
+  }
+  return getBlockTargetContext();
+}
+
+function getTargetKey(target) {
+  if (target?.targetType === 'project') return 'project/global';
+  return target?.scene && target?.actor ? `${target.scene}/${target.actor}` : '';
+}
+
+function getTargetDisplayName(target) {
+  if (target?.targetType === 'project') return '项目全局积木';
+  return target?.actor ? `${target.actor} [${target.scene || ''}]` : '';
+}
+
 async function handleToggleRun() {
   if (codeRunning.value) {
     // 当前正在执行 → 停止
@@ -339,15 +388,10 @@ async function handleToggleRun() {
     return;
   }
 
-  // 嵌入模式用 props，独立模式用 useActorContext
-  let scene, actor;
-  if (props.embedded) {
-    scene = props.sceneName;
-    actor = props.actorName;
-  } else {
-    ({ scene, actor } = getActorContext());
-  }
-  if (!scene || !actor) {
+  flushAutoSave();
+
+  const target = getCurrentTarget();
+  if (target.targetType === 'actor' && (!target.scene || !target.actor)) {
     alert('请先在场景中选中一个物体，再点击运行。');
     return;
   }
@@ -357,8 +401,9 @@ async function handleToggleRun() {
     const result = await scriptingService.executePythonCode(
       code,
       0,
-      scene,
-      actor,
+      target.scene,
+      target.actor,
+      target.targetType,
     );
     const execResult = result?.data ?? result;
     if (execResult?.status === 'error') {
@@ -434,17 +479,34 @@ const createNewBroadcast = () => {
 // ============================================================
 // 按 Actor 管理工作区状态（Blockly 官方推荐模式）
 function saveCurrentWorkspace() {
-  if (!workspace || !BlocklyLib || !loadedActorKey) return;
+  if (isLoadingWorkspace || !workspace || !BlocklyLib || !loadedActorKey) {
+    latestBlocklySavePromise = Promise.resolve(false);
+    return latestBlocklySavePromise;
+  }
   try {
+    updateGeneratedCode();
     const state = BlocklyLib.serialization.workspaces.save(workspace);
-    workspaceStates.set(loadedActorKey, state);
-    try { localStorage.setItem(LS_WS_PREFIX + loadedActorKey, JSON.stringify(state)); } catch (_) {}
+    const target = loadedTargetInfo || getCurrentTarget();
+    latestBlocklySavePromise = scriptingService.saveBlocklyTarget({
+      target_type: target.targetType,
+      scene_name: target.scene,
+      actor_name: target.actor,
+      workspace: state,
+      code: generatedCode.value || '',
+      enabled: true,
+    }).catch((e) => {
+      console.warn('[Blockly] 保存项目积木镜像失败:', e);
+      return false;
+    });
     const now = new Date();
     const ts = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     autoSaveLabel.value = `已自动保存 ${ts}`;
+    return latestBlocklySavePromise;
   } catch (e) {
     logError('保存工作区状态失败', e);
     autoSaveLabel.value = '保存失败';
+    latestBlocklySavePromise = Promise.resolve(false);
+    return latestBlocklySavePromise;
   }
 }
 
@@ -462,8 +524,8 @@ function flushAutoSave() {
   if (autoSaveTimer) {
     clearTimeout(autoSaveTimer);
     autoSaveTimer = null;
-    saveCurrentWorkspace();
   }
+  return saveCurrentWorkspace();
 }
 
 /** 标记孤立积木：未连接事件积木(Hat)的块变灰 */
@@ -507,62 +569,104 @@ function markOrphanBlocks() {
 
 /** 工作区变更统一回调 */
 function onWorkspaceChange() {
+  if (isLoadingWorkspace) return;
   updateGeneratedCode();
   scheduleAutoSave();
   markOrphanBlocks();
   if (loadedActorKey) autoSaveLabel.value = '未保存的更改...';
 }
 
+async function loadWorkspaceStateFromProject(target) {
+  const result = await scriptingService.loadBlocklyTarget({
+    target_type: target.targetType,
+    scene_name: target.scene,
+    actor_name: target.actor,
+  });
+  const payload = result?.data ?? result;
+  if (payload?.status === 'error') {
+    throw new Error(payload.message || '加载积木失败');
+  }
+  return payload?.workspace && typeof payload.workspace === 'object'
+    ? payload.workspace
+    : {};
+}
+
+function hasSerializedWorkspaceContent(state) {
+  if (!state || typeof state !== 'object') return false;
+  if (Array.isArray(state.blocks?.blocks) && state.blocks.blocks.length > 0) return true;
+  if (Array.isArray(state.variables) && state.variables.length > 0) return true;
+  return Object.keys(state).length > 0 && JSON.stringify(state) !== '{}';
+}
+
+async function loadTargetWorkspace(target, { saveCurrent = true, force = false } = {}) {
+  if (!workspace || !BlocklyLib) return;
+
+  const normalized = target || { targetType: 'actor', scene: '', actor: '' };
+  const newKey = getTargetKey(normalized);
+  if (!force && newKey === loadedActorKey) return;
+  const seq = ++targetSwitchSeq;
+
+  if (saveCurrent && loadedActorKey) {
+    await flushAutoSave();
+  }
+
+  let nextState = {};
+  if (newKey) {
+    try {
+      nextState = await loadWorkspaceStateFromProject(normalized);
+    } catch (e) {
+      logError('加载目标积木失败', e);
+      autoSaveLabel.value = '加载失败';
+    }
+  }
+  if (seq !== targetSwitchSeq) return;
+
+  isLoadingWorkspace = true;
+  try {
+    workspace.clear();
+    if (hasSerializedWorkspaceContent(nextState)) {
+      BlocklyLib.serialization.workspaces.load(nextState, workspace);
+    }
+  } catch (e) {
+    logError('切换工作区失败', e);
+  } finally {
+    isLoadingWorkspace = false;
+  }
+
+  loadedActorKey = newKey;
+  loadedTargetInfo = normalized.targetType === 'project'
+    ? { targetType: 'project', scene: '', actor: '' }
+    : { targetType: 'actor', scene: normalized.scene || '', actor: normalized.actor || '' };
+  currentActorNameVar = loadedTargetInfo.actor || '';
+  editingTarget.value = getTargetDisplayName(loadedTargetInfo);
+  autoSaveLabel.value = newKey ? '已加载' : '';
+  updateGeneratedCode();
+  markOrphanBlocks();
+}
+
 /**
- * 切换到指定 Actor 的工作区状态
+ * 切换到指定积木目标的工作区状态
  * 参考 Blockly 官方序列化 API：
  *   - 保存当前状态 → 清空工作区 → 加载目标状态
  */
+function switchToTarget(target) {
+  return loadTargetWorkspace(target, { saveCurrent: true, force: false });
+}
+
+function reloadCurrentTargetFromProject() {
+  const target = loadedTargetInfo || getCurrentTarget();
+  return loadTargetWorkspace(target, { saveCurrent: false, force: true });
+}
+
+function clearWorkspaceCache() {
+  if (autoSaveTimer) {
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = null;
+  }
+}
+
 function switchToActor(sceneName, actorName) {
-  if (!workspace || !BlocklyLib) return;
-
-  const newKey = sceneName && actorName ? `${sceneName}/${actorName}` : '';
-  if (newKey === loadedActorKey) return;
-
-  // 1. 保存当前工作区（立即刷新防抖）
-  flushAutoSave();
-
-  // 2. 清空工作区（保留变量等全局数据）
-  try {
-    workspace.clear();
-  } catch (e) {
-    logError('清空工作区失败', e);
-  }
-
-  // 3. 加载目标 Actor 的工作区状态
-  loadedActorKey = newKey;
-  currentActorNameVar = actorName || '';
-
-  if (newKey) {
-    // 优先内存，兜底从 localStorage 恢复
-    let state = workspaceStates.get(newKey);
-    if (!state) {
-      try {
-        const raw = localStorage.getItem(LS_WS_PREFIX + newKey);
-        if (raw) { state = JSON.parse(raw); workspaceStates.set(newKey, state); }
-      } catch (_) {}
-    }
-    if (state) {
-      try {
-        BlocklyLib.serialization.workspaces.load(state, workspace);
-      } catch (e) {
-        logError('加载工作区状态失败', e);
-      }
-    }
-  }
-
-  // 4. 更新标题
-  editingTarget.value = actorName
-    ? `${actorName} [${sceneName || ''}]`
-    : '';
-
-  // 5. 刷新代码预览
-  updateGeneratedCode();
+  return switchToTarget({ targetType: 'actor', scene: sceneName, actor: actorName });
 }
 
 // 嵌入模式监听 props，独立模式监听全局选中
@@ -573,8 +677,8 @@ if (props.embedded) {
   );
 } else {
   watch(
-    [currentSceneName, currentActorName],
-    ([scene, actor]) => { switchToActor(scene, actor); },
+    [currentTargetType, currentSceneName, currentActorName],
+    () => { switchToTarget(getBlockTargetContext()); },
     { immediate: false },
   );
 }
@@ -834,10 +938,11 @@ function showToast(message, type = 'info') {
 
 /** 生成导出文件名（包含 Actor 和场景信息） */
 function getExportFilename() {
-  const { scene, actor } = getActorContext();
-  const scenePart = scene || 'unknown';
-  const actorPart = actor || 'unknown';
+  const target = loadedTargetInfo || getCurrentTarget();
   const ts = new Date().toISOString().slice(0, 10);
+  if (target.targetType === 'project') return `project_global_${ts}.blockly`;
+  const scenePart = target.scene || 'unknown';
+  const actorPart = target.actor || 'unknown';
   return `${actorPart}_${scenePart}_${ts}.blockly`;
 }
 
@@ -1125,35 +1230,30 @@ function handleNewCanvas() {
   flushAutoSave();
 
   // 2. 清除当前 Actor 的持久化状态
-  if (loadedActorKey) {
-    workspaceStates.delete(loadedActorKey);
-    try { localStorage.removeItem(LS_WS_PREFIX + loadedActorKey); } catch (_) {}
-  }
-
   // 3. 清空工作区
+  isLoadingWorkspace = true;
   try {
     workspace.clear();
   } catch (e) {
     logError('清空工作区失败', e);
+  } finally {
+    isLoadingWorkspace = false;
   }
 
   // 4. 立即保存空的 workspace 状态（覆盖旧状态）
-  try {
-    const emptyState = BlocklyLib.serialization.workspaces.save(workspace);
-    if (loadedActorKey) {
-      workspaceStates.set(loadedActorKey, emptyState);
-    }
-  } catch (e) {
-    logError('保存空状态失败', e);
-  }
-
-  // 5. 刷新代码预览
   updateGeneratedCode();
+  saveCurrentWorkspace();
 }
 
 const handleWindowResize = () => resizeBlockly();
 
 let resizeObserver = null;
+
+const blocklyWorkspaceApi = {
+  flushSave: () => flushAutoSave(),
+  reloadFromProject: () => reloadCurrentTargetFromProject(),
+  clearCache: () => clearWorkspaceCache(),
+};
 
 onMounted(async () => {
   window.addEventListener('resize', handleWindowResize);
@@ -1167,11 +1267,12 @@ onMounted(async () => {
   try {
     await initBlockly();
     if (props.embedded) {
-      switchToActor(props.sceneName, props.actorName);
+      await switchToActor(props.sceneName, props.actorName);
     } else {
       syncActorContextFromStorage();
-      switchToActor(currentSceneName.value, currentActorName.value);
+      await switchToTarget(getBlockTargetContext());
     }
+    registerBlocklyWorkspace(blocklyWorkspaceApi);
   } catch (err) {
     logError('初始化失败', err);
     const overlay = document.getElementById('status-overlay');
@@ -1194,6 +1295,7 @@ onUnmounted(() => {
   teardownScriptKeyForwarding();
   // 清理状态轮询
   clearPollTimer();
+  unregisterBlocklyWorkspace(blocklyWorkspaceApi);
   // 清理自动保存定时器
   if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
   // 清理提示定时器

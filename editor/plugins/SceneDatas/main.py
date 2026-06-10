@@ -75,6 +75,10 @@ class SceneDatas(PluginBase):
             actor.set_collision_enabled(str(vector[0]))
         elif operation == "SetPhysicsEnabled":
             actor.set_physics_enabled(bool(vector[0]))
+        elif operation == "SetLinearLock":
+            actor.set_linear_lock(bool(vector[0]), bool(vector[1]), bool(vector[2]))
+        elif operation == "SetAngularLock":
+            actor.set_angular_lock(bool(vector[0]), bool(vector[1]), bool(vector[2]))
         else:
             raise ValueError(f"Unsupported operation '{operation}'")
 

@@ -80,6 +80,34 @@ class Mechanics:
         except Exception as e:
             raise RuntimeError(f"Mechanics.get_collision_enabled 失败: {e}") from e
 
+    def set_linear_lock(self, lock_x: bool, lock_y: bool, lock_z: bool):
+        """设置线性运动轴锁定（平移锁定）"""
+        try:
+            self.engine_obj.set_linear_lock(lock_x, lock_y, lock_z)
+        except Exception as e:
+            raise RuntimeError(f"Mechanics.set_linear_lock 失败: {e}") from e
+
+    def get_linear_lock(self):
+        """获取线性运动轴锁定状态，返回 (lock_x, lock_y, lock_z)"""
+        try:
+            return self.engine_obj.get_linear_lock()
+        except Exception as e:
+            raise RuntimeError(f"Mechanics.get_linear_lock 失败: {e}") from e
+
+    def set_angular_lock(self, lock_x: bool, lock_y: bool, lock_z: bool):
+        """设置角度运动轴锁定（旋转锁定）"""
+        try:
+            self.engine_obj.set_angular_lock(lock_x, lock_y, lock_z)
+        except Exception as e:
+            raise RuntimeError(f"Mechanics.set_angular_lock 失败: {e}") from e
+
+    def get_angular_lock(self):
+        """获取角度运动轴锁定状态，返回 (lock_x, lock_y, lock_z)"""
+        try:
+            return self.engine_obj.get_angular_lock()
+        except Exception as e:
+            raise RuntimeError(f"Mechanics.get_angular_lock 失败: {e}") from e
+
     def set_collision_callback(self, callback):
         """
         设置碰撞回调
@@ -103,6 +131,10 @@ class Mechanics:
             result['restitution'] = self.get_restitution()
             result['damping'] = self.get_damping()
             result['physics_enabled'] = self.get_physics_enabled()
+            linear = self.get_linear_lock()
+            result['linear_lock'] = list(linear)
+            angular = self.get_angular_lock()
+            result['angular_lock'] = list(angular)
         except Exception:
             pass
         return result

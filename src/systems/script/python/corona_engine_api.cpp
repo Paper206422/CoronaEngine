@@ -1190,6 +1190,52 @@ bool Corona::API::Mechanics::get_collision_enabled() const {
     return true;
 }
 
+void Corona::API::Mechanics::set_linear_lock(bool lock_x, bool lock_y, bool lock_z) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Mechanics::set_linear_lock] Invalid mechanics handle");
+        return;
+    }
+    if (auto accessor = SharedDataHub::instance().mechanics_storage().acquire_write(handle_)) {
+        uint8_t mask = 0;
+        if (lock_x) mask |= 0b001;
+        if (lock_y) mask |= 0b010;
+        if (lock_z) mask |= 0b100;
+        accessor->linear_lock_mask = mask;
+    }
+}
+
+std::tuple<bool, bool, bool> Corona::API::Mechanics::get_linear_lock() const {
+    if (handle_ == 0) return {false, false, false};
+    if (auto accessor = SharedDataHub::instance().mechanics_storage().try_acquire_read(handle_)) {
+        uint8_t mask = accessor->linear_lock_mask;
+        return {(mask & 0b001) != 0, (mask & 0b010) != 0, (mask & 0b100) != 0};
+    }
+    return {false, false, false};
+}
+
+void Corona::API::Mechanics::set_angular_lock(bool lock_x, bool lock_y, bool lock_z) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Mechanics::set_angular_lock] Invalid mechanics handle");
+        return;
+    }
+    if (auto accessor = SharedDataHub::instance().mechanics_storage().acquire_write(handle_)) {
+        uint8_t mask = 0;
+        if (lock_x) mask |= 0b001;
+        if (lock_y) mask |= 0b010;
+        if (lock_z) mask |= 0b100;
+        accessor->angular_lock_mask = mask;
+    }
+}
+
+std::tuple<bool, bool, bool> Corona::API::Mechanics::get_angular_lock() const {
+    if (handle_ == 0) return {false, false, false};
+    if (auto accessor = SharedDataHub::instance().mechanics_storage().try_acquire_read(handle_)) {
+        uint8_t mask = accessor->angular_lock_mask;
+        return {(mask & 0b001) != 0, (mask & 0b010) != 0, (mask & 0b100) != 0};
+    }
+    return {false, false, false};
+}
+
 void Corona::API::Mechanics::set_collision_callback(
     std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)> callback) {
     if (handle_ == 0) {

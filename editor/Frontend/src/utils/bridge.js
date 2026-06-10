@@ -231,13 +231,29 @@ export const scriptingService = {
    * @param {string} sceneName - 目标场景名称（可选）
    * @param {string} actorName - 目标 Actor 名称（可选）
    */
-  executePythonCode: (code, mode, sceneName, actorName) =>
+  executePythonCode: (code, mode, sceneName, actorName, targetType = 'actor') =>
     Bridge.callCEF('ScratchTool', 'execute_python_code', [
       code,
       mode ?? 0,
       sceneName ?? '',
       actorName ?? '',
+      targetType || 'actor',
     ]),
+
+  saveBlocklyTarget: (payload) =>
+    Bridge.callCEF('ScratchTool', 'save_blockly_target', [payload || {}]),
+
+  loadBlocklyTarget: (payload) =>
+    Bridge.callCEF('ScratchTool', 'load_blockly_target', [payload || {}]),
+
+  startGamePreview: (payload = { scope: 'project' }) =>
+    Bridge.callCEF('ScratchTool', 'start_game_preview', [payload]),
+
+  stopGamePreview: () =>
+    Bridge.callCEF('ScratchTool', 'stop_game_preview', []),
+
+  getGamePreviewStatus: () =>
+    Bridge.callCEF('ScratchTool', 'get_game_preview_status', []),
 
   /**
    * 停止当前正在执行的脚本

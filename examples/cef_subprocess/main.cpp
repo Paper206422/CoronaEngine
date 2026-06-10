@@ -96,10 +96,10 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
                 return true;
             }
 
-            // ── setProperty: 属性编辑快速通道 (Mass/Restitution/Damping/Visible/Collision/Physics) ──
+            // ── setProperty: 属性编辑快速通道 ──
             if (name == "setProperty") {
                 // arguments: (actorHandle: number, propertyType: int, value: number)
-                // propertyType: 0=Mass, 1=Restitution, 2=Damping, 3=Visible, 4=CollisionEnabled, 5=PhysicsEnabled
+                // propertyType: 0=Mass, 1=Restitution, 2=Damping, 3=Visible, 4=CollisionEnabled, 5=PhysicsEnabled, 6=LinearLockMask, 7=AngularLockMask
                 if (arguments.size() < 3) {
                     exception = "setProperty(handle, propertyType, value) requires 3 arguments";
                     retval = CefV8Value::CreateBool(false);
