@@ -82,6 +82,16 @@ void BindAll(nanobind::module_& m) {
              "Enable or disable collision detection for this object")
         .def("get_collision_enabled", &Mechanics::get_collision_enabled,
              "Get whether collision detection is enabled for this object")
+        .def("set_linear_lock", &Mechanics::set_linear_lock,
+             nb::arg("lock_x"), nb::arg("lock_y"), nb::arg("lock_z"),
+             "Lock/unlock linear movement on X/Y/Z axes")
+        .def("get_linear_lock", &Mechanics::get_linear_lock,
+             "Get linear axis lock state as (lock_x, lock_y, lock_z) tuple")
+        .def("set_angular_lock", &Mechanics::set_angular_lock,
+             nb::arg("lock_x"), nb::arg("lock_y"), nb::arg("lock_z"),
+             "Lock/unlock angular rotation on X/Y/Z axes")
+        .def("get_angular_lock", &Mechanics::get_angular_lock,
+             "Get angular axis lock state as (lock_x, lock_y, lock_z) tuple")
         .def("set_collision_callback",
              [](Mechanics& self, nb::object callback) {
                  using CallbackType = std::function<void(std::uintptr_t, bool, const std::array<float, 3>&, const std::array<float, 3>&)>;

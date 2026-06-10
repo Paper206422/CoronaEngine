@@ -354,6 +354,20 @@ bool handle_property_fast(const CefRefPtr<CefProcessMessage>& message) {
                     }
                 }
                 break;
+            case 6:  // LinearLockMask (bit0=X, bit1=Y, bit2=Z)
+                if (profile->mechanics_handle != 0) {
+                    if (auto mech = hub.mechanics_storage().try_acquire_write(profile->mechanics_handle)) {
+                        mech->linear_lock_mask = static_cast<uint8_t>(value);
+                    }
+                }
+                break;
+            case 7:  // AngularLockMask (bit0=X, bit1=Y, bit2=Z)
+                if (profile->mechanics_handle != 0) {
+                    if (auto mech = hub.mechanics_storage().try_acquire_write(profile->mechanics_handle)) {
+                        mech->angular_lock_mask = static_cast<uint8_t>(value);
+                    }
+                }
+                break;
             default:
                 CFW_LOG_WARNING("PropertyFast: unknown propertyType {}", property_type);
                 break;

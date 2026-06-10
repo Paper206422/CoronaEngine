@@ -387,6 +387,11 @@ static std::unordered_map<std::uintptr_t, ktm::fvec3> g_handle_to_last_move_call
 // 移动回调最小位移阈值（单位：米/坐标单位）
 constexpr float kMoveCallbackMinDistance = 0.1f;
 
+// 轴锁定位掩码常量
+constexpr uint8_t kLockAxisX = 0b001;
+constexpr uint8_t kLockAxisY = 0b010;
+constexpr uint8_t kLockAxisZ = 0b100;
+
 // ========== 延迟回调队列（同步执行，避免跨线程竞争） ==========
 static std::vector<std::function<void()>> g_deferred_move_callbacks;
 
@@ -411,6 +416,10 @@ static std::unordered_map<std::uintptr_t, ktm::fvec3> g_handle_to_angular_vel;  
 static std::unordered_map<std::uintptr_t, ktm::fquat> g_handle_orientation_quat;  // 与欧拉同步的朝向
 static std::unordered_map<std::uintptr_t, bool> g_handle_to_sleeping;             // true 则本帧不积分
 static std::unordered_map<std::uintptr_t, float> g_handle_to_sleep_timer;         // 低速累计时长
+
+// 轴锁定缓存（每帧从 MechanicsDevice 刷新）
+static std::unordered_map<std::uintptr_t, uint8_t> g_handle_to_linear_lock;   // 线性轴锁定位掩码
+static std::unordered_map<std::uintptr_t, uint8_t> g_handle_to_angular_lock;  // 角度轴锁定位掩码
 
 // ============================================================================
 // 碰撞网格（基于最低级 LOD 的三角形碰撞检测）
@@ -838,6 +847,8 @@ void MechanicsSystem::shutdown() {
     g_handle_orientation_quat.clear();
     g_handle_to_sleeping.clear();
     g_handle_to_sleep_timer.clear();
+    g_handle_to_linear_lock.clear();
+    g_handle_to_angular_lock.clear();
     g_handle_to_last_move_callback_time.clear();
     g_handle_to_last_move_callback_pos.clear();
     g_global_simulation_time = 0.0f;
@@ -940,11 +951,15 @@ void MechanicsSystem::update_physics() {
                                 handle_to_damping[h] = m_acc->damping;
                                 handle_to_restitution[h] = m_acc->restitution;
                                 handle_to_collision_enabled[h] = m_acc->bEnableCollision;  // 缓存碰撞开关
+                                g_handle_to_linear_lock[h] = m_acc->linear_lock_mask;    // 缓存线性轴锁
+                                g_handle_to_angular_lock[h] = m_acc->angular_lock_mask;  // 缓存角度轴锁
                             } else {
                                 handle_to_mass[h] = 1.0f;
                                 handle_to_damping[h] = 0.99f;
                                 handle_to_restitution[h] = 0.8f;
                                 handle_to_collision_enabled[h] = true;  // 读失败时默认开启碰撞
+                                g_handle_to_linear_lock[h] = 0;         // 读失败时默认不锁任何轴
+                                g_handle_to_angular_lock[h] = 0;
                             }
 
                             mechanics_handles.push_back(h);
@@ -1007,6 +1022,20 @@ void MechanicsSystem::update_physics() {
         av.z *= effective_rot_damping;
     }
 
+    // --- 阶段 2b：轴锁定强制执行 — 将已锁轴的速度/角速度分量清零 ---
+    for (std::uintptr_t h : mechanics_handles) {
+        if (g_handle_to_sleeping[h]) continue;
+        uint8_t lin_lock = g_handle_to_linear_lock[h];
+        if (lin_lock & kLockAxisX) g_handle_to_velocity[h].x = 0.0f;
+        if (lin_lock & kLockAxisY) g_handle_to_velocity[h].y = 0.0f;
+        if (lin_lock & kLockAxisZ) g_handle_to_velocity[h].z = 0.0f;
+
+        uint8_t ang_lock = g_handle_to_angular_lock[h];
+        if (ang_lock & kLockAxisX) g_handle_to_angular_vel[h].x = 0.0f;
+        if (ang_lock & kLockAxisY) g_handle_to_angular_vel[h].y = 0.0f;
+        if (ang_lock & kLockAxisZ) g_handle_to_angular_vel[h].z = 0.0f;
+    }
+
     // --- 阶段 3：为每个 mechanics 读几何/变换 → 首遇则建四元数朝向 → 预测位姿 → 世界 AABB + 长方体对角惯量（世界系冲量用）---
     std::vector<MechanicsWorldAABB> mechanics_data;
     mechanics_data.reserve(mechanics_handles.size());
@@ -1051,11 +1080,22 @@ void MechanicsSystem::update_physics() {
         ktm::fquat q_pred = g_handle_orientation_quat[h];  // 复制：预测用，不提前改全局缓存
         Corona::ModelTransform t_collision = t;            // 复制当前变换
         if (!g_handle_to_sleeping[h]) {
-            const ktm::fvec3& vc = g_handle_to_velocity[h];  // 引用线速度
+            // 为碰撞预测外推位姿时也遵守轴锁定
+            ktm::fvec3 vc = g_handle_to_velocity[h];
+            ktm::fvec3 ang_pred = g_handle_to_angular_vel[h];
+            uint8_t lin_lock = g_handle_to_linear_lock[h];
+            uint8_t ang_lock = g_handle_to_angular_lock[h];
+            if (lin_lock & kLockAxisX) vc.x = 0.0f;
+            if (lin_lock & kLockAxisY) vc.y = 0.0f;
+            if (lin_lock & kLockAxisZ) vc.z = 0.0f;
+            if (ang_lock & kLockAxisX) ang_pred.x = 0.0f;
+            if (ang_lock & kLockAxisY) ang_pred.y = 0.0f;
+            if (ang_lock & kLockAxisZ) ang_pred.z = 0.0f;
+
             t_collision.position.x += vc.x * fixed_dt;       // 外推平移用于碰撞检测
             t_collision.position.y += vc.y * fixed_dt;
             t_collision.position.z += vc.z * fixed_dt;
-            integrate_orientation_quat(q_pred, g_handle_to_angular_vel[h], fixed_dt);  // 外推旋转
+            integrate_orientation_quat(q_pred, ang_pred, fixed_dt);  // 外推旋转
         }
         sync_euler_from_orientation_quat(q_pred, t_collision.euler_rotation);  // 矩阵一致化 euler
         world_aabb_from_local_bounds(t_collision, entry.local_min, entry.local_max,
@@ -1638,6 +1678,20 @@ void MechanicsSystem::update_physics() {
         g_prev_active_collisions.clear();
     }
 
+    // --- 阶段 5b：轴锁定强制执行 — 碰撞冲量求解后，再次清零锁定轴的速度分量 ---
+    for (std::uintptr_t h : mechanics_handles) {
+        if (g_handle_to_sleeping[h]) continue;
+        uint8_t lin_lock = g_handle_to_linear_lock[h];
+        if (lin_lock & kLockAxisX) g_handle_to_velocity[h].x = 0.0f;
+        if (lin_lock & kLockAxisY) g_handle_to_velocity[h].y = 0.0f;
+        if (lin_lock & kLockAxisZ) g_handle_to_velocity[h].z = 0.0f;
+
+        uint8_t ang_lock = g_handle_to_angular_lock[h];
+        if (ang_lock & kLockAxisX) g_handle_to_angular_vel[h].x = 0.0f;
+        if (ang_lock & kLockAxisY) g_handle_to_angular_vel[h].y = 0.0f;
+        if (ang_lock & kLockAxisZ) g_handle_to_angular_vel[h].z = 0.0f;
+    }
+
     // --- 阶段 6：半隐式位姿积分（用冲量后的 v,ω）+ 无穷地板 + 休眠累计 + 缓存淘汰 ---
     for (std::size_t i = 0; i < mechanics_data.size(); ++i) {
         if (g_shutdown_requested.load(std::memory_order_acquire)) {
@@ -1653,17 +1707,28 @@ void MechanicsSystem::update_physics() {
         auto tx_w = transform_storage.try_acquire_write(data.transform_handle);
         if (!tx_w) continue;
 
+        // 为轴锁定准备一份清零后的速度副本（用于积分，不修改全局缓存）
+        ktm::fvec3 vel_for_pos = g_handle_to_velocity[h];
+        uint8_t lin_lock = g_handle_to_linear_lock[h];
+        if (lin_lock & kLockAxisX) vel_for_pos.x = 0.0f;
+        if (lin_lock & kLockAxisY) vel_for_pos.y = 0.0f;
+        if (lin_lock & kLockAxisZ) vel_for_pos.z = 0.0f;
+
         // 速度 × dt 平移（显式欧拉；与阶段 3 预测一致）
-        tx_w->position.x += g_handle_to_velocity[h].x * fixed_dt;
-        tx_w->position.y += g_handle_to_velocity[h].y * fixed_dt;
-        tx_w->position.z += g_handle_to_velocity[h].z * fixed_dt;
+        tx_w->position.x += vel_for_pos.x * fixed_dt;
+        tx_w->position.y += vel_for_pos.y * fixed_dt;
+        tx_w->position.z += vel_for_pos.z * fixed_dt;
 
         // 应用 Phase 5 累积的位置校正（积分后统一应用，避免校正与积分不一致导致抖动）
         auto corr_it = position_correction.find(h);
         if (corr_it != position_correction.end()) {
-            tx_w->position.x += corr_it->second.x;
-            tx_w->position.y += corr_it->second.y;
-            tx_w->position.z += corr_it->second.z;
+            ktm::fvec3 corr = corr_it->second;
+            if (lin_lock & kLockAxisX) corr.x = 0.0f;
+            if (lin_lock & kLockAxisY) corr.y = 0.0f;
+            if (lin_lock & kLockAxisZ) corr.z = 0.0f;
+            tx_w->position.x += corr.x;
+            tx_w->position.y += corr.y;
+            tx_w->position.z += corr.z;
         }
 
         {  // 朝向：以四元数为真值源，欧拉仅用于与渲染/资产管线对齐
@@ -1671,15 +1736,21 @@ void MechanicsSystem::update_physics() {
             if (q_it == g_handle_orientation_quat.end()) {
                 q_it = g_handle_orientation_quat.emplace(h, quat_from_model_euler(tx_w->euler_rotation)).first;
             }
-            integrate_orientation_quat(q_it->second, g_handle_to_angular_vel[h], fixed_dt);  // q ← q ⊗ Δq(ω)
+            // 为轴锁定准备一份清零后的角速度副本（用于积分，不修改全局缓存）
+            ktm::fvec3 ang_for_rot = g_handle_to_angular_vel[h];
+            uint8_t ang_lock = g_handle_to_angular_lock[h];
+            if (ang_lock & kLockAxisX) ang_for_rot.x = 0.0f;
+            if (ang_lock & kLockAxisY) ang_for_rot.y = 0.0f;
+            if (ang_lock & kLockAxisZ) ang_for_rot.z = 0.0f;
+            integrate_orientation_quat(q_it->second, ang_for_rot, fixed_dt);  // q ← q ⊗ Δq(ω)
             sync_euler_from_orientation_quat(q_it->second, tx_w->euler_rotation);            // 写回 XYZ 欧拉（约定与引擎一致）
         }
 
         // 复用 Phase 3 已计算的世界 AABB min.y，避免重新计算完整 world AABB
         // 积分后 position 偏移量与 Phase 3 的预测一致，因此可直接复用
         float object_bottom_y = data.min_world.y;
-        // 若有位置校正，补偿底面高度
-        if (corr_it != position_correction.end()) {
+        // 若有位置校正，补偿底面高度（仅在 Y 轴未锁时考虑校正）
+        if (corr_it != position_correction.end() && !(lin_lock & kLockAxisY)) {
             object_bottom_y += corr_it->second.y;
         }
 
@@ -1691,27 +1762,38 @@ void MechanicsSystem::update_physics() {
         }
 
         // 水平 floor_y：穿插时整体上抬，并做法向/切向「处方」（非完整接触流形）
+        // 轴锁定：地板碰撞的各轴修正仅在对应轴未锁时执行
         if (collision_enabled && object_bottom_y < floor_y + floor_eps) {
-            tx_w->position.y += (floor_y + floor_eps) - object_bottom_y;  // 消穿（单轴，近似静接触）
-
-            float y_vel = g_handle_to_velocity[h].y;  // 向上为正
-            if (y_vel < -low_vel_threshold) {
-                g_handle_to_velocity[h].y = -y_vel * floor_restitution;  // 下行且够快则反弹
-                g_handle_to_sleep_timer[h] = 0.0f;                       // 显著弹跳才打断休眠计时
-            } else {
-                if (std::abs(g_handle_to_velocity[h].y) < zero_vel_threshold) {
-                    g_handle_to_velocity[h].y = 0.0f;  // 粘地：贴住时竖直速度清零
-                } else {
-                    g_handle_to_velocity[h].y *= 0.15f;  // 弱弹簧感衰减残余弹跳
-                }
-
-                g_handle_to_velocity[h].x *= 0.8f;  // 水平滑动摩擦（与对体摩擦系数独立，属地板启发式）
-                g_handle_to_velocity[h].z *= 0.8f;
-                g_handle_to_angular_vel[h].x *= 0.7f;  // 滚阻：略拖慢角速度防永转
-                g_handle_to_angular_vel[h].y *= 0.7f;
-                g_handle_to_angular_vel[h].z *= 0.7f;
-                // 静接触不打断休眠计时，让休眠检测正常累积
+            // 消穿修正仅在 Y 轴未锁时执行
+            if (!(lin_lock & kLockAxisY)) {
+                tx_w->position.y += (floor_y + floor_eps) - object_bottom_y;
             }
+
+            // 法向速度反弹仅在 Y 轴未锁时处理
+            if (!(lin_lock & kLockAxisY)) {
+                float y_vel = g_handle_to_velocity[h].y;  // 向上为正
+                if (y_vel < -low_vel_threshold) {
+                    g_handle_to_velocity[h].y = -y_vel * floor_restitution;  // 下行且够快则反弹
+                    g_handle_to_sleep_timer[h] = 0.0f;                       // 显著弹跳才打断休眠计时
+                } else {
+                    if (std::abs(g_handle_to_velocity[h].y) < zero_vel_threshold) {
+                        g_handle_to_velocity[h].y = 0.0f;  // 粘地：贴住时竖直速度清零
+                    } else {
+                        g_handle_to_velocity[h].y *= 0.15f;  // 弱弹簧感衰减残余弹跳
+                    }
+                }
+            }
+
+            // 地板摩擦力仅在对应轴未锁时应用
+            if (!(lin_lock & kLockAxisX)) g_handle_to_velocity[h].x *= 0.8f;
+            if (!(lin_lock & kLockAxisZ)) g_handle_to_velocity[h].z *= 0.8f;
+
+            // 滚阻仅在对应轴未锁时应用
+            uint8_t ang_lock = g_handle_to_angular_lock[h];
+            if (!(ang_lock & kLockAxisX)) g_handle_to_angular_vel[h].x *= 0.7f;
+            if (!(ang_lock & kLockAxisY)) g_handle_to_angular_vel[h].y *= 0.7f;
+            if (!(ang_lock & kLockAxisZ)) g_handle_to_angular_vel[h].z *= 0.7f;
+            // 静接触不打断休眠计时，让休眠检测正常累积
         }
     }
 
@@ -1830,6 +1912,8 @@ void MechanicsSystem::update_physics() {
 
     clean_cache(g_handle_to_sleeping);
     clean_cache(g_handle_to_sleep_timer);
+    clean_cache(g_handle_to_linear_lock);
+    clean_cache(g_handle_to_angular_lock);
     clean_cache(handle_to_mass);
     clean_cache(handle_to_damping);
     clean_cache(handle_to_restitution);

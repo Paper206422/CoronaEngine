@@ -633,6 +633,60 @@
                       />
                     </div>
                   </div>
+                  <!-- 轴锁定 - 平移 -->
+                  <div class="mt-2 pt-1 border-t border-[#1a1a1a]/50">
+                    <div class="text-[#909090] text-[10px] mb-1">平移锁定</div>
+                    <div class="grid grid-cols-3 gap-1">
+                      <div class="flex items-center gap-1">
+                        <label class="text-red-400 text-[10px] w-3">X</label>
+                        <input type="checkbox"
+                          v-model="actorData.mechanics.linear_lock[0]"
+                          class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-red-500 w-3 h-3"
+                          @change="() => { updateLinearLockFast(); updateActorMechanics('SetLinearLock'); }" />
+                      </div>
+                      <div class="flex items-center gap-1">
+                        <label class="text-blue-400 text-[10px] w-3">Y</label>
+                        <input type="checkbox"
+                          v-model="actorData.mechanics.linear_lock[1]"
+                          class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-blue-500 w-3 h-3"
+                          @change="() => { updateLinearLockFast(); updateActorMechanics('SetLinearLock'); }" />
+                      </div>
+                      <div class="flex items-center gap-1">
+                        <label class="text-green-400 text-[10px] w-3">Z</label>
+                        <input type="checkbox"
+                          v-model="actorData.mechanics.linear_lock[2]"
+                          class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-green-500 w-3 h-3"
+                          @change="() => { updateLinearLockFast(); updateActorMechanics('SetLinearLock'); }" />
+                      </div>
+                    </div>
+                  </div>
+                  <!-- 轴锁定 - 旋转 -->
+                  <div class="mt-1">
+                    <div class="text-[#909090] text-[10px] mb-1">旋转锁定</div>
+                    <div class="grid grid-cols-3 gap-1">
+                      <div class="flex items-center gap-1">
+                        <label class="text-red-400 text-[10px] w-3">X</label>
+                        <input type="checkbox"
+                          v-model="actorData.mechanics.angular_lock[0]"
+                          class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-red-500 w-3 h-3"
+                          @change="() => { updateAngularLockFast(); updateActorMechanics('SetAngularLock'); }" />
+                      </div>
+                      <div class="flex items-center gap-1">
+                        <label class="text-blue-400 text-[10px] w-3">Y</label>
+                        <input type="checkbox"
+                          v-model="actorData.mechanics.angular_lock[1]"
+                          class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-blue-500 w-3 h-3"
+                          @change="() => { updateAngularLockFast(); updateActorMechanics('SetAngularLock'); }" />
+                      </div>
+                      <div class="flex items-center gap-1">
+                        <label class="text-green-400 text-[10px] w-3">Z</label>
+                        <input type="checkbox"
+                          v-model="actorData.mechanics.angular_lock[2]"
+                          class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-green-500 w-3 h-3"
+                          @change="() => { updateAngularLockFast(); updateActorMechanics('SetAngularLock'); }" />
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </template>
 
@@ -1101,6 +1155,60 @@
                     />
                   </div>
                 </div>
+                <!-- 轴锁定 - 平移 -->
+                <div class="mt-2 pt-1 border-t border-[#1a1a1a]/50">
+                  <div class="text-[#909090] text-[10px] mb-1">平移锁定</div>
+                  <div class="grid grid-cols-3 gap-1">
+                    <div class="flex items-center gap-1">
+                      <label class="text-red-400 text-[10px] w-3">X</label>
+                      <input type="checkbox"
+                        v-model="modelData.mechanics.linear_lock[0]"
+                        class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-red-500 w-3 h-3"
+                        @change="() => { updateModelLinearLockFast(); updateModelMechanics('SetLinearLock'); }" />
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <label class="text-blue-400 text-[10px] w-3">Y</label>
+                      <input type="checkbox"
+                        v-model="modelData.mechanics.linear_lock[1]"
+                        class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-blue-500 w-3 h-3"
+                        @change="() => { updateModelLinearLockFast(); updateModelMechanics('SetLinearLock'); }" />
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <label class="text-green-400 text-[10px] w-3">Z</label>
+                      <input type="checkbox"
+                        v-model="modelData.mechanics.linear_lock[2]"
+                        class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-green-500 w-3 h-3"
+                        @change="() => { updateModelLinearLockFast(); updateModelMechanics('SetLinearLock'); }" />
+                    </div>
+                  </div>
+                </div>
+                <!-- 轴锁定 - 旋转 -->
+                <div class="mt-1">
+                  <div class="text-[#909090] text-[10px] mb-1">旋转锁定</div>
+                  <div class="grid grid-cols-3 gap-1">
+                    <div class="flex items-center gap-1">
+                      <label class="text-red-400 text-[10px] w-3">X</label>
+                      <input type="checkbox"
+                        v-model="modelData.mechanics.angular_lock[0]"
+                        class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-red-500 w-3 h-3"
+                        @change="() => { updateModelAngularLockFast(); updateModelMechanics('SetAngularLock'); }" />
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <label class="text-blue-400 text-[10px] w-3">Y</label>
+                      <input type="checkbox"
+                        v-model="modelData.mechanics.angular_lock[1]"
+                        class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-blue-500 w-3 h-3"
+                        @change="() => { updateModelAngularLockFast(); updateModelMechanics('SetAngularLock'); }" />
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <label class="text-green-400 text-[10px] w-3">Z</label>
+                      <input type="checkbox"
+                        v-model="modelData.mechanics.angular_lock[2]"
+                        class="rounded bg-[#1a1a1a] border-[#3c3c3c] checked:bg-green-500 w-3 h-3"
+                        @change="() => { updateModelAngularLockFast(); updateModelMechanics('SetAngularLock'); }" />
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1490,6 +1598,8 @@ const actorData = ref({
     restitution: 0.8,
     damping: 0.99,
     physics_enabled: true,
+    linear_lock: [false, false, false],
+    angular_lock: [false, false, false],
   },
   script: {
     path: '',
@@ -1520,6 +1630,8 @@ const modelData = ref({
     restitution: 0.8,
     damping: 0.99,
     physics_enabled: true,
+    linear_lock: [false, false, false],
+    angular_lock: [false, false, false],
   },
 });
 
@@ -1652,6 +1764,14 @@ const loadActorData = async (sceneId, actorId) => {
         actorData.value.mechanics.restitution = data.mechanics.restitution ?? 0.8;
         actorData.value.mechanics.damping = data.mechanics.damping ?? 0.99;
         actorData.value.mechanics.physics_enabled = data.mechanics.physics_enabled ?? true;
+        if (data.mechanics.linear_lock !== undefined) {
+          const ll = data.mechanics.linear_lock;
+          actorData.value.mechanics.linear_lock = [Boolean(ll[0]), Boolean(ll[1]), Boolean(ll[2])];
+        }
+        if (data.mechanics.angular_lock !== undefined) {
+          const al = data.mechanics.angular_lock;
+          actorData.value.mechanics.angular_lock = [Boolean(al[0]), Boolean(al[1]), Boolean(al[2])];
+        }
       } else {
         actorData.value.hasMechanics = false;
       }
@@ -1700,6 +1820,14 @@ const loadModelData = async (sceneId, modelId) => {
         modelData.value.mechanics.restitution = data.mechanics.restitution ?? 0.8;
         modelData.value.mechanics.damping = data.mechanics.damping ?? 0.99;
         modelData.value.mechanics.physics_enabled = data.mechanics.physics_enabled ?? true;
+        if (data.mechanics.linear_lock !== undefined) {
+          const ll = data.mechanics.linear_lock;
+          modelData.value.mechanics.linear_lock = [Boolean(ll[0]), Boolean(ll[1]), Boolean(ll[2])];
+        }
+        if (data.mechanics.angular_lock !== undefined) {
+          const al = data.mechanics.angular_lock;
+          modelData.value.mechanics.angular_lock = [Boolean(al[0]), Boolean(al[1]), Boolean(al[2])];
+        }
       }
     }
   } catch (e) {
@@ -1759,6 +1887,8 @@ const PROPERTY = {
   Visible: 3,
   CollisionEnabled: 4,
   PhysicsEnabled: 5,
+  LinearLockMask: 6,
+  AngularLockMask: 7,
 };
 
 const applyAxisOverride = (vector, axis, value) => {
@@ -1936,6 +2066,42 @@ const updateActorMechanicsFast = (propertyType) => {
   try { bridge.setProperty(actorData.value.handle, propertyType, value); } catch (e) { /* ignore */ }
 };
 
+// ── 轴锁定快速通道 ──
+const computeLockMask = (lock_array) =>
+  (lock_array[0] ? 1 : 0) | (lock_array[1] ? 2 : 0) | (lock_array[2] ? 4 : 0);
+
+const updateLinearLockFast = () => {
+  const bridge = window.coronaBridge;
+  if (!bridge || typeof bridge.setProperty !== 'function') return;
+  if (!actorData.value.handle) return;
+  const mask = computeLockMask(actorData.value.mechanics.linear_lock);
+  try { bridge.setProperty(actorData.value.handle, PROPERTY.LinearLockMask, mask); } catch (e) {}
+};
+
+const updateAngularLockFast = () => {
+  const bridge = window.coronaBridge;
+  if (!bridge || typeof bridge.setProperty !== 'function') return;
+  if (!actorData.value.handle) return;
+  const mask = computeLockMask(actorData.value.mechanics.angular_lock);
+  try { bridge.setProperty(actorData.value.handle, PROPERTY.AngularLockMask, mask); } catch (e) {}
+};
+
+const updateModelLinearLockFast = () => {
+  const bridge = window.coronaBridge;
+  if (!bridge || typeof bridge.setProperty !== 'function') return;
+  if (!modelData.value.handle) return;
+  const mask = computeLockMask(modelData.value.mechanics.linear_lock);
+  try { bridge.setProperty(modelData.value.handle, PROPERTY.LinearLockMask, mask); } catch (e) {}
+};
+
+const updateModelAngularLockFast = () => {
+  const bridge = window.coronaBridge;
+  if (!bridge || typeof bridge.setProperty !== 'function') return;
+  if (!modelData.value.handle) return;
+  const mask = computeLockMask(modelData.value.mechanics.angular_lock);
+  try { bridge.setProperty(modelData.value.handle, PROPERTY.AngularLockMask, mask); } catch (e) {}
+};
+
 // 更新单位物理属性 — 慢通道：触发 Python 写盘 + 设置
 const updateActorMechanics = (operationType) => {
   if (!currentActorFile.value || !actorData.value.parentScene) return;
@@ -1955,6 +2121,22 @@ const updateActorMechanics = (operationType) => {
         case 'SetPhysicsEnabled':
           value = actorData.value.mechanics.physics_enabled;
           break;
+        case 'SetLinearLock':
+          await sceneService.actorOperation(
+            actorData.value.parentScene,
+            currentActorFile.value,
+            'SetLinearLock',
+            actorData.value.mechanics.linear_lock.map(v => v ? 1 : 0)
+          );
+          return;
+        case 'SetAngularLock':
+          await sceneService.actorOperation(
+            actorData.value.parentScene,
+            currentActorFile.value,
+            'SetAngularLock',
+            actorData.value.mechanics.angular_lock.map(v => v ? 1 : 0)
+          );
+          return;
         default:
           return;
       }
@@ -2105,6 +2287,22 @@ const updateModelMechanics = (operationType) => {
         case 'SetPhysicsEnabled':
           value = modelData.value.mechanics.physics_enabled;
           break;
+        case 'SetLinearLock':
+          await sceneService.actorOperation(
+            modelData.value.targetScene,
+            currentModelFile.value,
+            'SetLinearLock',
+            modelData.value.mechanics.linear_lock.map(v => v ? 1 : 0)
+          );
+          return;
+        case 'SetAngularLock':
+          await sceneService.actorOperation(
+            modelData.value.targetScene,
+            currentModelFile.value,
+            'SetAngularLock',
+            modelData.value.mechanics.angular_lock.map(v => v ? 1 : 0)
+          );
+          return;
         default:
           return;
       }

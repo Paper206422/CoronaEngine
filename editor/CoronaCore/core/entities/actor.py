@@ -356,6 +356,30 @@ class Actor:
             raise RuntimeError("当前 Actor 没有 Mechanics")
         return self._mechanics.get_physics_enabled()
 
+    def set_linear_lock(self, lock_x: bool, lock_y: bool, lock_z: bool):
+        """设置线性运动轴锁定（锁定后该轴不参与平移运动）"""
+        if not hasattr(self, '_mechanics') or self._mechanics is None:
+            raise RuntimeError("当前 Actor 没有 Mechanics")
+        self._mechanics.set_linear_lock(lock_x, lock_y, lock_z)
+
+    def get_linear_lock(self):
+        """获取线性运动轴锁定状态，返回 [lock_x, lock_y, lock_z]"""
+        if not hasattr(self, '_mechanics') or self._mechanics is None:
+            return [False, False, False]
+        return list(self._mechanics.get_linear_lock())
+
+    def set_angular_lock(self, lock_x: bool, lock_y: bool, lock_z: bool):
+        """设置角度运动轴锁定（锁定后该轴不参与旋转运动）"""
+        if not hasattr(self, '_mechanics') or self._mechanics is None:
+            raise RuntimeError("当前 Actor 没有 Mechanics")
+        self._mechanics.set_angular_lock(lock_x, lock_y, lock_z)
+
+    def get_angular_lock(self):
+        """获取角度运动轴锁定状态，返回 [lock_x, lock_y, lock_z]"""
+        if not hasattr(self, '_mechanics') or self._mechanics is None:
+            return [False, False, False]
+        return list(self._mechanics.get_angular_lock())
+
     def set_collision_enabled(self, collision_type: str):
         """
         设置碰撞检测类型。
@@ -506,6 +530,8 @@ class Actor:
                     "restitution": self.get_restitution(),
                     "damping": self.get_damping(),
                     "physics_enabled": self.get_physics_enabled(),
+                    "linear_lock": self.get_linear_lock(),
+                    "angular_lock": self.get_angular_lock(),
                 }
             except Exception:
                 pass
