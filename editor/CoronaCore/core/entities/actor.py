@@ -1,6 +1,7 @@
 import configparser
 import logging
 import time
+import uuid
 import weakref
 from pathlib import Path
 from typing import Any, Dict, Optional, List
@@ -39,6 +40,7 @@ class Actor:
 
         self.model_path = ""
         self.script_path = ""
+        self.actor_guid = ""
         self._collision_callback = None
 
         self.file_data = configparser.ConfigParser()
@@ -63,8 +65,13 @@ class Actor:
             self._load_from_config(data_path)
         else:
             self.final_model_path = data_path
+            if not self.actor_guid:
+                self.actor_guid = f"actor-{uuid.uuid4().hex}"
             self._geometry = Geometry(self.final_model_path)
             self._create_and_add_profile()
+
+        if not self.actor_guid:
+            self.actor_guid = f"actor-{uuid.uuid4().hex}"
 
         self.handle = self.engine_obj.get_handle()
         _handle_to_actor[self.handle] = self
@@ -92,6 +99,9 @@ class Actor:
 
         # 读取模型路径
         self.model_path = self.file_data['base']['path']
+        self.actor_guid = self.file_data['base'].get('actor_guid', '')
+        if not self.actor_guid:
+            self.actor_guid = f"actor-{uuid.uuid4().hex}"
         if self.model_path:
             self.final_model_path = os.path.join(CoronaEngine.active_project_path, self.model_path)
             if self.parent:
@@ -104,11 +114,19 @@ class Actor:
         if self.actor_type == "actor":
             self.file_data.read(data_path, encoding='utf-8')
             self.model_path = self.file_data['base']['path']
+            self.actor_guid = actor_data.get(
+                'actor_guid',
+                self.file_data['base'].get('actor_guid', '')
+            )
             self.script_path = self.file_data['scripts']["path"]
             self.final_model_path = os.path.join(CoronaEngine.active_project_path,
                                                  self.model_path) if self.model_path else ""
         else:
             self.final_model_path = data_path
+            self.actor_guid = actor_data.get('actor_guid', '')
+
+        if not self.actor_guid:
+            self.actor_guid = f"actor-{uuid.uuid4().hex}"
 
         if self.final_model_path:
             self._create_components_from_actor_data(actor_data)
@@ -194,6 +212,7 @@ class Actor:
         else:
             self.file_data['base']['name'] = self.name
             self.file_data['base']['path'] = self.model_path
+            self.file_data['base']['actor_guid'] = self.actor_guid
             if self.model_path:
                 position = self.get_position()
                 rotation = self.get_rotation()
@@ -506,6 +525,7 @@ class Actor:
 
         result_dict = {
             "name": self.name,
+            "actor_guid": self.actor_guid,
             "handle": int(self.handle),
             "path": self.route,
             "type": ext.lstrip("."),

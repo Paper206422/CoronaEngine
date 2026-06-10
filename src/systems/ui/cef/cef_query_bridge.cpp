@@ -5,6 +5,7 @@
 #include <corona/kernel/core/kernel_context.h>
 #include <corona/systems/network/network_system.h>
 
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -30,6 +31,23 @@ std::shared_ptr<Corona::Systems::NetworkSystem> get_network_system() {
     if (!sys_mgr) return nullptr;
     return std::dynamic_pointer_cast<Corona::Systems::NetworkSystem>(
         sys_mgr->get_system("Network"));
+}
+
+std::uintptr_t json_to_uintptr(const nlohmann::json& value) {
+    try {
+        if (value.is_string()) {
+            return static_cast<std::uintptr_t>(std::stoull(value.get<std::string>()));
+        }
+        if (value.is_number_unsigned()) {
+            return static_cast<std::uintptr_t>(value.get<uint64_t>());
+        }
+        if (value.is_number_integer()) {
+            auto v = value.get<int64_t>();
+            return v > 0 ? static_cast<std::uintptr_t>(v) : 0;
+        }
+    } catch (...) {
+    }
+    return 0;
 }
 }  // namespace
 
@@ -233,11 +251,12 @@ bool BrowserSideJSHandler::OnQuery(CefRefPtr<CefBrowser> browser,
                     // Returns the next pending actor create entry, so Python
                     // can call SceneTools.create_actor_internal.
                     nlohmann::json payload;
-                    std::string scene_name, model_path;
+                    std::string actor_guid, scene_name, model_path;
                     Network::ActorCreatePacked packed;
-                    if (sys->pop_pending_actor_create(scene_name, model_path,
+                    if (sys->pop_pending_actor_create(actor_guid, scene_name, model_path,
                                                        &packed, sizeof(packed))) {
                         payload["has_pending"] = true;
+                        payload["actor_guid"] = actor_guid;
                         payload["scene_name"] = scene_name;
                         payload["model_path"] = model_path;
                         // Convert transform (9 floats) and optics for Python
@@ -269,15 +288,30 @@ bool BrowserSideJSHandler::OnQuery(CefRefPtr<CefBrowser> browser,
                     return true;
                 }
 
+                if (func == "register_actor_identity") {
+                    // args: [actor_guid, actor_handle]
+                    std::string actor_guid = args.size() > 0 ? args[0].get<std::string>() : "";
+                    std::uintptr_t actor_handle = args.size() > 1 ? json_to_uintptr(args[1]) : 0;
+                    bool ok = sys->register_actor_identity(actor_guid, actor_handle);
+                    nlohmann::json payload;
+                    payload["ok"] = ok;
+                    callback->Success(create_success_json("register_actor_identity", payload));
+                    return true;
+                }
+
                 if (func == "broadcast_actor_create") {
-                    // args: [scene_name, model_path, actor_data_dict]
-                    std::string scene_name = args.size() > 0 ? args[0].get<std::string>() : "";
-                    std::string model_path = args.size() > 1 ? args[1].get<std::string>() : "";
+                    // args: [actor_guid, scene_name, model_path, actor_data_dict]
+                    std::string actor_guid = args.size() > 0 ? args[0].get<std::string>() : "";
+                    std::string scene_name = args.size() > 1 ? args[1].get<std::string>() : "";
+                    std::string model_path = args.size() > 2 ? args[2].get<std::string>() : "";
                     // actor_data is a dict with geometry.position/rotation/scale
                     // Extract transform (9 floats) — default to identity
                     float transform[9] = {0,0,0, 0,0,0, 1,1,1};
-                    if (args.size() > 2 && args[2].is_object()) {
-                        auto& ad = args[2];
+                    if (args.size() > 3 && args[3].is_object()) {
+                        auto& ad = args[3];
+                        if (actor_guid.empty() && ad.contains("actor_guid") && ad["actor_guid"].is_string()) {
+                            actor_guid = ad["actor_guid"].get<std::string>();
+                        }
                         if (ad.contains("geometry")) {
                             auto& geo = ad["geometry"];
                             if (geo.contains("position") && geo["position"].is_array() && geo["position"].size() >= 3) {
@@ -297,6 +331,9 @@ bool BrowserSideJSHandler::OnQuery(CefRefPtr<CefBrowser> browser,
                             }
                         }
                     }
+                    if (actor_guid.empty()) {
+                        actor_guid = scene_name + ":" + model_path;
+                    }
                     // Build default optics (all defaults)
                     Network::ActorCreatePacked opt;
                     std::memset(&opt, 0, sizeof(opt));
@@ -315,7 +352,7 @@ bool BrowserSideJSHandler::OnQuery(CefRefPtr<CefBrowser> browser,
                     opt.specular_color[0] = 1.0f; opt.specular_color[1] = 1.0f; opt.specular_color[2] = 1.0f;
                     opt.shininess = 32.0f;
 
-                    sys->broadcast_actor_create(scene_name, model_path, transform,
+                    sys->broadcast_actor_create(actor_guid, scene_name, model_path, transform,
                                                 &opt, sizeof(opt));
                     nlohmann::json payload;
                     payload["ok"] = true;

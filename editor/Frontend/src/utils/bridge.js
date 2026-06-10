@@ -384,12 +384,15 @@ export const networkService = {
     Bridge.callCEF('Network', 'connect_to_peer', [ip, port, peerName]).then(_unwrap),
   setProjectRoot: (projectRoot) =>
     Bridge.callCEF('Network', 'set_project_root', [projectRoot]).then(_unwrap),
-  broadcastActorCreate: (sceneName, modelPath, actorData) =>
-    Bridge.callCEF('Network', 'broadcast_actor_create', [sceneName, modelPath, actorData]).then(_unwrap),
+  broadcastActorCreate: (actorGuid, sceneName, modelPath, actorData) =>
+    Bridge.callCEF('Network', 'broadcast_actor_create', [actorGuid, sceneName, modelPath, actorData]).then(_unwrap),
   /** 轮询待创建的远程 Actor（文件传输完成后触发创建） */
   pollPendingActorCreate: () =>
     Bridge.callCEF('Network', 'poll_pending_actor_create', []).then(_unwrap),
   /** 暂停/恢复同步（Actor 创建期间避免 seq_id 碰撞） */
   setSyncPaused: (paused) =>
     Bridge.callCEF('Network', 'set_sync_paused', [paused]).then(_unwrap),
+  /** 注册 actor_guid -> 本地 Actor handle 映射，作为后续稳定同步的锚点 */
+  registerActorIdentity: (actorGuid, actorHandle) =>
+    Bridge.callCEF('Network', 'register_actor_identity', [actorGuid, String(actorHandle || '')]).then(_unwrap),
 };

@@ -7,11 +7,13 @@
 
 #include <corona/systems/network/protocol.h>
 #include <corona/systems/network/discovery.h>
+#include <corona/systems/network/network_identity.h>
 #include <corona/systems/network/peer_manager.h>
 #include <corona/systems/network/sync_engine.h>
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace Corona::Systems {
@@ -83,13 +85,15 @@ public:
 
     /**
      * @brief 向所有已连接的 peer 广播 Actor 创建事件。
+     * @param actor_guid 稳定 Actor 网络 ID
      * @param scene_name 场景路径（如 "Scene/场景1.scene"）
      * @param model_path 模型相对路径（如 "Resource/ball.obj"）
      * @param transform  9 个 float: position(3) + rotation(3) + scale(3)
      * @param optics_packed 打包的 OpticsPacked 结构 (72 字节)
      * @param optics_size   optics_packed 的大小
      */
-    void broadcast_actor_create(const std::string& scene_name,
+    void broadcast_actor_create(const std::string& actor_guid,
+                                const std::string& scene_name,
                                 const std::string& model_path,
                                 const float* transform,
                                 const void* optics_packed, size_t optics_size);
@@ -101,8 +105,23 @@ public:
     void set_sync_paused(bool paused);
 
     /// 消费一个待创建的 Actor 数据。返回 true 表示有数据被消费。
-    bool pop_pending_actor_create(std::string& scene_name, std::string& model_path,
+    bool pop_pending_actor_create(std::string& actor_guid,
+                                  std::string& scene_name, std::string& model_path,
                                   void* actor_packed_out, size_t packed_size);
+
+    /**
+     * @brief 注册稳定 Actor 网络 ID 到本地 SharedDataHub handle 映射。
+     *
+     * Actor 由 Python/编辑器创建完成后调用。后续同步可以通过 actor_guid
+     * 找到本机对应的 Actor/Profile/Geometry/Transform handle，避免跨端 seq_id
+     * 不一致导致的协同抖动。
+     */
+    bool register_actor_identity(const std::string& actor_guid,
+                                 std::uintptr_t actor_handle);
+
+    /// 查询已注册的 Actor 网络身份快照。
+    [[nodiscard]] std::optional<Network::ActorNetworkIdentity> resolve_actor_identity(
+        const std::string& actor_guid) const;
 
     /**
      * @brief 设置当前项目的绝对路径（用于文件传输的目标目录）。

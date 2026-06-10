@@ -175,7 +175,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
-import { networkService } from '@/utils/bridge';
+import { Bridge, networkService } from '@/utils/bridge';
 import { useDockStore } from '@/stores/dockStore';
 import { coronaEventBus } from '@/utils/eventBus';
 
@@ -266,11 +266,14 @@ async function pollPeers() {
         // Pause sync, create actor, then resume
         await networkService.setSyncPaused(true);
         try {
-          const { default: mod } = await import('@/utils/bridge');
+          pending.actor_data = pending.actor_data || {};
+          pending.actor_data.actor_guid = pending.actor_guid || '';
           // Call Python SceneTools.create_actor_internal
-          await Bridge.callCEF('SceneTools', 'create_actor_internal',
+          const created = await Bridge.callCEF('SceneTools', 'create_actor_internal',
             [pending.scene_name, pending.model_path, 'model', pending.actor_data]
           );
+          const createdData = unwrapCefResult(created);
+          await registerActorIdentityFromData(createdData?.actor || createdData);
         } finally {
           await networkService.setSyncPaused(false);
         }
@@ -323,6 +326,22 @@ function closeFloat() {
   // handled by DockLayout
 }
 
+function unwrapCefResult(res) {
+  return res && res.data !== undefined ? res.data : res;
+}
+
+async function registerActorIdentityFromData(actorData) {
+  if (!sessionActive.value || !actorData) return;
+  const actorGuid = actorData.actor_guid || '';
+  const actorHandle = actorData.handle || '';
+  if (!actorGuid || !actorHandle) return;
+  try {
+    await networkService.registerActorIdentity(actorGuid, actorHandle);
+  } catch (_) {
+    /* best effort — identity mapping is an optimization anchor */
+  }
+}
+
 onMounted(() => {
   // Try to auto-fill a default name
   if (!instanceName.value) {
@@ -337,7 +356,11 @@ onMounted(() => {
     if (!modelPath) return;
     // Get scene name from the actor's parent scene if available
     const sceneName = actorData.scene || 'Scene/default.scene';
-    networkService.broadcastActorCreate(sceneName, modelPath, actorData).catch(() => {});
+    const actorGuid = actorData.actor_guid ||
+      `actor-${hashString(`${sceneName}|${modelPath}|${actorData.name || ''}`)}`;
+    actorData.actor_guid = actorGuid;
+    registerActorIdentityFromData(actorData);
+    networkService.broadcastActorCreate(actorGuid, sceneName, modelPath, actorData).catch(() => {});
   });
 
   // Listen for file-sync-status from Python (C++ reports transfer progress)
@@ -357,6 +380,7 @@ onMounted(() => {
   coronaEventBus.on('import-asset-complete', (actorData) => {
     // A remote actor was created (either via file transfer or direct creation).
     // The actor data is available for UI update.
+    registerActorIdentityFromData(actorData);
     remoteActorLog.value = `远程 Actor 已创建: ${actorData.name || 'unknown'}`;
     setTimeout(() => { remoteActorLog.value = ''; }, 5000);
   });

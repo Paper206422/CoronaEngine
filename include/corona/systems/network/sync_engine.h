@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -29,6 +30,11 @@ class SyncEngine {
 public:
     using OnSyncOutgoing = std::function<void(const std::vector<uint8_t>& packet)>;
     using OnFullSyncRequest = std::function<void(const std::string& requesting_peer_id)>;
+    using ResolveActorGuidForEntity =
+        std::function<std::string(StorageID storage_id, uint64_t entity_seq)>;
+    using ResolveEntitySeqForActorGuid =
+        std::function<std::optional<uint64_t>(StorageID storage_id,
+                                              const std::string& actor_guid)>;
 
     SyncEngine();
     ~SyncEngine();
@@ -78,6 +84,8 @@ public:
 
     void set_on_outgoing(OnSyncOutgoing cb);
     void set_on_full_sync_request(OnFullSyncRequest cb);
+    void set_identity_mapping_callbacks(ResolveActorGuidForEntity guid_for_entity,
+                                        ResolveEntitySeqForActorGuid entity_for_guid);
 
 private:
     struct StorageAccessor;
