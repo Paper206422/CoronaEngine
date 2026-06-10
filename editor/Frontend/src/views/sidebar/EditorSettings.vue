@@ -124,7 +124,6 @@
 
 <script setup>
 import { ref, reactive, watch, onMounted } from 'vue';
-import { appService } from '@/utils/bridge';
 import { useDockPanel } from '@/composables/useDockPanel.js';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
 
@@ -201,7 +200,6 @@ watch(form, () => {
 const closeFloat = () => {
   window.__settingsOpen = false;
   if (closeDockPanel) { closeDockPanel(); return; }
-  appService.removeDockWidgetByRoute('/SetUp').catch(() => {});
 };
 
 onMounted(() => {

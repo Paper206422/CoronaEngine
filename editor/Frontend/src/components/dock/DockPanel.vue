@@ -46,7 +46,7 @@ async function handlePopOut() {
       m.defaultWidth || 400,
       m.defaultHeight || 600
     );
-    const tabId = result?.data?.tab_id;
+    const tabId = result?.tab_id ?? result?.data?.tab_id;
     dockStore.setExternal(props.panelId, tabId);
   } catch (e) {
     console.error('[DockPanel] pop-out failed:', e);

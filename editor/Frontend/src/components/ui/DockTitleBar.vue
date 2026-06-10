@@ -78,7 +78,7 @@ const sendRegionsToNative = (routePath, element) => {
   const h = Math.floor(rect.height);
 
   // 使用 bridge.js 中定义的 projectService 设置拖拽区域
-  // 注意：projectService.setDragRegions 内部已经封装了 Bridge.callCEF('WindowManager', 'update_drag_regions', ...)
+  // 注意：projectService.setDragRegions 内部已经封装 DockCommand
   projectService.setDragRegions(routePath, x, y, w, h);
 };
 

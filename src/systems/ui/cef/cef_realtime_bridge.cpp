@@ -3,11 +3,15 @@
 #include <corona/kernel/core/i_logger.h>
 #include <corona/shared_data_hub.h>
 #include <include/cef_values.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <mutex>
 #include <string>
 #include <vector>
+
+#include "browser_manager.h"
+#include "cef_client.h"
 
 namespace Corona::Systems::UI {
 
@@ -416,11 +420,205 @@ bool handle_input_inject(const CefRefPtr<CefProcessMessage>& message) {
     return true;
 }
 
+int find_tab_id_for_browser(const CefRefPtr<CefBrowser>& browser) {
+    if (!browser) {
+        return -1;
+    }
+
+    const int browser_id = browser->GetIdentifier();
+    for (auto& [tab_id, tab] : BrowserManager::instance().get_tabs()) {
+        if (tab->client && tab->client->GetBrowser() &&
+            tab->client->GetBrowser()->GetIdentifier() == browser_id) {
+            return tab_id;
+        }
+    }
+
+    return -1;
+}
+
+std::string source_base_url(const CefRefPtr<CefBrowser>& browser) {
+    if (!browser || !browser->GetMainFrame()) {
+        return {};
+    }
+
+    std::string url = browser->GetMainFrame()->GetURL().ToString();
+    const auto hash_pos = url.find('#');
+    if (hash_pos != std::string::npos) {
+        url = url.substr(0, hash_pos);
+    }
+    return url;
+}
+
+void execute_tab_javascript(BrowserTab* tab, const std::string& js) {
+    if (tab && tab->client && tab->client->GetBrowser()) {
+        tab->client->GetBrowser()->GetMainFrame()->ExecuteJavaScript(js, "", 0);
+    }
+}
+
+void send_dock_callback(const CefRefPtr<CefFrame>& frame,
+                        const std::string& request_id,
+                        const nlohmann::json& error,
+                        const nlohmann::json& result) {
+    if (!frame || request_id.empty()) {
+        return;
+    }
+
+    std::string js = "window.__dockCallback&&window.__dockCallback(" +
+                     nlohmann::json(request_id).dump() + "," +
+                     (error.is_null() ? "null" : error.dump()) + "," +
+                     (result.is_null() ? "null" : result.dump()) + ")";
+    frame->ExecuteJavaScript(js, "", 0);
+}
+
+void broadcast_dock_event(const std::string& event, const nlohmann::json& payload) {
+    std::string args_js;
+    if (payload.is_array()) {
+        for (size_t i = 0; i < payload.size(); ++i) {
+            if (i > 0) {
+                args_js += ",";
+            }
+            args_js += payload[i].dump();
+        }
+        if (!args_js.empty()) {
+            args_js += ",";
+        }
+    } else {
+        args_js = payload.dump();
+        args_js += ",";
+    }
+
+    args_js += "{\"_fromCross\":1}";
+    std::string js = "if(window.__coronaEmit)window.__coronaEmit(" +
+                     nlohmann::json(event).dump() + "," + args_js + ")";
+
+    for (auto& [tab_id, tab] : BrowserManager::instance().get_tabs()) {
+        if (!tab->minimized) {
+            execute_tab_javascript(tab.get(), js);
+        }
+    }
+}
+
+bool handle_dock_command(CefRefPtr<CefBrowser> browser,
+                         CefRefPtr<CefFrame> frame,
+                         const CefRefPtr<CefProcessMessage>& message) {
+    auto args = message->GetArgumentList();
+    if (!args || args->GetSize() < 1 || args->GetType(0) != VTYPE_STRING) {
+        return true;
+    }
+
+    std::string request_id;
+    try {
+        auto command = nlohmann::json::parse(args->GetString(0).ToString());
+        request_id = command.value("requestId", "");
+        const std::string cmd = command.value("cmd", "");
+        auto& bm = BrowserManager::instance();
+
+        if (cmd == "createPanelTab") {
+            std::string panel_id = command.value("panelId", "");
+            std::string route = command.value("routePath", "");
+            int width = command.value("width", 400);
+            int height = command.value("height", 600);
+
+            if (!route.empty() && route[0] == '#') {
+                route = route.substr(1);
+            }
+            std::string standalone_route = route;
+            standalone_route += (standalone_route.find('?') == std::string::npos) ? "?standalone=1" : "&standalone=1";
+
+            int tab_id = bm.create_tab(source_base_url(browser), standalone_route,
+                                       "right_top", width, height, false);
+            nlohmann::json result;
+            result["tab_id"] = tab_id;
+            result["panel_id"] = panel_id;
+            send_dock_callback(frame, request_id, nullptr, result);
+            return true;
+        }
+
+        if (cmd == "closeThisTab") {
+            std::string panel_id = command.value("panelId", "");
+            nlohmann::json result;
+            result["panel_id"] = panel_id;
+            send_dock_callback(frame, request_id, nullptr, result);
+
+            nlohmann::json payload;
+            payload["panelId"] = panel_id;
+            broadcast_dock_event("panel-closed", payload);
+
+            int tab_id = find_tab_id_for_browser(browser);
+            if (tab_id >= 0) {
+                bm.remove_tab(tab_id);
+            }
+            return true;
+        }
+
+        if (cmd == "closePanelTab") {
+            int tab_id = command.value("tabId", -1);
+            std::string panel_id = command.value("panelId", "");
+            if (tab_id >= 0) {
+                bm.remove_tab(tab_id);
+            }
+
+            nlohmann::json payload;
+            payload["panelId"] = panel_id;
+            broadcast_dock_event("panel-closed", payload);
+            send_dock_callback(frame, request_id, nullptr, payload);
+            return true;
+        }
+
+        if (cmd == "broadcast") {
+            std::string event = command.value("event", "");
+            nlohmann::json payload = command.value("payload", nlohmann::json::object());
+            broadcast_dock_event(event, payload);
+            send_dock_callback(frame, request_id, nullptr, event);
+            return true;
+        }
+
+        if (cmd == "setDragRegions") {
+            int tab_id = find_tab_id_for_browser(browser);
+            if (command.contains("tabId") && command["tabId"].is_number_integer()) {
+                tab_id = command.value("tabId", -1);
+            }
+            std::vector<DragRegion> regions;
+            for (const auto& region : command.value("regions", nlohmann::json::array())) {
+                regions.push_back({
+                    region.value("x", 0.0f),
+                    region.value("y", 0.0f),
+                    region.value("w", 0.0f),
+                    region.value("h", 0.0f),
+                });
+            }
+            if (tab_id >= 0) {
+                bm.set_tab_drag_regions(tab_id, regions);
+            }
+            nlohmann::json result;
+            result["ok"] = tab_id >= 0;
+            send_dock_callback(frame, request_id, nullptr, result);
+            return true;
+        }
+
+        nlohmann::json error;
+        error["message"] = "Unknown DockCommand: " + cmd;
+        send_dock_callback(frame, request_id, error, nullptr);
+        return true;
+    } catch (const std::exception& e) {
+        nlohmann::json error;
+        error["message"] = e.what();
+        send_dock_callback(frame, request_id, error, nullptr);
+        return true;
+    }
+}
+
 }  // namespace
 
-bool handle_realtime_process_message(const CefRefPtr<CefProcessMessage>& message) {
+bool handle_realtime_process_message(CefRefPtr<CefBrowser> browser,
+                                     CefRefPtr<CefFrame> frame,
+                                     const CefRefPtr<CefProcessMessage>& message) {
     if (!message) {
         return false;
+    }
+
+    if (message->GetName() == "DockCommand") {
+        return handle_dock_command(browser, frame, message);
     }
 
     if (message->GetName() == "CameraMoveFast") {

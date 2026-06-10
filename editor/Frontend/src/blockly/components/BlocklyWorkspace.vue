@@ -166,7 +166,7 @@ function unregisterBlocklyWorkspace(api) {
 import { ref, watch, onMounted, onUnmounted } from 'vue';
 import { useErrorHandler } from '@/composables/useErrorHandler.js';
 import { useDockPanel } from '@/composables/useDockPanel.js';
-import { appService, scriptingService } from '@/utils/bridge.js';
+import { scriptingService } from '@/utils/bridge.js';
 
 const { closePanel: closeDockPanel, isDocked } = useDockPanel();
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
@@ -1212,11 +1212,6 @@ const resizeBlockly = () => {
 
 const handleClose = async () => {
   if (closeDockPanel) { closeDockPanel(); return; }
-  try {
-    await appService.removeDockWidget('ScratchTool');
-  } catch (e) {
-    logError('关闭积木编辑器失败', e);
-  }
 };
 
 /**

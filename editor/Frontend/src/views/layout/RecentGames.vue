@@ -116,11 +116,7 @@ const handleImport = async () => {
 };
 
 const closeFloat = async () => {
-  try {
-    await appService.removeDockWidgetByRoute('/RecentGames');
-  } catch (e) {
-    window.close();
-  }
+  window.close();
 };
 </script>
 

@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 # 高频 UI 心跳类回调，日志降到 DEBUG，避免淹没业务日志
 _NOISY_FUNCTIONS = frozenset({
-    "update_drag_regions",
     "on_init",
 })
 
@@ -78,16 +77,6 @@ class CoronaEditor:
     def start_corona_engine(cls):
         """Vue 接管面板管理，Python 仅发送引擎就绪事件"""
         cls.js_call_func("engine-started", [])
-
-    @classmethod
-    def close_browser_for_js(cls, module_name, if_close=False):
-        """兼容旧调用：Vue launcher 关闭自身面板，单 Tab 架构下为 no-op"""
-        return "ok"
-
-    @classmethod
-    def minimize_browser(cls, route_path, if_close=False):
-        """兼容旧调用：单 Tab 架构下为 no-op"""
-        return "ok"
 
     @classmethod
     def register_page(cls, module_name: str, c_cls: object):
@@ -413,14 +402,3 @@ class CoronaEditor:
         if "LogTool" in cls.module_list and cls.CoronaEngine:
             cls.module_list["LogTool"].show_log()
         return True
-
-    @classmethod
-    def update_drag_regions(cls, path, x, y, w, h):
-        """设置主 Tab 的拖拽区域（path 参数保留兼容旧调用方）"""
-        if cls.CoronaEngine and cls._main_tab_id is not None:
-            try:
-                cls.CoronaEngine.set_tab_drag_regions(cls._main_tab_id, [{'x': x, 'y': y, 'w': w, 'h': h}])
-                return "Regions updated"
-            except Exception as e:
-                return str(e)
-        return "CoronaEngine not available"

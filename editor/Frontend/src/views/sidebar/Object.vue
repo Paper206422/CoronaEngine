@@ -1237,7 +1237,7 @@ import { ref, reactive, onMounted, onUnmounted, computed, watch, nextTick } from
 import { useRoute } from 'vue-router';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
 import BlocklyWorkspace from '@/blockly/components/BlocklyWorkspace.vue';
-import { appService, sceneService, projectService } from '@/utils/bridge.js';
+import { sceneService, projectService } from '@/utils/bridge.js';
 import { DEFAULT_SCENE_NAME } from '@/utils/constants.js';
 import { useErrorHandler } from '@/composables/useErrorHandler.js';
 import { setActorContext } from '@/blockly/composables/useActorContext.js';
@@ -2409,11 +2409,6 @@ const selectActorScript = async () => {
 
 const CloseFloat = async () => {
   if (closeDockPanel) { closeDockPanel(); return; }
-  try {
-    await appService.removeDockWidget('SceneDatas');
-  } catch (e) {
-    logError('关闭 Dock 失败', e);
-  }
 };
 
 const onBlocklyResize = () => {

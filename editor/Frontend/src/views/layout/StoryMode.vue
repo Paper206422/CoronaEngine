@@ -356,11 +356,7 @@ const handleOpenProject = async (path) => {
 };
 
 const closeFloat = async () => {
-  try {
-    await appService.removeDockWidget('StoryMode');
-  } catch (e) {
-    window.close();
-  }
+  window.close();
 };
 </script>
 

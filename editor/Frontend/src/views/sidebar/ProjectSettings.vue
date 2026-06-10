@@ -115,7 +115,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import { projectSettingsService, appService } from '@/utils/bridge';
+import { projectSettingsService } from '@/utils/bridge';
 import { useDockPanel } from '@/composables/useDockPanel.js';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
 
@@ -201,7 +201,6 @@ const handleBrowseScene = async () => {
 const closeFloat = () => {
   if (closeDockPanel) { closeDockPanel(); return; }
   window.__settingsOpen = false;
-  appService.removeDockWidgetByRoute('/SetUp').catch(() => {});
 };
 
 onMounted(loadSettings);

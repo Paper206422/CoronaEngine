@@ -129,7 +129,7 @@
 
 <script setup>
 import { ref, onMounted, nextTick } from 'vue';
-import { fileService, appService } from '@/utils/bridge';
+import { fileService } from '@/utils/bridge';
 import { useDockPanel } from '@/composables/useDockPanel.js';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
 import FileTreeNode from '@/components/ui/FileTreeNode.vue';
@@ -333,7 +333,6 @@ const handleDialogConfirm = async () => {
 // 关闭浮动窗口
 const closeFloat = () => {
   if (closeDockPanel) { closeDockPanel(); return; }
-  appService.removeDockWidget('FileManager');
 };
 
 onMounted(() => {

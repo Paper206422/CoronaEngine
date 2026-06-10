@@ -75,36 +75,6 @@ void BindCef(nanobind::module_& m) {
                 return nb::str("{\"success\": false \"}");
             } }, nb::arg("tab_id"), nb::arg("js_code"));
 
-    // 最小化浏览器标签页
-    m.def("minimize_browser_tab", [](int tab_id, bool if_close) -> bool {
-            try {
-                return Corona::Systems::UI::BrowserManager::instance().hide_tab(tab_id, if_close);
-            } catch (const std::exception& e) {
-                CFW_LOG_ERROR("Unexpected error in minimize_browser_tab: %s", e.what());
-                return false;
-            } }, nb::arg("tab_id"), nb::arg("if_close") = false, nb::rv_policy::take_ownership);
-
-    // 恢复最小化的浏览器标签页
-    m.def("restore_browser_tab", [](int tab_id) -> bool {
-            try {
-                return Corona::Systems::UI::BrowserManager::instance().show_tab(tab_id);
-            } catch (const std::exception& e) {
-                CFW_LOG_ERROR("Unexpected error in restore_browser_tab: %s", e.what());
-                return false;
-            } }, nb::arg("tab_id"), nb::rv_policy::take_ownership);
-
-    m.def("set_tab_drag_regions", [](int tab_id, nb::list py_regions) {
-            std::vector<Corona::Systems::UI::DragRegion> regions;
-            for (auto item : py_regions) {
-                auto dict = nb::cast<nb::dict>(item);
-                regions.push_back({
-                    nb::cast<float>(dict["x"]),
-                    nb::cast<float>(dict["y"]),
-                    nb::cast<float>(dict["w"]),
-                    nb::cast<float>(dict["h"])
-                });
-            }
-            Corona::Systems::UI::BrowserManager::instance().set_tab_drag_regions(tab_id, regions); }, nb::arg("tab_id"), nb::arg("regions"));
 }
 
 }  // namespace EngineScripts

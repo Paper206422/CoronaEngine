@@ -1283,7 +1283,6 @@ const DeleteActor = async (scene) => {
   sceneImages.value = sceneImages.value.filter((item) => item.name !== scene.name);
 
   try {
-    //await appService.removeDockWidget(`Object_${scene.name}`);
   } catch {
     // 忽略
   }
@@ -1297,7 +1296,6 @@ const DeleteActor = async (scene) => {
 
 const CloseFloat = async () => {
   if (closeDockPanel) { closeDockPanel(); return; }
-  await appService.removeDockWidget('SceneTools');
 };
 
 const setupFragmentListener = () => {

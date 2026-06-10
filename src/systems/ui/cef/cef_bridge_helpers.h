@@ -22,7 +22,9 @@ struct InputEvent {
 // 消费所有积攒的输入事件（由 Python show_log_on_js 每帧调用）
 std::vector<InputEvent> drain_input_events();
 
-bool handle_realtime_process_message(const CefRefPtr<CefProcessMessage>& message);
+bool handle_realtime_process_message(CefRefPtr<CefBrowser> browser,
+                                     CefRefPtr<CefFrame> frame,
+                                     const CefRefPtr<CefProcessMessage>& message);
 
 bool forward_process_message_to_router(const CefRefPtr<CefMessageRouterBrowserSide>& browser_side_router,
                                        CefRefPtr<CefBrowser> browser,

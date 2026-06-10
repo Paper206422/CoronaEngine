@@ -188,7 +188,7 @@ bool OffscreenCefClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
                                                   CefProcessId source_process,
                                                   CefRefPtr<CefProcessMessage> message) {
     CEF_REQUIRE_UI_THREAD();
-    if (handle_realtime_process_message(message)) {
+    if (handle_realtime_process_message(browser, frame, message)) {
         return true;
     }
     if (message->GetName() == "RendererMessage") {

@@ -445,11 +445,7 @@ const handleOpenProject = async (path) => {
 };
 
 const closeFloat = async () => {
-  try {
-    await appService.removeDockWidget('CreateGame');
-  } catch (e) {
-    window.close();
-  }
+  window.close();
 };
 </script>
 

@@ -30,7 +30,7 @@ export const useDockStore = defineStore('dock', {
     openViewPanels(state) {
       return Object.entries(state.panels)
         .filter(
-          ([, p]) =>
+          ([id, p]) =>
             p.open &&
             PLUGIN_MANIFEST.find((m) => m.id === id)?.pageType === 'view'
         )
@@ -39,7 +39,7 @@ export const useDockStore = defineStore('dock', {
     openPluginPanels(state) {
       return Object.entries(state.panels)
         .filter(
-          ([, p]) =>
+          ([id, p]) =>
             p.open &&
             PLUGIN_MANIFEST.find((m) => m.id === id)?.pageType === 'plugin'
         )

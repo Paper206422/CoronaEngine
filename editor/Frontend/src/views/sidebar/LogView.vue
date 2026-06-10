@@ -53,7 +53,7 @@
 
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
-import { logService, appService } from '@/utils/bridge';
+import { logService } from '@/utils/bridge';
 import SimpleSelect from '@/components/ui/SimpleSelect.vue';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
 import { coronaEventBus } from '@/utils/eventBus.js';
@@ -136,7 +136,6 @@ const getLevelClass = (l) => {
 
 const closeFloat = () => {
   if (closeDockPanel) { closeDockPanel(); return; }
-  appService.removeDockWidget('LogTool');
 };
 
 onMounted(() => {

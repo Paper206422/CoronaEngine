@@ -237,11 +237,7 @@ const handleSideAction = async (type) => {
 };
 
 const closeFloat = async () => {
-  try {
-    await appService.removeDockWidget('ProjectLauncher');
-  } catch (e) {
-    window.close(); // 回退
-  }
+  window.close();
 };
 
 // 监听模式切换以更新默认设置

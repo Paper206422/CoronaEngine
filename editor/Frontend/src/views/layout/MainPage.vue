@@ -1571,8 +1571,6 @@ function onStorageChange(e) {
 }
 
 onMounted(async () => {
-  await appService.removeDockWidget('RecentGames');
-  await appService.removeDockWidgetByRoute('/StartScreen');
   const result = await projectService.OnInit();
   const initData = result?.data ?? result;
   const scenes = initData?.scenes ?? [];

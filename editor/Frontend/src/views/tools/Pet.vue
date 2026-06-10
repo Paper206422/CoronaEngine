@@ -24,10 +24,12 @@
 
 <script setup>
 import { ref, reactive, onMounted, onUnmounted, nextTick } from 'vue';
-import { appService, projectService } from '@/utils/bridge.js';
+import { projectService } from '@/utils/bridge.js';
+import { useDockStore } from '@/stores/dockStore.js';
 import AIHintBubble from '@/components/ui/AIHintBubble.vue';
 
 const petImgRef = ref(null);
+const dockStore = useDockStore();
 const ROUTE_PATH = '/Pet';
 const PET_HINT_INTERVAL_MS = 10000;
 const PET_HINT_AUTO_HIDE_MS = 6000;
@@ -66,8 +68,8 @@ const throttledSend = throttle(sendDragRegion, 16);
 
 const openContextMenu = (e) => e.preventDefault();
 
-const controlAITalkBar = async () => {
-  try { await appService.addDockWidget('/AITalkBar', '', 300, 600, false); } catch { /* ignore */ }
+const controlAITalkBar = () => {
+  dockStore.openPanel('AITalkBar');
 };
 
 // ── Timed local hint logic ──

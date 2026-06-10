@@ -207,6 +207,26 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
                 return true;
             }
 
+            if (name == "dockCommand") {
+                if (arguments.size() < 1 || !arguments[0] || !arguments[0]->IsString()) {
+                    exception = "dockCommand(jsonString) requires a string argument";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                auto dock_ctx = CefV8Context::GetCurrentContext();
+                if (!dock_ctx || !dock_ctx->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                CefRefPtr<CefProcessMessage> dock_msg = CefProcessMessage::Create("DockCommand");
+                dock_msg->GetArgumentList()->SetString(0, arguments[0]->GetStringValue());
+                dock_ctx->GetFrame()->SendProcessMessage(PID_BROWSER, dock_msg);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
             if (name != "cameraMove") {
                 return false;
             }
@@ -311,11 +331,13 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
         CefRefPtr<CefV8Value> set_property = CefV8Value::CreateFunction("setProperty", handler);
         CefRefPtr<CefV8Value> pick_actor = CefV8Value::CreateFunction("pickActor", handler);
         CefRefPtr<CefV8Value> inject_input = CefV8Value::CreateFunction("injectInput", handler);
+        CefRefPtr<CefV8Value> dock_command = CefV8Value::CreateFunction("dockCommand", handler);
         bridge->SetValue("cameraMove", camera_move, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("actorTransform", actor_transform, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("setProperty", set_property, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("pickActor", pick_actor, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("injectInput", inject_input, V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("dockCommand", dock_command, V8_PROPERTY_ATTRIBUTE_NONE);
         global->SetValue("coronaBridge", bridge, V8_PROPERTY_ATTRIBUTE_NONE);
 
         std::cout << "[Renderer] V8 context created, cefQuery injected" << std::endl;

@@ -7,7 +7,7 @@ import { Bridge } from '@/utils/bridge.js';
  *   Python js_call_func → execute_javascript(_main_tab_id)
  *     → window.__coronaEmit(event, ...args)        ← 仅主 Tab 收到
  *     → 内部 emit → dock 内所有面板组件收到
- *     → 自动 relay 到 C++ __cross_tab__ broadcast  → 所有 pop-out Tab 也收到
+ *     → 自动 relay 到 C++ DockCommand broadcast  → 所有 pop-out Tab 也收到
  *   pop-out Tab 收到 C++ cross-tab broadcast:
  *     → window.__coronaEmit(event, ...args, {_fromCross:1})
  *     → 内部 emit → pop-out Tab 内的面板组件收到
@@ -46,7 +46,7 @@ export const coronaEventBus = {
 
 /**
  * 统一入口：C++ ExecuteJavaScript 或 Python execute_javascript 调用
- * 主 Tab 收到 Python 推送后，通过 C++ __cross_tab__ 中转给所有 pop-out Tab
+ * 主 Tab 收到 Python 推送后，通过 C++ DockCommand 中转给所有 pop-out Tab
  */
 window.__coronaEmit = (event, ...rest) => {
   // 检查最后一个参数是否为选项对象 {_fromCross: 1}
@@ -64,7 +64,7 @@ window.__coronaEmit = (event, ...rest) => {
       event === 'ai-chunk' || event === 'engine-started' ||
       event === 'lanchat-event' || event === 'actor-sync-broadcast' ||
       event === 'file-sync-status' || event === 'import-asset-complete')) {
-    Bridge.callCEF('__cross_tab__', 'broadcast', [event, args])
+    Bridge.callDockCommand({ cmd: 'broadcast', event, payload: args })
       .catch(() => {});
   }
 };

@@ -44,6 +44,45 @@ export class Bridge {
       }
     });
   }
+
+  static async callDockCommand(params) {
+    const requestId = `dock_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const payload = {
+      ...params,
+      requestId,
+    };
+
+    return new Promise((resolve, reject) => {
+      if (!window.coronaBridge || typeof window.coronaBridge.dockCommand !== 'function') {
+        reject(new Error('coronaBridge.dockCommand is unavailable'));
+        return;
+      }
+
+      const previousCallback = window.__dockCallback;
+      window.__dockCallback = (id, error, result) => {
+        if (id !== requestId) {
+          if (typeof previousCallback === 'function') {
+            previousCallback(id, error, result);
+          }
+          return;
+        }
+
+        window.__dockCallback = previousCallback;
+        if (error) {
+          reject(new Error(error.message || String(error)));
+        } else {
+          resolve(result);
+        }
+      };
+
+      try {
+        window.coronaBridge.dockCommand(JSON.stringify(payload));
+      } catch (error) {
+        window.__dockCallback = previousCallback;
+        reject(error);
+      }
+    });
+  }
 }
 
 // 快捷访问
@@ -130,25 +169,22 @@ export const projectService = {
     Bridge.callCEF('MainView', 'run_project', scenePath ? [scenePath] : []),
 
   setDragRegions: (Path, x, y, w, h) =>
-    Bridge.callCEF('CoronaEditor', 'update_drag_regions', [Path, x, y, w, h]),
+    Bridge.callDockCommand({
+      cmd: 'setDragRegions',
+      tabId: null,
+      regions: [{ x, y, w, h }],
+    }),
 };
 
 export const appService = {
-  // C++ __cross_tab__ handlers (no Python involved)
   createPanelTab: (panelId, routePath, width, height) =>
-    Bridge.callCEF('__cross_tab__', 'create-panel-tab', [panelId, routePath, width, height]),
+    Bridge.callDockCommand({ cmd: 'createPanelTab', panelId, routePath, width, height }),
   closeThisTab: (panelId) =>
-    Bridge.callCEF('__cross_tab__', 'close-this-tab', [panelId]),
+    Bridge.callDockCommand({ cmd: 'closeThisTab', panelId }),
+  closePanelTab: (tabId, panelId) =>
+    Bridge.callDockCommand({ cmd: 'closePanelTab', tabId, panelId }),
   crossTabBroadcast: (event, payload) =>
-    Bridge.callCEF('__cross_tab__', 'broadcast', [event, payload]),
-
-  // Deprecated: old Python-managed window APIs, kept for backward compat during migration
-  addDockWidget: (route_path, pos, width, height, fixed) =>
-    Bridge.callCEF('CoronaEditor', 'open_browser', [route_path, pos, width, height, fixed]),
-  removeDockWidget: (tool_name) =>
-    Bridge.callCEF('CoronaEditor', 'close_browser_for_js', [tool_name]),
-  removeDockWidgetByRoute: (route_name) =>
-    Bridge.callCEF('CoronaEditor', 'minimize_browser', [route_name]),
+    Bridge.callDockCommand({ cmd: 'broadcast', event, payload }),
   closeProcess: () => Bridge.callCEF('CoronaEditor', 'close_process'),
   callDockFunction: (routename, functionname, args) => {
     // 单 CEF Tab 架构：直接调 window.xxx，不需要 Python 中转
