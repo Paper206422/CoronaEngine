@@ -1,5 +1,6 @@
 import unittest
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -88,6 +89,45 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
         actor_data = events[0][1][0]
         self.assertEqual(actor_data["handle"], 1234)
         self.assertTrue(actor_data["actor_guid"])
+
+    def test_external_model_path_is_copied_into_project_resource_before_broadcast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_root = root / "Project"
+            external_root = root / "External"
+            project_root.mkdir()
+            external_root.mkdir()
+            source_model = external_root / "Ball.obj"
+            source_model.write_text("mesh-data", encoding="utf-8")
+
+            events = []
+            fake_editor = SimpleNamespace(
+                CoronaEngine=SimpleNamespace(
+                    active_project_path=str(project_root),
+                    Actor=FakeActorEngineObject,
+                    ActorProfile=SimpleNamespace,
+                ),
+                js_call_func=lambda name, args: events.append((name, args)),
+            )
+            parent = SimpleNamespace(route="Scene/main.scene")
+            unsafe_route = "../External/Ball.obj"
+
+            with patch.object(actor_module, "CoronaEditor", fake_editor), \
+                 patch.object(actor_module, "CoronaEngine", fake_editor.CoronaEngine), \
+                 patch.object(actor_module, "Geometry", FakeGeometry), \
+                 patch.object(actor_module, "Optics", FakeOptics), \
+                 patch.object(actor_module, "Mechanics", FakeComponent), \
+                 patch.object(actor_module, "Acoustics", FakeComponent):
+                actor_module.Actor(route=unsafe_route,
+                                   actor_type="model",
+                                   parent_scene=parent)
+
+            actor_data = events[0][1][0]
+            self.assertEqual(actor_data["path"], "Resource/Ball.obj")
+            self.assertEqual(actor_data["model"], "Resource/Ball.obj")
+            self.assertTrue((project_root / "Resource" / "Ball.obj").exists())
+            self.assertEqual((project_root / "Resource" / "Ball.obj").read_text(encoding="utf-8"),
+                             "mesh-data")
 
 
 if __name__ == "__main__":

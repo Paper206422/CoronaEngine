@@ -1,5 +1,6 @@
 import configparser
 import logging
+import shutil
 import time
 import uuid
 import weakref
@@ -203,12 +204,53 @@ class Actor:
     def _broadcast_actor_created(self):
         """通过 NetworkSystem 广播 Actor 创建事件到已连接的 peer。"""
         try:
+            self._ensure_network_model_path_in_project()
             # Use the same format as to_dict() for the actor data
             actor_data = self.to_dict()
             CoronaEditor.js_call_func("actor-sync-broadcast", [actor_data])
         except Exception as exc:
             logging.warning("Actor network create broadcast failed for %s: %s",
                             self.name or self.route, exc)
+
+    def _ensure_network_model_path_in_project(self):
+        """Ensure network-created model paths are project-relative and transferable."""
+        if self.actor_type == "actor" or not self.route:
+            return
+
+        project_root_raw = getattr(CoronaEngine, "active_project_path", None)
+        if not project_root_raw:
+            return
+
+        project_root = Path(project_root_raw).resolve()
+        route_path = Path(self.route)
+        source_path = route_path if route_path.is_absolute() else (project_root / route_path)
+        source_path = source_path.resolve()
+
+        try:
+            source_path.relative_to(project_root)
+            rel_path = source_path.relative_to(project_root).as_posix()
+            self.route = rel_path
+            self.model_path = rel_path
+            self.final_model_path = str(source_path)
+            return
+        except ValueError:
+            pass
+
+        if not source_path.is_file():
+            logging.warning("Actor network model path is outside project but missing: %s",
+                            source_path)
+            return
+
+        resource_dir = project_root / "Resource"
+        resource_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = resource_dir / source_path.name
+        if source_path != dest_path:
+            shutil.copy2(source_path, dest_path)
+
+        rel_path = dest_path.relative_to(project_root).as_posix()
+        self.route = rel_path
+        self.model_path = rel_path
+        self.final_model_path = str(dest_path)
 
     def save_data(self):
         if self.parent:
