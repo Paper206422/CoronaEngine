@@ -268,6 +268,7 @@ async function pollPeers() {
         try {
           pending.actor_data = pending.actor_data || {};
           pending.actor_data.actor_guid = pending.actor_guid || '';
+          pending.actor_data._suppress_network_broadcast = true;
           // Call Python SceneTools.create_actor_internal
           const created = await Bridge.callCEF('SceneTools', 'create_actor_internal',
             [pending.scene_name, pending.model_path, 'model', pending.actor_data]

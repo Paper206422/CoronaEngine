@@ -41,6 +41,9 @@ class Actor:
         self.model_path = ""
         self.script_path = ""
         self.actor_guid = ""
+        self._suppress_network_broadcast = bool(
+            actor_data and actor_data.get("_suppress_network_broadcast")
+        )
         self._collision_callback = None
 
         self.file_data = configparser.ConfigParser()
@@ -82,6 +85,10 @@ class Actor:
         if self.parent:
             self._setup_collision_callback()
             self._setup_on_move_callback()
+            if (self.actor_type != "actor" and
+                    not self._suppress_network_broadcast and
+                    hasattr(self, '_geometry')):
+                self._broadcast_actor_created()
 
     def _resolve_data_path(self) -> Optional[str]:
         """解析数据文件的完整路径"""
@@ -193,18 +200,15 @@ class Actor:
             raise RuntimeError("无法向 Actor 添加默认 Profile（几何/组件不一致）")
         self.engine_obj.set_active_profile(stored)
 
-        # 网络同步：广播 Actor 创建事件到所有已连接的 peer
-        self._broadcast_actor_created()
-
     def _broadcast_actor_created(self):
         """通过 NetworkSystem 广播 Actor 创建事件到已连接的 peer。"""
         try:
-            import json as _json
             # Use the same format as to_dict() for the actor data
             actor_data = self.to_dict()
             CoronaEditor.js_call_func("actor-sync-broadcast", [actor_data])
-        except Exception:
-            pass  # 静默失败，不影响本地创建
+        except Exception as exc:
+            logging.warning("Actor network create broadcast failed for %s: %s",
+                            self.name or self.route, exc)
 
     def save_data(self):
         if self.parent:
