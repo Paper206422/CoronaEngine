@@ -268,6 +268,7 @@ struct SyncEngine::Impl {
     OnFullSyncRequest on_full_sync_request;
     ResolveActorGuidForEntity guid_for_entity;
     ResolveEntitySeqForActorGuid entity_for_guid;
+    ResolveLocalOwnershipForEntity ownership_for_entity;
 
     // Sequence counter for outgoing packets
     uint32_t seq = 0;
@@ -333,20 +334,10 @@ struct SyncEngine::Impl {
         return {buf};
     }
 
-    std::string make_wire_key(StorageID sid, uint64_t entity_seq,
-                              const std::string& field) const {
-        if (guid_for_entity) {
-            auto guid = guid_for_entity(sid, entity_seq);
-            if (!guid.empty()) {
-                return "actor:" + guid + ":" + field;
-            }
-        }
-        return field;
-    }
-
     struct ResolvedDirtyKey {
         uint64_t entity_seq = 0;
         std::string field;
+        bool valid = true;
     };
 
     ResolvedDirtyKey resolve_dirty_key(StorageID sid, uint64_t remote_entity_seq,
@@ -364,7 +355,7 @@ struct SyncEngine::Impl {
                         return {*local_seq, field};
                     }
                 }
-                return {remote_entity_seq, field};
+                return {0, field, false};
             }
         }
         return {remote_entity_seq, key};
@@ -421,13 +412,29 @@ void SyncEngine::poll_and_sync() {
             auto obj_id = reinterpret_cast<std::uintptr_t>(&data);
             auto ent_seq = store.seq_id(obj_id);
 
+            std::string wire_key = "xform";
+            if (impl_->guid_for_entity) {
+                auto actor_guid = impl_->guid_for_entity(
+                    StorageID::ST_MODEL_TRANSFORM, ent_seq);
+                if (actor_guid.empty()) {
+                    continue;
+                }
+                wire_key = "actor:" + actor_guid + ":xform";
+            }
+
+            if (impl_->ownership_for_entity) {
+                auto locally_owned = impl_->ownership_for_entity(
+                    StorageID::ST_MODEL_TRANSFORM, ent_seq);
+                if (locally_owned && !*locally_owned) {
+                    continue;
+                }
+            }
+
             std::string cur_hash = hash_mt(data, ent_seq);
             std::string snap_key = impl_->make_key(StorageID::ST_MODEL_TRANSFORM, ent_seq, "xform");
 
             if (impl_->check_snapshot(snap_key, cur_hash)) {
-                serialize_mt(data, ent_seq,
-                             impl_->make_wire_key(StorageID::ST_MODEL_TRANSFORM, ent_seq, "xform"),
-                             entries_payload);
+                serialize_mt(data, ent_seq, wire_key, entries_payload);
                 ++dirty_count;
             }
         }
@@ -506,6 +513,9 @@ void SyncEngine::handle_incoming(const std::string& sender_peer_id,
             const uint8_t* value_ptr = r.data + r.pos;
             r.read_string(value_len);
             const auto resolved_key = impl_->resolve_dirty_key(storage_id, entity_seq, key);
+            if (!resolved_key.valid) {
+                continue;
+            }
             const uint64_t target_seq = resolved_key.entity_seq;
             const std::string& field_key = resolved_key.field;
 
@@ -585,9 +595,11 @@ void SyncEngine::set_on_full_sync_request(OnFullSyncRequest cb) {
 
 void SyncEngine::set_identity_mapping_callbacks(
     ResolveActorGuidForEntity guid_for_entity,
-    ResolveEntitySeqForActorGuid entity_for_guid) {
+    ResolveEntitySeqForActorGuid entity_for_guid,
+    ResolveLocalOwnershipForEntity ownership_for_entity) {
     impl_->guid_for_entity = std::move(guid_for_entity);
     impl_->entity_for_guid = std::move(entity_for_guid);
+    impl_->ownership_for_entity = std::move(ownership_for_entity);
 }
 
 }  // namespace Corona::Network

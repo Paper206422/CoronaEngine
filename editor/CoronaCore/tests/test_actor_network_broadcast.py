@@ -195,6 +195,33 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
 
             self.assertFalse(actor._mechanics.get_physics_enabled())
 
+    def test_actor_move_emits_ownership_claim(self):
+        events = []
+        fake_editor = SimpleNamespace(
+            CoronaEngine=SimpleNamespace(
+                active_project_path="D:/project/test",
+                Actor=FakeActorEngineObject,
+                ActorProfile=SimpleNamespace,
+            ),
+            js_call_func=lambda name, args: events.append((name, args)),
+        )
+        parent = SimpleNamespace(route="Scene/main.scene", save_data=lambda: None)
+
+        with patch.object(actor_module, "CoronaEditor", fake_editor), \
+             patch.object(actor_module, "CoronaEngine", fake_editor.CoronaEngine), \
+             patch.object(actor_module, "Geometry", FakeGeometry), \
+             patch.object(actor_module, "Optics", FakeOptics), \
+             patch.object(actor_module, "Mechanics", FakeComponent), \
+             patch.object(actor_module, "Acoustics", FakeComponent):
+            actor = actor_module.Actor(route="Resource/cube.obj",
+                                       actor_type="model",
+                                       parent_scene=parent)
+            actor.on_move()
+
+        claims = [args[0] for name, args in events if name == "actor-ownership-claim"]
+        self.assertTrue(claims)
+        self.assertEqual(claims[-1]["actor_guid"], actor.actor_guid)
+
 
 if __name__ == "__main__":
     unittest.main()

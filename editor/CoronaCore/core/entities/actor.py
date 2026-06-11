@@ -596,6 +596,9 @@ class Actor:
         CoronaEditor.js_call_func("transform-update",
                                   [self.parent.route if self.parent else "", self.name, self.get_position(),
                                    self.get_rotation(), self.get_scale(), self.actor_type])
+        if self.actor_guid:
+            CoronaEditor.js_call_func("actor-ownership-claim",
+                                      [{"actor_guid": self.actor_guid}])
         self.save_data()
 
 

@@ -91,6 +91,7 @@ struct NetworkSystem::Impl {
         std::vector<std::string> dependency_paths;
         std::vector<uint64_t> transfer_ids;
         uint32_t remaining_files = 0;
+        Clock::time_point create_time;
         Network::ActorCreatePacked actor_packed;
     };
     std::unordered_map<uint64_t, PendingFileTransfer> pending_file_transfer_groups;
@@ -99,6 +100,9 @@ struct NetworkSystem::Impl {
 };
 
 namespace {
+constexpr auto kTransferTimeout = std::chrono::seconds(30);
+constexpr auto kOutgoingCacheTtl = std::chrono::minutes(2);
+
 std::string_view session_role_label(NetworkSystem::SessionRole role) {
     switch (role) {
     case NetworkSystem::SessionRole::Host:
@@ -140,6 +144,11 @@ bool NetworkSystem::initialize(Kernel::ISystemContext* ctx) {
         [this](Network::StorageID storage_id, const std::string& actor_guid)
             -> std::optional<uint64_t> {
             return impl_->identity_registry.storage_seq_for_actor_guid(storage_id, actor_guid);
+        },
+        [this](Network::StorageID storage_id, uint64_t entity_seq)
+            -> std::optional<bool> {
+            return impl_->identity_registry.local_ownership_for_storage_seq(
+                storage_id, entity_seq);
         });
 
     // Wire up PeerManager → SyncEngine inbound path
@@ -187,6 +196,39 @@ void NetworkSystem::update() {
         std::chrono::milliseconds(Network::kSyncIntervalMs)) {
         impl_->sync_engine.poll_and_sync();
         impl_->last_sync_time = now;
+    }
+
+    for (auto it = impl_->incoming_transfers.begin();
+         it != impl_->incoming_transfers.end(); ) {
+        if (now - it->second.last_chunk_time > kTransferTimeout) {
+            CFW_LOG_WARNING("NetworkSystem: Incoming transfer timed out — id={} path='{}'",
+                            it->second.transfer_id, it->second.model_path);
+            it = impl_->incoming_transfers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    for (auto it = impl_->pending_file_transfer_groups.begin();
+         it != impl_->pending_file_transfer_groups.end(); ) {
+        if (now - it->second.create_time > kTransferTimeout) {
+            CFW_LOG_WARNING("NetworkSystem: Pending file group timed out — actor='{}' model='{}'",
+                            it->second.actor_guid, it->second.model_path);
+            for (uint64_t transfer_id : it->second.transfer_ids) {
+                impl_->transfer_to_group.erase(transfer_id);
+            }
+            it = impl_->pending_file_transfer_groups.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    for (auto it = impl_->outgoing_cache.begin(); it != impl_->outgoing_cache.end(); ) {
+        if (now - it->second.load_time > kOutgoingCacheTtl) {
+            it = impl_->outgoing_cache.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 
@@ -261,6 +303,11 @@ void NetworkSystem::stop_session() {
     impl_->peer_manager.stop();
     impl_->sync_engine.shutdown();
     impl_->identity_registry.clear();
+    impl_->incoming_transfers.clear();
+    impl_->outgoing_cache.clear();
+    impl_->pending_actor_creates.clear();
+    impl_->pending_file_transfer_groups.clear();
+    impl_->transfer_to_group.clear();
 
     impl_->session_state = SessionState::Idle;
     impl_->session_role = SessionRole::None;
@@ -360,11 +407,13 @@ bool NetworkSystem::pop_pending_actor_create(std::string& actor_guid,
 }
 
 bool NetworkSystem::register_actor_identity(const std::string& actor_guid,
-                                            std::uintptr_t actor_handle) {
-    const bool ok = impl_->identity_registry.register_actor(actor_guid, actor_handle);
+                                            std::uintptr_t actor_handle,
+                                            bool locally_owned) {
+    const bool ok = impl_->identity_registry.register_actor(
+        actor_guid, actor_handle, locally_owned);
     if (ok) {
-        CFW_LOG_INFO("NetworkSystem: Registered actor identity — actor='{}' handle={}",
-                     actor_guid, actor_handle);
+        CFW_LOG_INFO("NetworkSystem: Registered actor identity — actor='{}' handle={} owner={}",
+                     actor_guid, actor_handle, locally_owned ? "local" : "remote");
     } else {
         CFW_LOG_WARNING("NetworkSystem: Failed to register actor identity — actor='{}' handle={}",
                         actor_guid, actor_handle);
@@ -375,6 +424,17 @@ bool NetworkSystem::register_actor_identity(const std::string& actor_guid,
 std::optional<Network::ActorNetworkIdentity> NetworkSystem::resolve_actor_identity(
     const std::string& actor_guid) const {
     return impl_->identity_registry.resolve_actor(actor_guid);
+}
+
+bool NetworkSystem::claim_actor_ownership(const std::string& actor_guid) {
+    if (actor_guid.empty()) return false;
+    impl_->identity_registry.set_actor_ownership(actor_guid, true);
+    if (impl_->session_state == SessionState::Active && impl_->peer_manager.peer_count() > 0) {
+        auto pkt = Network::build_ownership_claim(actor_guid);
+        impl_->peer_manager.broadcast(Network::kChannelReliable, pkt.data(), pkt.size(), true);
+    }
+    CFW_LOG_INFO("NetworkSystem: Claimed actor ownership — actor='{}'", actor_guid);
+    return true;
 }
 
 void NetworkSystem::set_project_root(const std::string& project_root) {
@@ -431,7 +491,9 @@ void NetworkSystem::on_custom_message(const std::string& sender_peer_id,
         if (r.has_remaining(36 + sizeof(Network::ActorCreatePacked))) {
             const float* transform = reinterpret_cast<const float*>(r.data + r.pos);
             r.pos += 36;
-            const auto* opt_packed = reinterpret_cast<const Network::ActorCreatePacked*>(r.data + r.pos);
+            Network::ActorCreatePacked actor_packed{};
+            std::memcpy(&actor_packed, r.data + r.pos, sizeof(actor_packed));
+            std::memcpy(actor_packed.transform, transform, 36);
             r.pos += sizeof(Network::ActorCreatePacked);
 
             std::vector<std::string> dependency_paths;
@@ -471,7 +533,7 @@ void NetworkSystem::on_custom_message(const std::string& sender_peer_id,
                 pa.scene_name = scene_name;
                 pa.model_path = model_path;
                 pa.dependency_paths = dependency_paths;
-                pa.actor_packed = *opt_packed;
+                pa.actor_packed = actor_packed;
                 impl_->pending_actor_creates.push_back(pa);
             } else {
                 uint64_t group_id = impl_->next_transfer_id++;
@@ -480,8 +542,9 @@ void NetworkSystem::on_custom_message(const std::string& sender_peer_id,
                 group.scene_name = scene_name;
                 group.model_path = model_path;
                 group.dependency_paths = dependency_paths;
-                group.actor_packed = *opt_packed;
+                group.actor_packed = actor_packed;
                 group.remaining_files = static_cast<uint32_t>(missing_paths.size());
+                group.create_time = Impl::Clock::now();
 
                 auto send_request = [&](uint64_t transfer_id, const std::string& path) {
                     auto pkt = Network::build_file_request(transfer_id, path);
@@ -512,6 +575,15 @@ void NetworkSystem::on_custom_message(const std::string& sender_peer_id,
         handle_file_request(sender_peer_id, data, len);
     } else if (mt == MessageType::FILE_CHUNK) {
         handle_file_chunk(sender_peer_id, data, len);
+    } else if (mt == MessageType::OWNERSHIP_CLAIM) {
+        Network::BufferReader r(data + 1, len - 1);
+        if (!r.has_remaining(2)) return;
+        uint16_t guid_len = r.read_u16();
+        if (!r.has_remaining(guid_len)) return;
+        std::string actor_guid = r.read_string(guid_len);
+        impl_->identity_registry.set_actor_ownership(actor_guid, false);
+        CFW_LOG_INFO("NetworkSystem: Peer {} claimed actor ownership — actor='{}'",
+                     sender_peer_id, actor_guid);
     }
 }
 

@@ -430,6 +430,9 @@ export const networkService = {
   setSyncPaused: (paused) =>
     Bridge.callCEF('Network', 'set_sync_paused', [paused]).then(_unwrap),
   /** 注册 actor_guid -> 本地 Actor handle 映射，作为后续稳定同步的锚点 */
-  registerActorIdentity: (actorGuid, actorHandle) =>
-    Bridge.callCEF('Network', 'register_actor_identity', [actorGuid, String(actorHandle || '')]).then(_unwrap),
+  registerActorIdentity: (actorGuid, actorHandle, locallyOwned = true) =>
+    Bridge.callCEF('Network', 'register_actor_identity',
+      [actorGuid, String(actorHandle || ''), Boolean(locallyOwned)]).then(_unwrap),
+  claimActorOwnership: (actorGuid) =>
+    Bridge.callCEF('Network', 'claim_actor_ownership', [actorGuid]).then(_unwrap),
 };

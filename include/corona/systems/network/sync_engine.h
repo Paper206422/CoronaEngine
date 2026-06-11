@@ -35,6 +35,8 @@ public:
     using ResolveEntitySeqForActorGuid =
         std::function<std::optional<uint64_t>(StorageID storage_id,
                                               const std::string& actor_guid)>;
+    using ResolveLocalOwnershipForEntity =
+        std::function<std::optional<bool>(StorageID storage_id, uint64_t entity_seq)>;
 
     SyncEngine();
     ~SyncEngine();
@@ -85,7 +87,8 @@ public:
     void set_on_outgoing(OnSyncOutgoing cb);
     void set_on_full_sync_request(OnFullSyncRequest cb);
     void set_identity_mapping_callbacks(ResolveActorGuidForEntity guid_for_entity,
-                                        ResolveEntitySeqForActorGuid entity_for_guid);
+                                        ResolveEntitySeqForActorGuid entity_for_guid,
+                                        ResolveLocalOwnershipForEntity ownership_for_entity = {});
 
 private:
     struct StorageAccessor;

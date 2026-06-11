@@ -186,6 +186,7 @@ const fileStatus = ref(null); // null | { type: 'transferring'|'success'|'error'
 const remoteActorLog = ref(''); // latest remote actor creation log
 
 let pollTimer = null;
+const ownershipClaimTimes = new Map();
 
 const roleLabel = computed(() => {
   if (sessionRole.value === 'host') return '房主';
@@ -286,7 +287,7 @@ async function pollPeers() {
             [pending.scene_name, pending.model_path, 'model', pending.actor_data]
           );
           const createdData = unwrapCefResult(created);
-          await registerActorIdentityFromData(createdData?.actor || createdData);
+          await registerActorIdentityFromData(createdData?.actor || createdData, false);
         } finally {
           await networkService.setSyncPaused(false);
         }
@@ -351,13 +352,13 @@ function unwrapCefResult(res) {
   return res && res.data !== undefined ? res.data : res;
 }
 
-async function registerActorIdentityFromData(actorData) {
+async function registerActorIdentityFromData(actorData, locallyOwned = true) {
   if (!sessionActive.value || !actorData) return;
   const actorGuid = actorData.actor_guid || '';
   const actorHandle = actorData.handle || '';
   if (!actorGuid || !actorHandle) return;
   try {
-    await networkService.registerActorIdentity(actorGuid, actorHandle);
+    await networkService.registerActorIdentity(actorGuid, actorHandle, locallyOwned);
   } catch (_) {
     /* best effort — identity mapping is an optimization anchor */
   }
@@ -382,6 +383,15 @@ onMounted(() => {
     actorData.actor_guid = actorGuid;
     registerActorIdentityFromData(actorData);
     networkService.broadcastActorCreate(actorGuid, sceneName, modelPath, actorData).catch(() => {});
+  });
+
+  coronaEventBus.on('actor-ownership-claim', ({ actor_guid }) => {
+    if (!sessionActive.value || !actor_guid) return;
+    const now = Date.now();
+    const lastClaim = ownershipClaimTimes.get(actor_guid) || 0;
+    if (now - lastClaim < 1000) return;
+    ownershipClaimTimes.set(actor_guid, now);
+    networkService.claimActorOwnership(actor_guid).catch(() => {});
   });
 
   // Listen for file-sync-status from Python (C++ reports transfer progress)
@@ -409,8 +419,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopPolling();
+  ownershipClaimTimes.clear();
   // Clean up event listeners
   coronaEventBus.off('actor-sync-broadcast');
+  coronaEventBus.off('actor-ownership-claim');
   coronaEventBus.off('file-sync-status');
   coronaEventBus.off('import-asset-complete');
 });

@@ -63,6 +63,7 @@ window.__coronaEmit = (event, ...rest) => {
       event === 'scene-add' || event === 'transform-update' ||
       event === 'ai-chunk' || event === 'engine-started' ||
       event === 'lanchat-event' || event === 'actor-sync-broadcast' ||
+      event === 'actor-ownership-claim' ||
       event === 'file-sync-status' || event === 'import-asset-complete')) {
     Bridge.callDockCommand({ cmd: 'broadcast', event, payload: args })
       .catch(() => {});

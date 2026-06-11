@@ -139,7 +139,11 @@ public:
      * 不一致导致的协同抖动。
      */
     bool register_actor_identity(const std::string& actor_guid,
-                                 std::uintptr_t actor_handle);
+                                 std::uintptr_t actor_handle,
+                                 bool locally_owned = true);
+
+    /// 声明本端接管指定 Actor 的 transform 发送权，并通知 peer 停止发送它。
+    bool claim_actor_ownership(const std::string& actor_guid);
 
     /// 查询已注册的 Actor 网络身份快照。
     [[nodiscard]] std::optional<Network::ActorNetworkIdentity> resolve_actor_identity(

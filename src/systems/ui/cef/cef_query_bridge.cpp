@@ -325,13 +325,25 @@ bool BrowserSideJSHandler::OnQuery(CefRefPtr<CefBrowser> browser,
                 }
 
                 if (func == "register_actor_identity") {
-                    // args: [actor_guid, actor_handle]
+                    // args: [actor_guid, actor_handle, locally_owned]
                     std::string actor_guid = args.size() > 0 ? args[0].get<std::string>() : "";
                     std::uintptr_t actor_handle = args.size() > 1 ? json_to_uintptr(args[1]) : 0;
-                    bool ok = sys->register_actor_identity(actor_guid, actor_handle);
+                    bool locally_owned = args.size() > 2 ? args[2].get<bool>() : true;
+                    bool ok = sys->register_actor_identity(
+                        actor_guid, actor_handle, locally_owned);
                     nlohmann::json payload;
                     payload["ok"] = ok;
                     callback->Success(create_success_json("register_actor_identity", payload));
+                    return true;
+                }
+
+                if (func == "claim_actor_ownership") {
+                    // args: [actor_guid]
+                    std::string actor_guid = args.size() > 0 ? args[0].get<std::string>() : "";
+                    bool ok = sys->claim_actor_ownership(actor_guid);
+                    nlohmann::json payload;
+                    payload["ok"] = ok;
+                    callback->Success(create_success_json("claim_actor_ownership", payload));
                     return true;
                 }
 

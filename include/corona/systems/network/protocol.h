@@ -56,6 +56,7 @@ enum class MessageType : uint8_t {
     ACTOR_CREATE  = 0x10,  // Actor creation event (scene_name + model_path + transform + optics)
     FILE_REQUEST  = 0x11,  // Request model file from peer
     FILE_CHUNK    = 0x12,  // File chunk transfer
+    OWNERSHIP_CLAIM = 0x13, // Actor ownership handoff claim
 };
 
 // ============================================================================
@@ -285,7 +286,9 @@ inline std::vector<uint8_t> build_hello(const std::string& instance_name,
 // Wire format:
 //   [1B type] [2B actor_guid_len] [actor_guid]
 //   [2B scene_name_len] [scene_name] [2B model_path_len] [model_path]
-//   [36B transform (9 floats)] [72B optics (OpticsPacked)]
+//   [36B transform (9 floats)] [ActorCreatePacked payload]
+// The payload keeps legacy optics fields in ActorCreatePacked layout; receivers
+// must copy the leading 36B wire transform into ActorCreatePacked::transform.
 // ============================================================================
 struct ActorCreatePacked {
     float transform[9];  // pos(3) + rot(3) + scale(3)
@@ -350,6 +353,20 @@ inline std::vector<uint8_t> build_file_request(uint64_t transfer_id,
     write_u8(buf, static_cast<uint8_t>(MessageType::FILE_REQUEST));
     write_u64(buf, transfer_id);
     write_string(buf, model_path);
+    return buf;
+}
+
+// ============================================================================
+// OWNERSHIP_CLAIM message builder
+// ============================================================================
+// Wire format:
+//   [1B type] [2B actor_guid_len] [actor_guid]
+// ============================================================================
+inline std::vector<uint8_t> build_ownership_claim(const std::string& actor_guid) {
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + actor_guid.size());
+    write_u8(buf, static_cast<uint8_t>(MessageType::OWNERSHIP_CLAIM));
+    write_string(buf, actor_guid);
     return buf;
 }
 

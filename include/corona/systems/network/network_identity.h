@@ -12,6 +12,7 @@ namespace Corona::Network {
 
 struct ActorNetworkIdentity {
     std::string actor_guid;
+    bool locally_owned = true;
     std::uintptr_t actor_handle = 0;
     std::uintptr_t profile_handle = 0;
     std::uintptr_t geometry_handle = 0;
@@ -35,10 +36,15 @@ public:
     explicit NetworkIdentityRegistry(SharedDataHub& hub) : hub_(hub) {}
 
     bool register_actor(const std::string& actor_guid,
-                        std::uintptr_t actor_handle) {
+                        std::uintptr_t actor_handle,
+                        bool locally_owned = true) {
         if (actor_guid.empty() || actor_handle == 0) return false;
         auto identity = build_identity(actor_guid, actor_handle);
         if (!identity) return false;
+        auto override_it = ownership_overrides_.find(actor_guid);
+        identity->locally_owned = override_it != ownership_overrides_.end()
+            ? override_it->second
+            : locally_owned;
         actors_[actor_guid] = *identity;
         return true;
     }
@@ -60,6 +66,17 @@ public:
         return {};
     }
 
+    std::optional<bool> local_ownership_for_storage_seq(
+        StorageID storage_id,
+        std::uint64_t storage_seq) const {
+        for (const auto& [guid, identity] : actors_) {
+            if (identity_seq(identity, storage_id) == static_cast<std::int64_t>(storage_seq)) {
+                return identity.locally_owned;
+            }
+        }
+        return std::nullopt;
+    }
+
     std::optional<std::uint64_t> storage_seq_for_actor_guid(
         StorageID storage_id,
         const std::string& actor_guid) const {
@@ -74,8 +91,18 @@ public:
         actors_.erase(actor_guid);
     }
 
+    void set_actor_ownership(const std::string& actor_guid, bool locally_owned) {
+        if (actor_guid.empty()) return;
+        ownership_overrides_[actor_guid] = locally_owned;
+        auto it = actors_.find(actor_guid);
+        if (it != actors_.end()) {
+            it->second.locally_owned = locally_owned;
+        }
+    }
+
     void clear() {
         actors_.clear();
+        ownership_overrides_.clear();
     }
 
 private:
@@ -180,6 +207,7 @@ private:
 
     SharedDataHub& hub_;
     std::unordered_map<std::string, ActorNetworkIdentity> actors_;
+    std::unordered_map<std::string, bool> ownership_overrides_;
 };
 
 }  // namespace Corona::Network
