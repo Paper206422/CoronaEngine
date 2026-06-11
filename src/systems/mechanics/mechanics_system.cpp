@@ -945,14 +945,21 @@ void MechanicsSystem::update_physics() {
                     if (auto profile = profile_storage.try_acquire_read(profile_handle)) {
                         if (auto h = profile->mechanics_handle) {
                             // 读 MechanicsDevice：检查物理开关 + 质量/阻尼/恢复；读失败则用默认值
+                            // 轴锁变化检测变量（需在 if/else 外声明，供后续唤醒逻辑使用）
+                            uint8_t old_linear = g_handle_to_linear_lock.count(h) ? g_handle_to_linear_lock[h] : 0;
+                            uint8_t old_angular = g_handle_to_angular_lock.count(h) ? g_handle_to_angular_lock[h] : 0;
+                            uint8_t new_linear = 0;
+                            uint8_t new_angular = 0;
                             if (auto m_acc = mechanics_storage.try_acquire_read(h)) {
                                 if (!m_acc->physics_enabled) continue;  // 物理已禁用，跳过本 mechanics
                                 handle_to_mass[h] = m_acc->mass;
                                 handle_to_damping[h] = m_acc->damping;
                                 handle_to_restitution[h] = m_acc->restitution;
                                 handle_to_collision_enabled[h] = m_acc->bEnableCollision;  // 缓存碰撞开关
-                                g_handle_to_linear_lock[h] = m_acc->linear_lock_mask;    // 缓存线性轴锁
-                                g_handle_to_angular_lock[h] = m_acc->angular_lock_mask;  // 缓存角度轴锁
+                                new_linear = m_acc->linear_lock_mask;
+                                new_angular = m_acc->angular_lock_mask;
+                                g_handle_to_linear_lock[h] = new_linear;    // 缓存线性轴锁
+                                g_handle_to_angular_lock[h] = new_angular;  // 缓存角度轴锁
                             } else {
                                 handle_to_mass[h] = 1.0f;
                                 handle_to_damping[h] = 0.99f;
@@ -969,6 +976,12 @@ void MechanicsSystem::update_physics() {
                             if (g_handle_to_velocity.find(h) == g_handle_to_velocity.end()) {
                                 g_handle_to_velocity[h] = make_fvec3(0.0f, 0.0f, 0.0f);
                                 g_handle_to_angular_vel[h] = make_fvec3(0.0f, 0.0f, 0.0f);
+                                g_handle_to_sleeping[h] = false;
+                                g_handle_to_sleep_timer[h] = 0.0f;
+                            }
+
+                            // 轴锁解除时唤醒休眠体：若锁定位从 1→0（解锁），休眠体需恢复物理响应
+                            if (((old_linear & ~new_linear) != 0 || (old_angular & ~new_angular) != 0) && g_handle_to_sleeping[h]) {
                                 g_handle_to_sleeping[h] = false;
                                 g_handle_to_sleep_timer[h] = 0.0f;
                             }
@@ -1699,6 +1712,13 @@ void MechanicsSystem::update_physics() {
         }
         const auto& data = mechanics_data[i];  // 与阶段 3 同一套 per-body 缓存
         std::uintptr_t h = data.handle;
+
+        // 唤醒因地板降低而悬空的休眠体（物体搁在地板上休眠后，地板调低应自由落体）
+        if (g_handle_to_sleeping[h] && data.min_world.y > floor_y + floor_eps) {
+            g_handle_to_sleeping[h] = false;
+            g_handle_to_sleep_timer[h] = 0.0f;
+        }
+
         if (g_handle_to_sleeping[h])
             continue;  // 休眠体不再推进变换
 
