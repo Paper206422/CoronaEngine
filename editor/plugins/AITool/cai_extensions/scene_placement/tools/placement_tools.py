@@ -420,7 +420,7 @@ def load_placement_tools(config: AIConfig) -> List[StructuredTool]:
                 if local_file is None or not local_file.exists():
                     raise RuntimeError(f"object_id={oid} 本地模型不存在: {local_file}")
 
-                actor_name = it.file_name or local_file.name
+                actor_name = it.file_name or it.name or it.object_id or local_file.name
                 ext = local_file.suffix.lower().lstrip(".")
                 display_name = Path(actor_name).stem if actor_name else actor_name
                 actor = {

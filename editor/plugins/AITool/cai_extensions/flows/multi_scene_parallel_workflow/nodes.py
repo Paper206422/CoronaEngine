@@ -23,6 +23,7 @@ from .constants import (
     CHECKPOINT_VERSION,
     MAX_PARALLEL_SCENES,
     PARALLEL_GENERATE_FUNCTION_ID,
+    PARALLEL_GENERATE_V2_FUNCTION_ID,
     TIMEOUTS,
     make_child_session_id,
 )
@@ -638,13 +639,25 @@ def restore_from_checkpoint(
 # Serial Compose Node (Phase 2)
 # ---------------------------------------------------------------------------
 
-@stream_output_node("integrated", NO_OUTPUT)
+def _resolve_composition_workflow_for_parallel(state):
+    """根据 function_id 选择场景组装版本。"""
+    fid = state.get("function_id", 0)
+    if fid == PARALLEL_GENERATE_V2_FUNCTION_ID:
+        from ..scene_composition_workflow_v2 import (
+            WORKFLOWS as _SC_W,
+            SCENE_COMPOSITION_V2_FUNCTION_ID as _SC_F,
+        )
+        return _SC_W, _SC_F, "v2"
+    from ..scene_composition_workflow import (
+        WORKFLOWS as _SC_W,
+        SCENE_COMPOSITION_FUNCTION_ID as _SC_F,
+    )
+    return _SC_W, _SC_F, "v1"
+
+
 def serial_compose_node(state: WorkflowState) -> Dict[str, Any]:
     """Phase 2: 串行执行每个子场景的 scene_composition。"""
-    from ..scene_composition_workflow import (
-        WORKFLOWS as SC_WORKFLOWS,
-        SCENE_COMPOSITION_FUNCTION_ID,
-    )
+    SC_WORKFLOWS, SCENE_COMPOSITION_FUNCTION_ID, _sc_ver = _resolve_composition_workflow_for_parallel(state)
 
     # output_dir: 优先用 intermediate 里的，否则用临时目录
     import tempfile

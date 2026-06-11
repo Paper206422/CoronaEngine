@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from Quasar.ai_workflow.streaming import stream_output_node
 from ..model_retrieval_workflow.helpers import resolve_model_file
+from ..scene_composition_workflow_v2.asset_metadata import build_asset_metadata_batch
 
 from .formatters import NO_OUTPUT
 
@@ -30,6 +31,10 @@ def collect_models_node(state) -> Dict[str, Any]:
             }
             for m in DEFAULT_MODELS
         ]
+        # 构建 asset_metadata (trimesh bbox)
+        model_paths = [m["path"] for m in DEFAULT_MODELS]
+        asset_meta = build_asset_metadata_batch(model_paths)
+
         # 若 state.prompt 为空，自动填入默认设计方案
         test_state_updates: Dict[str, Any] = {
             "intermediate": {
@@ -37,6 +42,14 @@ def collect_models_node(state) -> Dict[str, Any]:
                 "total_models": len(DEFAULT_MODELS),
                 "valid_models": len(DEFAULT_MODELS),
                 "skipped_models": 0,
+                "scene_name": metadata.get("scene_name", "test_scene"),
+                "asset_metadata": asset_meta,
+            },
+            # test 模式下补齐 metadata，确保输出路径确定
+            "metadata": {
+                **metadata,
+                "scene_name": metadata.get("scene_name", "test_scene"),
+                "room_size": metadata.get("room_size", [5, 3, 3]),
             },
         }
         if not state.get("prompt"):
@@ -94,11 +107,15 @@ def collect_models_node(state) -> Dict[str, Any]:
 
     logger.info("collect_models: 收集到 %d 个可用模型", len(placement_items))
 
+    model_paths = [it["local_path"] for it in placement_items if it.get("local_path")]
+    asset_meta = build_asset_metadata_batch(model_paths)
+
     return {
         "intermediate": {
             "placement_items": placement_items,
             "total_models": len(model_results),
             "valid_models": len(placement_items),
             "skipped_models": len(model_results) - len(placement_items),
+            "asset_metadata": asset_meta,
         },
     }

@@ -1,30 +1,26 @@
 """
-场景组装 v2: 分层 DAG + 差量修正
+场景组装 v3: 分层 DAG + 每层独立审查 + 差量修正
 
-将场景组装拆为三层独立 LLM 调用 + 每层 VLM 审查:
-  tier1: 大件 (床/沙发/桌子) — LLM 绝对坐标
-  tier2: 从属 (床头柜/台灯/椅子) — 锚点工具
-  tier3: 装饰 (地毯/挂画/窗帘) — 混合放置
+三层:
+  tier1: 大件 (LLM 绝对坐标)
+  tier2: 从属 (锚点关系 → place_object_near 计算坐标)
+  tier3: 装饰 (LLM 绝对坐标, 同 tier1)
 
 DAG:
-  collect_models → tier1_place → tier1_review
-                   ↑ FAIL          ↓ PASS
-                   └───────────────┘
-                                   tier2_place → tier2_review
-                                   ↑ FAIL          ↓ PASS
-                                   └───────────────┘
-                                                   tier3_place → tier3_review
-                                                   ↑ FAIL          ↓ PASS
-                                                   └───────────────┘
-                                                                   output_result → END
+  collect_models → tier1_place → capture* → tier1_review
+                   ↑ FAIL                       ↓ PASS
+                   └────────────────────────────┘
+                                                tier2_place → capture* → tier2_review
+                                                ↑ FAIL                    ↓ PASS
+                                                └─────────────────────────┘
+                                                                          tier3_place → capture* → tier3_review
+                                                                          ↑ FAIL                    ↓ PASS
+                                                                          └─────────────────────────┘
+                                                                                                    output_result → END
 
-区别于 v1:
-  - 3 次 LLM (分层) vs 1 次 LLM (全局)
-  - 每层独立 review + 差量修正 vs 全局 review + 整段重跑
-  - 锚点工具放置从属 vs 全部绝对坐标
-  - VLM 结构化 feedback (problem_actors) vs 自然语言
+* capture 在 tier_review 内部调用, 每层独立拍摄 (场景状态不同, 不能共享)
 
-命令: /scene_composition_v2 (新增, 不覆盖 /scene_composition)
+命令: /scene_composition_v2 (21006)
 """
 
 from __future__ import annotations
@@ -36,20 +32,11 @@ from langgraph.graph import END, START, StateGraph
 from Quasar.ai_workflow.executor import register_workflow_checkpoints
 from Quasar.ai_workflow.state import SceneCompositionWorkflowState
 
-# 复用 v1 的 collect_models 和 output_result
 from ..scene_composition_workflow.collect_models import collect_models_node
 from ..scene_composition_workflow.output_result import output_result_node
 
-from .nodes_tier_place import (
-    tier1_place_node,
-    tier2_place_node,
-    tier3_place_node,
-)
-from .nodes_tier_review import (
-    tier1_review_node,
-    tier2_review_node,
-    tier3_review_node,
-)
+from .nodes_tier_place import tier1_place_node, tier2_place_node, tier3_place_node
+from .nodes_tier_review import tier1_review_node, tier2_review_node, tier3_review_node
 from .nodes_tier_review import MAX_TIER_RETRIES
 
 if TYPE_CHECKING:
@@ -58,11 +45,11 @@ if TYPE_CHECKING:
 SCENE_COMPOSITION_V2_FUNCTION_ID = 21006
 
 
-# ---------------------------------------------------------------------------
-# 条件路由
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 条件路由 (retry_diff / retry_all → tier_place, pass → next tier)
+# ===========================================================================
 
-def _route_tier1_review(state) -> str:
+def _route_tier1(state) -> str:
     decision = state.get("intermediate", {}).get("tier1_review_decision", "pass")
     count = state.get("intermediate", {}).get("tier1_retry_count", 0)
     if decision == "fail" and count <= MAX_TIER_RETRIES:
@@ -70,7 +57,7 @@ def _route_tier1_review(state) -> str:
     return "tier2_place"
 
 
-def _route_tier2_review(state) -> str:
+def _route_tier2(state) -> str:
     decision = state.get("intermediate", {}).get("tier2_review_decision", "pass")
     count = state.get("intermediate", {}).get("tier2_retry_count", 0)
     if decision == "fail" and count <= MAX_TIER_RETRIES:
@@ -78,7 +65,7 @@ def _route_tier2_review(state) -> str:
     return "tier3_place"
 
 
-def _route_tier3_review(state) -> str:
+def _route_tier3(state) -> str:
     decision = state.get("intermediate", {}).get("tier3_review_decision", "pass")
     count = state.get("intermediate", {}).get("tier3_retry_count", 0)
     if decision == "fail" and count <= MAX_TIER_RETRIES:
@@ -86,9 +73,9 @@ def _route_tier3_review(state) -> str:
     return "output_result"
 
 
-# ---------------------------------------------------------------------------
-# DAG 构建
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# DAG
+# ===========================================================================
 
 def build_scene_composition_v2_workflow() -> "CompiledStateGraph":
     graph = StateGraph(SceneCompositionWorkflowState)
@@ -105,28 +92,28 @@ def build_scene_composition_v2_workflow() -> "CompiledStateGraph":
     graph.add_edge(START, "collect_models")
     graph.add_edge("collect_models", "tier1_place")
     graph.add_edge("tier1_place", "tier1_review")
-    graph.add_conditional_edges(
-        "tier1_review", _route_tier1_review,
-        {"tier1_place": "tier1_place", "tier2_place": "tier2_place"},
-    )
+    graph.add_conditional_edges("tier1_review", _route_tier1, {
+        "tier1_place": "tier1_place",
+        "tier2_place": "tier2_place",
+    })
     graph.add_edge("tier2_place", "tier2_review")
-    graph.add_conditional_edges(
-        "tier2_review", _route_tier2_review,
-        {"tier2_place": "tier2_place", "tier3_place": "tier3_place"},
-    )
+    graph.add_conditional_edges("tier2_review", _route_tier2, {
+        "tier2_place": "tier2_place",
+        "tier3_place": "tier3_place",
+    })
     graph.add_edge("tier3_place", "tier3_review")
-    graph.add_conditional_edges(
-        "tier3_review", _route_tier3_review,
-        {"tier3_place": "tier3_place", "output_result": "output_result"},
-    )
+    graph.add_conditional_edges("tier3_review", _route_tier3, {
+        "tier3_place": "tier3_place",
+        "output_result": "output_result",
+    })
     graph.add_edge("output_result", END)
 
     return graph.compile()
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # 注册
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 WORKFLOWS: Dict[int, "CompiledStateGraph"] = {
     SCENE_COMPOSITION_V2_FUNCTION_ID: build_scene_composition_v2_workflow(),

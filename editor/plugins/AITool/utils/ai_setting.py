@@ -10,8 +10,9 @@ try:
     @ai_entrance.collector.register_setting("chat")
     def CHAT_SETTINGS() -> Dict[str, Any]:
         return {
-            "provider": "deepseek",
-            "model": "deepseek-v4-pro",
+            "provider": "dmxapi",
+            "model": "gpt-5.5",
+            "layout_model": "o3-mini",
             "system_prompt": """你是一个 AI 助手，可以帮助用户完成各种任务。""",
         }
 
@@ -22,13 +23,19 @@ try:
                 "name": "deepseek",
                 "type": "openai-compatible",
                 "base_url": "https://api.deepseek.com/v1",
-                "api_key": "sk-461a028fe76242ad80a4eee53b9b2e35",
+                "api_key": "sk-dac4cbc187de44c492f0344726920a7f",
             },
             {
                 "name": "grsai_image",
                 "type": "grsai",
                 "base_url": "https://grsai.dakka.com.cn/v1/api/generate",
-                "api_key": "sk-02c743a4e5394a2ea4934f2132449eb9",
+                "api_key": "sk-80273654ab784f109b88011c006a774d",
+            },
+            {
+                "name": "dmxapi",
+                "type": "openai-compatible",
+                "base_url": "https://www.dmxapi.cn/v1",
+                "api_key": "sk-eHsdOCb3raIkIs8IQNySuzeJXt9XsWpvbpPPvNFe2QgJqUj9",
             },
         ]
 
@@ -41,11 +48,21 @@ try:
             "base_url": "https://grsai.dakka.com.cn/v1/api/generate",
         }
 
+    @ai_entrance.collector.register_setting("omni")
+    def OMNI_SETTINGS() -> Dict[str, Any]:
+        return {
+            "enable": True,
+            "provider": "dmxapi",
+            "model": "gpt-5.5",
+            "request_timeout": 60.0,
+            "image_detail": "auto",
+        }
+
     @ai_entrance.collector.register_setting("hunyuan3d")
     def HUNYUAN_3D_SETTINGS() -> Dict[str, Any]:
         return {
             "enable": True,
-            "api_key": "sk-YhvNa3WK8BydiBvq24u25MKe78gTG85ooOmpeFp748loExDJ",
+            "api_key": "sk-XO2PvXfsKNBL72sphgi5VEc2Gycw3mTXj9Pis3emFzZROAAz",
             "region": "ap-guangzhou",
             "endpoint": "api.ai3d.cloud.tencent.com",
             "version": "pro",

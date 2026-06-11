@@ -124,19 +124,26 @@ def _build_scene_rationality_review_tool() -> StructuredTool:
             prompt_text = (
                 f"{desc_hint}"
                 f"以下是一个3D场景的多角度拍摄截图（共 {len(png_files)} 张视角）。\n"
-                "请从以下四个维度对场景进行合理性分析：\n"
-                "1. **物体布局**：是否存在悬空、穿插、遮挡不合理等问题\n"
-                "2. **物理合理性**：重力支撑关系、物体尺寸比例是否符合现实\n"
-                "3. **风格一致性**：材质、光照、整体视觉风格是否统一\n"
-                "4. **整体美观性**：构图、密度、空间利用是否合理\n\n"
+                "你是专业的室内设计评审师。请从以下 4 个维度评估场景合理性：\n"
+                "1. **布局合理性** (layout): 家具位置是否符合使用习惯，动线是否合理\n"
+                "2. **物理合理性** (physics): 物体是否悬空、重叠、超出边界\n"
+                "3. **风格一致性** (style): 家具风格、材质、光照是否协调\n"
+                "4. **美观度** (aesthetics): 整体视觉效果、构图、空间利用\n\n"
                 "请严格以如下 JSON 格式输出分析结果（不要包含任何额外文字）：\n"
                 "{\n"
-                '  "overall": "PASS" | "NEEDS_IMPROVEMENT" | "FAIL",\n'
+                '  "overall": "PASS" | "NEEDS_IMPROVEMENT",\n'
                 '  "score": <0-100的整数>,\n'
                 '  "problem_actors": [\n'
-                '    {"actor": "物体名称(场景中的actor名)",\n'
-                '     "issue": "问题标签(如 too_far_left, too_close, overlap, floating, wrong_scale)",\n'
-                '     "reason": "问题描述(中文, 一句话说明为什么需要调整)"}\n'
+                '    {"actor": "场景中的物体名称",\n'
+                '     "issue": "too_far | too_close | overlap | floating | wrong_scale | misaligned",\n'
+                '     "reason": "问题描述(中文, 一句话)"}\n'
+                "  ],\n"
+                '  "corrections": [\n'
+                '    {"object_id": "需要修正的物体名称",\n'
+                '     "position": [x, y, z],\n'
+                '     "rotation": [rx, ry, rz],\n'
+                '     "scale": [sx, sy, sz],\n'
+                '     "reason": "修正原因(中文)"}\n'
                 "  ],\n"
                 '  "issues": ["发现的问题1", "发现的问题2"],\n'
                 '  "suggestions": ["改进建议1", "改进建议2"],\n'
@@ -147,9 +154,25 @@ def _build_scene_rationality_review_tool() -> StructuredTool:
                 '    "aesthetics": "整体美观性评价"\n'
                 "  }\n"
                 "}\n\n"
-                "【重要】problem_actors 必须列出每个有问题的物体，actor 字段要使用场景中的实际名称。\n"
-                "不要输出数值偏移量（如 offset/suggested_position），只需描述问题。\n"
-                "overall=PASS 时 problem_actors 为空数组 []。"
+                "【重要规则】\n"
+                "- problem_actors 的 actor 字段必须使用场景中的实际物体名称（一字不差）\n"
+                "- overall=PASS 时 problem_actors 和 corrections 为空数组 []\n"
+                "- overall=NEEDS_IMPROVEMENT 时:\n"
+                "  * problem_actors 必须至少包含 1 个物体\n"
+                "  * **corrections 必须填充, 每个 problem_actor 对应一个 correction**\n"
+                "  * correction.position 是修正后的最终绝对坐标 [x, y, z]\n"
+                "    - 落地物体 Y=0, 挂墙物体 Y=1.6~2.0\n"
+                "    - X 和 Z 必须在房间边界内\n"
+                "    - 修正距离关系: 茶几在沙发前方 0.5-0.8m, 落地灯在沙发侧 0.3m\n"
+                "  * 示例: 窗帘当前在 [0.9, 0, 2.95] 悬空 → correction: [0.9, 2.0, 1.45] (贴后墙, 挂墙高度)\n"
+                "  * **相对大小**: 判断物体之间的比例是否和谐\n"
+                "    - 台灯不应比茶几高, 靠垫不超过沙发扶手, 落地灯约为沙发高度的 1.5-2 倍\n"
+                "    - 如果比例失调, 在 correction.scale 中输出修正后的 scale\n"
+                "  * **corrections 示例** (NEEDS_IMPROVEMENT 时必须输出):\n"
+                "    - 台灯与咖啡桌同高 → {\"object_id\":\"台灯\",\"scale\":[0.35,0.35,0.35],\"reason\":\"缩小到桌面台灯比例\"}\n"
+                "    - 落地灯离沙发太远 → {\"object_id\":\"落地灯\",\"position\":[-0.5,0,1.0],\"reason\":\"移到沙发右侧0.3m\"}\n"
+                "    - 地毯未居中 → {\"object_id\":\"地毯\",\"position\":[-0.3,0.01,0.3],\"reason\":\"居中到沙发茶几下方\"}\n"
+                "- score ≥ 80 时 overall=PASS, < 80 时 overall=NEEDS_IMPROVEMENT"
             )
 
             logger.info(

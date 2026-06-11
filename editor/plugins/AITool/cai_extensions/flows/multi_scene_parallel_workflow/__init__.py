@@ -16,7 +16,7 @@ from langgraph.graph import END, START, StateGraph
 from Quasar.ai_workflow.executor import register_workflow_checkpoints
 from Quasar.ai_workflow.state import WorkflowState
 
-from .constants import PARALLEL_GENERATE_FUNCTION_ID
+from .constants import PARALLEL_GENERATE_FUNCTION_ID, PARALLEL_GENERATE_V2_FUNCTION_ID
 from .nodes import (
     classify_and_generate_terrain_node,
     decompose_node,
@@ -50,20 +50,28 @@ def build_parallel_generate_workflow() -> "CompiledStateGraph":
 
 WORKFLOWS: Dict[int, "CompiledStateGraph"] = {
     PARALLEL_GENERATE_FUNCTION_ID: build_parallel_generate_workflow(),
+    PARALLEL_GENERATE_V2_FUNCTION_ID: build_parallel_generate_workflow(),
 }
 
 WORKFLOW_COMMANDS: Dict[str, int] = {
     "/parallel_generate": PARALLEL_GENERATE_FUNCTION_ID,
+    "/parallel_generate_v2": PARALLEL_GENERATE_V2_FUNCTION_ID,
+    "/pg_v2": PARALLEL_GENERATE_V2_FUNCTION_ID,
 }
 
 register_workflow_checkpoints(
     PARALLEL_GENERATE_FUNCTION_ID,
     {"decompose", "classify_terrain", "fork_generate", "serial_compose", "aggregate"},
 )
+register_workflow_checkpoints(
+    PARALLEL_GENERATE_V2_FUNCTION_ID,
+    {"decompose", "fork_generate", "serial_compose", "aggregate"},
+)
 
 __all__ = [
     "WORKFLOWS",
     "WORKFLOW_COMMANDS",
     "PARALLEL_GENERATE_FUNCTION_ID",
+    "PARALLEL_GENERATE_V2_FUNCTION_ID",
     "build_parallel_generate_workflow",
 ]

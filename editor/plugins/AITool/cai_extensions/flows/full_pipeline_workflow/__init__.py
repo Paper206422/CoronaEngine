@@ -24,7 +24,7 @@ from langgraph.graph import END, START, StateGraph
 from Quasar.ai_workflow.executor import register_workflow_checkpoints
 from Quasar.ai_workflow.state import WorkflowState
 
-from .constants import FULL_PIPELINE_FUNCTION_ID
+from .constants import FULL_PIPELINE_FUNCTION_ID, FULL_PIPELINE_V2_FUNCTION_ID
 from .nodes import (
     classify_and_generate_terrain_node,
     run_multi_scene_node,
@@ -61,16 +61,23 @@ def build_full_pipeline_workflow() -> "CompiledStateGraph":
 
 WORKFLOWS: Dict[int, "CompiledStateGraph"] = {
     FULL_PIPELINE_FUNCTION_ID: build_full_pipeline_workflow(),
+    FULL_PIPELINE_V2_FUNCTION_ID: build_full_pipeline_workflow(),
 }
 
 WORKFLOW_COMMANDS: Dict[str, int] = {
     "/full_pipeline": FULL_PIPELINE_FUNCTION_ID,
     "/pipeline": FULL_PIPELINE_FUNCTION_ID,
+    "/full_pipeline_v2": FULL_PIPELINE_V2_FUNCTION_ID,
+    "/fp_v2": FULL_PIPELINE_V2_FUNCTION_ID,
 }
 
 register_workflow_checkpoints(
     FULL_PIPELINE_FUNCTION_ID,
     {"classify_terrain", "multi_scene", "model_retrieval", "scene_composition"},
+)
+register_workflow_checkpoints(
+    FULL_PIPELINE_V2_FUNCTION_ID,
+    {"multi_scene", "model_retrieval", "scene_composition"},
 )
 
 __all__ = [

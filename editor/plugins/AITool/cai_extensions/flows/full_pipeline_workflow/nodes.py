@@ -9,8 +9,6 @@ global_assets / dialogue_entries 回写到 pipeline state，
 from __future__ import annotations
 
 import logging
-import os
-import time
 from typing import Any, Dict
 
 from Quasar.ai_workflow.progress import publish_node_entries_event
@@ -25,6 +23,7 @@ from Quasar.ai_workflow.streaming import build_node_dialogue_entry
 _logger = logging.getLogger(__name__)
 
 FUNCTION_ID = 21000
+from .constants import FULL_PIPELINE_V2_FUNCTION_ID  # noqa: E402
 
 
 def _push_pipeline_progress(
@@ -77,74 +76,8 @@ def _make_sub_state(pipeline_state: Dict[str, Any], function_id: int) -> Dict[st
     }
 
 
-# ---------------------------------------------------------------------------
-# Node 0: classify_and_generate_terrain — indoor/outdoor + terrain
-# ---------------------------------------------------------------------------
-
-def classify_and_generate_terrain_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """分类场景 indoor/outdoor，室外场景生成地形后注入 global_assets.terrain。"""
-    user_input = state.get("prompt", "") or state.get("raw_user_input", "")
-    _logger.info("[Pipeline] ▶ 阶段 0/4 classify_terrain")
-
-    from ..terrain_generation_workflow.classifier import (
-        _classify_scene_type,
-        _extract_terrain_keyword,
-        _resolve_terrain_config,
-    )
-
-    scene_type = _classify_scene_type(user_input)
-    terrain_keyword = _extract_terrain_keyword(user_input)
-    _logger.info("[Pipeline] classify: scene_type=%s terrain_hint=%s", scene_type, terrain_keyword)
-
-    terrain_results: Dict[str, Any] = {}
-
-    if scene_type == "outdoor" and terrain_keyword:
-        config = _resolve_terrain_config(terrain_keyword)
-        if config:
-            try:
-                from ..terrain_generation_workflow.terrain_generator import generate_terrain
-                from pathlib import Path
-
-                session_id = str(state.get("session_id", "default") or "default")
-                output_dir = str(
-                    Path(__file__).resolve().parents[6]
-                    / "output" / "terrain" / session_id
-                )
-
-                _push_pipeline_progress(state, f"正在生成 {terrain_keyword} 地形...", "classify_terrain")
-                t0 = time.time()
-                result = generate_terrain(config, output_dir, 256)
-                elapsed = time.time() - t0
-
-                terrain_results["main"] = {**result, "scene_name": "main", "output_dir": output_dir}
-                _logger.info("[Pipeline] terrain done in %.1fs: %d faces",
-                            elapsed, result["stats"]["faces"])
-                _push_pipeline_progress(state,
-                    f"{terrain_keyword}地形完成 ({result['stats']['faces']:,} 面, {elapsed:.1f}s)",
-                    "classify_terrain")
-
-            except Exception as e:
-                _logger.exception("[Pipeline] terrain generation failed: %s", e)
-                terrain_results["main"] = {"ok": False, "error": str(e)}
-        else:
-            _logger.info("[Pipeline] no terrain preset for '%s', skipping", terrain_keyword)
-    else:
-        _logger.info("[Pipeline] indoor scene, skipping terrain")
-
-    return {
-        "intermediate": {
-            "scene_type": scene_type,
-            "terrain_keyword": terrain_keyword,
-            "terrain_results": terrain_results,
-        },
-        "global_assets": {
-            "terrain": terrain_results,
-        },
-    }
-
-
 def run_multi_scene_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """阶段 1/4：多物体场景设计分析，产出设计方案与参考图。"""
+    """阶段 1/3：多物体场景设计分析，产出设计方案与参考图。"""
     # 延迟导入避免循环依赖；复用预构建图实例，不重复编译
     from ..integrated_multi_scene_workflow import (
         WORKFLOWS as _MS_WORKFLOWS,
@@ -206,17 +139,30 @@ def run_model_retrieval_node(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def run_scene_composition_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """阶段 3/3：场景组合，将 3D 模型导入并编排最终场景。"""
+def _resolve_composition_workflow(state: Dict[str, Any]):
+    """根据 function_id 选择场景组装版本。"""
+    fid = state.get("function_id", 0)
+    if fid == FULL_PIPELINE_V2_FUNCTION_ID:
+        from ..scene_composition_workflow_v2 import (
+            WORKFLOWS as _SC_WORKFLOWS,
+            SCENE_COMPOSITION_V2_FUNCTION_ID as _SC_FID,
+        )
+        return _SC_WORKFLOWS, _SC_FID, "v2"
     from ..scene_composition_workflow import (
         WORKFLOWS as _SC_WORKFLOWS,
-        SCENE_COMPOSITION_FUNCTION_ID,
+        SCENE_COMPOSITION_FUNCTION_ID as _SC_FID,
     )
+    return _SC_WORKFLOWS, _SC_FID, "v1"
 
-    _logger.info("[Pipeline] ▶ 阶段 3/3 scene_composition_workflow 开始")
-    _push_pipeline_progress(state, "正在进行场景布局与模型导入...", "scene_composition")
 
-    sub_state: SceneCompositionWorkflowState = _make_sub_state(state, SCENE_COMPOSITION_FUNCTION_ID)  # type: ignore[assignment]
+def run_scene_composition_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """阶段 3/3：场景组合，将 3D 模型导入并编排最终场景。"""
+    sc_workflows, sc_fid, sc_version = _resolve_composition_workflow(state)
+
+    _logger.info("[Pipeline] ▶ 阶段 3/3 scene_composition_%s 开始", sc_version)
+    _push_pipeline_progress(state, f"正在进行场景布局与模型导入 ({sc_version})...", "scene_composition")
+
+    sub_state: SceneCompositionWorkflowState = _make_sub_state(state, sc_fid)  # type: ignore[assignment]
 
     # 优先使用 multi_scene 阶段生成的详细布局描述作为 compose prompt，
     # 其中包含每个物品的位置、风格、搭配等信息，比原始用户输入更精准。
@@ -230,35 +176,12 @@ def run_scene_composition_node(state: Dict[str, Any]) -> Dict[str, Any]:
             len(layout_text),
         )
 
-    graph = _SC_WORKFLOWS[SCENE_COMPOSITION_FUNCTION_ID]
+    graph = sc_workflows[sc_fid]
     final = graph.invoke(sub_state)
 
     scene_path = final.get("global_assets", {}).get("scene_composition", {}).get("scene_path", "")
-    _logger.info("[Pipeline] ✔ 阶段 3/4 完成，scene_path=%s", scene_path)
-    _push_pipeline_progress(state, f"场景生成完毕 ✓", "scene_composition")
-
-    # 导入地形 mesh（如果 classify_terrain 生成了 terrain.obj）
-    terrain_results = state.get("global_assets", {}).get("terrain", {})
-    terrain_data = terrain_results.get("main", {})
-    terrain_obj = terrain_data.get("files", {}).get("obj", "")
-    if terrain_obj and os.path.exists(terrain_obj):
-        try:
-            from ..scene_composition_workflow.helpers import get_tool
-            tool = get_tool("import_model")
-            if tool:
-                tool.invoke({
-                    "model_path": terrain_obj,
-                    "actor_name": "Terrain_main",
-                    "position": [0, 0, 0],
-                    "rotation": [0, 0, 0],
-                    "scale": [1, 1, 1],
-                    "scene_name": "main",
-                })
-                _logger.info("[Pipeline] terrain imported: %s", terrain_obj)
-        except Exception as te:
-            _logger.warning("[Pipeline] terrain import failed: %s", te)
-    elif terrain_obj:
-        _logger.warning("[Pipeline] terrain obj not found: %s", terrain_obj)
+    _logger.info("[Pipeline] ✔ 阶段 3/3 (%s) 完成，scene_path=%s", sc_version, scene_path)
+    _push_pipeline_progress(state, f"场景生成完毕 ({sc_version}) ✓", "scene_composition")
 
     return {
         "global_assets": final.get("global_assets", {}),

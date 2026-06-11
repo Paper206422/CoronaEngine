@@ -59,39 +59,85 @@ def _build_layout_user_prompt(
     prompt: str,
     room_size: List[float],
     items: List[Dict[str, Any]],
+    asset_metadata: Dict[str, Any] = None,
 ) -> str:
-    """构建发送给 LLM 的用户 prompt。"""
-    item_lines = [
-        f"  - object_id: {it.get('object_id', '')}, 名称: {it.get('name', '未知')}"
-        for it in items
-    ]
+    """构建发送给 LLM 的用户 prompt。
+
+    若提供 asset_metadata（trimesh 读出的真实 AABB），把每个物体的实际
+    尺寸 size=[w,h,d] 和推荐放置类型注入，帮助 LLM 避免重叠/穿模/比例失调。
+    """
+    asset_metadata = asset_metadata or {}
+    item_lines = []
+    for it in items:
+        oid = it.get("object_id", "")
+        name = it.get("name", "未知")
+        # asset_metadata 以模型文件名(stem)为 key；兼容用 object_id/name 查找
+        meta = (asset_metadata.get(name)
+                or asset_metadata.get(oid)
+                or _match_meta_by_path(it, asset_metadata))
+        if meta and meta.get("size"):
+            sz = meta["size"]
+            ptype = meta.get("placement_type", "")
+            ptype_hint = f", 放置类型: {ptype}" if ptype else ""
+            item_lines.append(
+                f"  - object_id: {oid}, 名称: {name}, "
+                f"真实尺寸(米) 宽x高x深=[{sz[0]:.2f}, {sz[1]:.2f}, {sz[2]:.2f}]{ptype_hint}"
+            )
+        else:
+            item_lines.append(f"  - object_id: {oid}, 名称: {name}")
+
     x_half = room_size[0] / 2.0
     z_half = room_size[1] / 2.0
     y_height = room_size[2] if len(room_size) > 2 else 3.0
+    has_aabb = any(
+        (asset_metadata.get(it.get("name")) or asset_metadata.get(it.get("object_id"))
+         or _match_meta_by_path(it, asset_metadata))
+        for it in items
+    )
+    aabb_note = (
+        "\n注意：物体列表已标注每个模型的【真实尺寸】(米)，"
+        "请据此安排位置确保互不重叠（两物体中心距离应大于各自半宽之和），"
+        "并按真实尺寸判断 scale（通常保持 [1,1,1]，仅当与房间明显不协调时才调整）。"
+        if has_aabb else ""
+    )
     return (
         f"## 设计方案\n{prompt}\n\n"
         f"## 房间尺寸\n"
         f"长(X轴)={room_size[0]}m 范围[{-x_half:.1f}, {x_half:.1f}], "
         f"宽(Z轴)={room_size[1]}m 范围[{-z_half:.1f}, {z_half:.1f}], "
         f"高(Y轴)={y_height}m\n地面坐标 Y=0, 天花板 Y={y_height}\n"
-        f"房间地板面积约 {room_size[0]*room_size[1]:.1f} m²，请据此判断物体的合理缩放比例。\n\n"
+        f"房间地板面积约 {room_size[0]*room_size[1]:.1f} m²，请据此判断物体的合理缩放比例。"
+        f"{aabb_note}\n\n"
         f"## 物体列表（共 {len(items)} 个）\n" + "\n".join(item_lines)
     )
+
+
+def _match_meta_by_path(item: Dict[str, Any], asset_metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """用 local_path 的文件名 stem 在 asset_metadata 里匹配。"""
+    import os
+    lp = item.get("local_path", "") or ""
+    if not lp:
+        return {}
+    stem = os.path.splitext(os.path.basename(lp))[0]
+    return asset_metadata.get(stem, {})
+
 
 
 def _call_llm_for_layout(
     prompt: str,
     room_size: List[float],
     items: List[Dict[str, Any]],
+    asset_metadata: Dict[str, Any] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """调用 LLM 生成智能布局，返回布局列表；失败时返回 None。"""
     LLM_TOTAL_TIMEOUT = 180.0  # 主线程等待超时（秒）；V4 Pro 推理模型需更长时间
 
-    user_prompt = _build_layout_user_prompt(prompt, room_size, items)
+    user_prompt = _build_layout_user_prompt(prompt, room_size, items, asset_metadata)
     logger.info(
-        "compose_scene: 启动 LLM 布局线程（超时 %.0fs，%d 个物体）...",
+        "compose_scene: 启动 LLM 布局线程（超时 %.0fs，%d 个物体，AABB=%s）...",
         LLM_TOTAL_TIMEOUT,
         len(items),
+        "有" if asset_metadata else "无",
     )
 
     def _do_llm_call():
@@ -221,14 +267,18 @@ def compose_scene_node(state) -> Dict[str, Any]:
     scene_path = metadata.get("scene_path", f"Scene/{scene_name}/{scene_name}.scene")
     room_size = metadata.get("room_size", [5, 3, 5])
 
+    # 物体真实 AABB（trimesh 读出，由 collect_models 写入 intermediate.asset_metadata）
+    asset_metadata = intermediate.get("asset_metadata", {})
+    logger.info("compose_scene: asset_metadata 含 %d 个物体 AABB", len(asset_metadata))
+
     tool = get_tool("place_scene_from_items")
     logger.info("compose_scene: 工具获取完成 (found=%s)", tool is not None)
     if tool is None:
         return {"error": "place_scene_from_items 工具未注册"}
 
-    # ---- 智能布局：用 LLM 生成位置覆盖 ----
+    # ---- 智能布局：用 LLM 生成位置覆盖（注入 AABB 真实尺寸）----
     if prompt:
-        layouts = _call_llm_for_layout(prompt, room_size, placement_items)
+        layouts = _call_llm_for_layout(prompt, room_size, placement_items, asset_metadata)
         if layouts:
             placement_items = _apply_llm_layout(list(placement_items), layouts)
             logger.info("compose_scene: 已应用 LLM 智能布局")

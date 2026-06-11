@@ -154,6 +154,7 @@ def generate_single_item(
                     "mode": "image_to_3d",
                     "images": [image_url],
                     "object_id": object_id,
+                    "prompt": name,  # 用于目录命名 (image_to_3d 模式下不发给 API)
                 }
             raw = generate_tool.invoke(tool_input)
             model_info = parse_3d_result(raw)

@@ -8,6 +8,7 @@ import re
 
 # 多场景并行工作流 function_id
 PARALLEL_GENERATE_FUNCTION_ID = 21004
+PARALLEL_GENERATE_V2_FUNCTION_ID = 21008  # 使用 scene_composition_v2
 
 # 单次请求最多并发的子场景数
 # 限制为 2：Vulkan 引擎长时间运行 (>15min) 会出现 timeline semaphore 溢出崩溃
