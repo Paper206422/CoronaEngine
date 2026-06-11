@@ -446,13 +446,11 @@ class SceneComposer:
             # 盒子中心在房间中心，底部 Y=0
             actor.set_position([0.0, height / 2.0, 0.0], True)
             actor.set_scale([width, height, depth], True)
-            # 开碰撞，锁死不动——整个盒子一个刚体，撑不开
+            # 盒子作为静态碰撞体：不参与物理运动，只挡住内部物体
             mech = getattr(actor, "_mechanics", None)
             if mech is not None:
                 try:
-                    mech.set_physics_enabled(True)
-                    mech.set_damping(1.0)
-                    mech.set_restitution(0.0)
+                    mech.set_physics_enabled(False)
                 except Exception:
                     pass
             scene.add_actor(actor)
@@ -535,8 +533,8 @@ class SceneComposer:
                 logger.info("[SceneComposer] import 完成: 成功 %d, 失败 %d",
                             len(imported), len(failed))
 
-                # 受控物理沉降：回设原位 → 极短暂开物理(消重叠) → 立即关掉
-                # 避免完全关物理导致穿模，也避免物理开着导致物体弹飞
+                # 受控后处理：导入完成后一次性修正所有物体位置
+                # 原则：位置修正全在物理关闭时做，最后只开一次极短物理消穿模
                 if imported and actors:
                     import time as _t
                     try:
@@ -545,13 +543,16 @@ class SceneComposer:
                         if scene is None:
                             routes = _sm.list_all()
                             scene = _sm.get(routes[0]) if routes else None
+                        if scene is None:
+                            raise RuntimeError("无可用场景")
 
-                        # 构建 actor name → 原始 geometry
                         geo_map = {a.get("name") or a.get("source_name", ""): a.get("geometry", {})
                                    for a in actors if a.get("geometry")}
+                        w, d, h = self.room_size[0], self.room_size[1], self.room_size[2]
+                        hw, hd, margin = w / 2.0, d / 2.0, 0.15
 
-                        # 第一阶段：全关物理 + 回设原位
-                        mecha = []
+                        # 第一步：回设 LLM 位置 + 钳制 + 整平（物理全程关）
+                        mecha, fixed, clamped, leveled = [], 0, 0, 0
                         for actor_name in imported:
                             actor = scene.find_actor(actor_name) if scene else None
                             if actor is None:
@@ -560,107 +561,70 @@ class SceneComposer:
                             if mech is not None:
                                 try:
                                     mech.set_physics_enabled(False)
-                                    mech.set_damping(0.98)       # 超高阻尼
-                                    mech.set_restitution(0.0)    # 零弹性
+                                    mech.set_damping(0.98)
+                                    mech.set_restitution(0.0)
                                     mecha.append((actor, mech))
                                 except Exception:
                                     pass
-                            # 回设原始位置
+
                             geo = geo_map.get(actor_name, {})
+                            x, y, z = actor.get_position()
+                            rx, ry, rz = actor.get_rotation()
+
+                            # 回设 LLM 布局位置
                             if geo.get("pos"):
-                                actor.set_position(geo["pos"])
-                            if geo.get("rot"):
-                                actor.set_rotation(geo["rot"])
+                                px, py, pz = geo["pos"]
+                                if abs(x - px) > 0.01 or abs(y - py) > 0.01 or abs(z - pz) > 0.01:
+                                    x, y, z = px, py, pz
+                                    fixed += 1
+
+                            # 钳制到房间盒子内
+                            changed = False
+                            if x < -hw + margin: x = -hw + margin; changed = True
+                            elif x > hw - margin: x = hw - margin; changed = True
+                            if y < margin: y = margin; changed = True
+                            elif y > h - margin: y = h - margin; changed = True
+                            if z < -hd + margin: z = -hd + margin; changed = True
+                            elif z > hd - margin: z = hd - margin; changed = True
+                            if changed:
+                                clamped += 1
+
+                            # 地面整平：底部贴 Y=0，去倾斜
+                            aabb_h = self._get_object_height(actor_name, asset_meta, geo_map)
+                            if aabb_h > 0 and abs(y - aabb_h / 2.0) > 0.02:
+                                y = aabb_h / 2.0
+                                changed = True
+                            if abs(rx) > 0.01 or abs(rz) > 0.01:
+                                rx, rz = 0.0, 0.0
+                                changed = True
+                            if changed:
+                                leveled += (1 if aabb_h > 0 else 0)
+
+                            actor.set_position([x, y, z])
+                            actor.set_rotation([rx, ry, rz])
                             if geo.get("scale"):
                                 actor.set_scale(geo["scale"])
-                        logger.info("[SceneComposer] 位置回设完成: %d 个物体", len(mecha))
 
-                        # 第二阶段：短暂开物理，仅消重叠
+                        logger.info("[SceneComposer] 修正: 回设%d 钳制%d 整平%d",
+                                    fixed, clamped, leveled)
+
+                        # 第二步：仅一次极短暂物理消穿模（0.25s，阻尼 0.98 基本不位移）
                         if mecha:
                             for _actor, mech in mecha:
                                 try:
                                     mech.set_physics_enabled(True)
                                 except Exception:
                                     pass
-                            _t.sleep(0.6)  # 够消重叠，不够弹飞
+                            _t.sleep(0.25)
                             for _actor, mech in mecha:
                                 try:
                                     mech.set_physics_enabled(False)
                                 except Exception:
                                     pass
 
-                        # 第三阶段：位置钳制——把跑出盒子外的物体强制拉回
-                        w, d, h = self.room_size[0], self.room_size[1], self.room_size[2]
-                        hw, hd = w / 2.0, d / 2.0
-                        margin = 0.15  # 离边界留一点空隙，避免嵌进墙里
-                        clamped = 0
-                        for actor_name in imported:
-                            actor = scene.find_actor(actor_name) if scene else None
-                            if actor is None:
-                                continue
-                            x, y, z = actor.get_position()
-                            changed = False
-                            if x < -hw + margin:
-                                x = -hw + margin; changed = True
-                            elif x > hw - margin:
-                                x = hw - margin; changed = True
-                            if y < margin:
-                                y = margin; changed = True
-                            elif y > h - margin:
-                                y = h - margin; changed = True
-                            if z < -hd + margin:
-                                z = -hd + margin; changed = True
-                            elif z > hd - margin:
-                                z = hd - margin; changed = True
-                            if changed:
-                                actor.set_position([x, y, z])
-                                clamped += 1
-
-                        # 第四阶段：地面整平——所有落地物体底部贴地、不倾斜
-                        leveled = 0
-                        for actor_name in imported:
-                            actor = scene.find_actor(actor_name) if scene else None
-                            if actor is None:
-                                continue
-                            # 获取当前位姿
-                            x, y, z = actor.get_position()
-                            rx, ry, rz = actor.get_rotation()
-                            changed = False
-                            # 用 AABB 高度把底部拉到 Y=0
-                            aabb_h = self._get_object_height(actor_name, asset_meta, geo_map)
-                            if aabb_h > 0 and abs(y - aabb_h / 2.0) > 0.02:
-                                y = aabb_h / 2.0  # 底部贴地
-                                changed = True
-                            elif y < margin:
-                                y = margin; changed = True
-                            # 只保留绕 Y 的旋转（水平方向），归零 X/Z 倾斜
-                            if abs(rx) > 0.01 or abs(rz) > 0.01:
-                                rx, rz = 0.0, 0.0
-                                changed = True
-                            if changed:
-                                actor.set_position([x, y, z])
-                                actor.set_rotation([rx, ry, rz])
-                                leveled += 1
-
-                        # 第五阶段：整平+钳制后，最后来一次物理消穿模
-                        if clamped > 0 or leveled > 0:
-                            if leveled:
-                                logger.info("[SceneComposer] 地面整平 %d 个物体", leveled)
-                            for _actor, mech in mecha:
-                                try:
-                                    mech.set_physics_enabled(True)
-                                except Exception:
-                                    pass
-                            _t.sleep(0.35)
-                            for _actor, mech in mecha:
-                                try:
-                                    mech.set_physics_enabled(False)
-                                except Exception:
-                                    pass
-
-                        logger.info("[SceneComposer] 受控沉降+钳制+整平完成: %d 个物体", len(mecha))
+                        logger.info("[SceneComposer] 后处理完成: %d 个物体", len(mecha))
                     except Exception as e:
-                        logger.warning("[SceneComposer] 受控沉降失败（忽略）: %s", e)
+                        logger.warning("[SceneComposer] 后处理失败（忽略）: %s", e)
             except Exception as e:
                 logger.exception("[SceneComposer] import_to_engine 异常: %s", e)
                 failed = [it["name"] for it in resolved]
