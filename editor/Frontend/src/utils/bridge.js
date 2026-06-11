@@ -376,10 +376,11 @@ export const projectSettingsService = {
 };
 
 export const networkService = {
-  startSession: (instanceName, projectId, port = 27960) =>
-    Bridge.callCEF('Network', 'start_session', [instanceName, projectId, port]).then(_unwrap),
+  startSession: (instanceName, projectId, port = 27960, role = 'host') =>
+    Bridge.callCEF('Network', 'start_session', [instanceName, projectId, port, role]).then(_unwrap),
   stopSession: () => Bridge.callCEF('Network', 'stop_session').then(_unwrap),
   getPeerCount: () => Bridge.callCEF('Network', 'get_peer_count').then(_unwrap),
+  getSessionInfo: () => Bridge.callCEF('Network', 'get_session_info').then(_unwrap),
   connectToPeer: (ip, port, peerName) =>
     Bridge.callCEF('Network', 'connect_to_peer', [ip, port, peerName]).then(_unwrap),
   setProjectRoot: (projectRoot) =>

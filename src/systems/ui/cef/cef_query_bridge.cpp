@@ -50,6 +50,34 @@ std::uintptr_t json_to_uintptr(const nlohmann::json& value) {
     }
     return 0;
 }
+
+Corona::Systems::NetworkSystem::SessionRole parse_network_session_role(
+    const nlohmann::json& value) {
+    if (!value.is_string()) {
+        return Corona::Systems::NetworkSystem::SessionRole::Host;
+    }
+    auto role = value.get<std::string>();
+    if (role == "client") {
+        return Corona::Systems::NetworkSystem::SessionRole::Client;
+    }
+    if (role == "none") {
+        return Corona::Systems::NetworkSystem::SessionRole::None;
+    }
+    return Corona::Systems::NetworkSystem::SessionRole::Host;
+}
+
+nlohmann::json build_network_session_info(
+    const std::shared_ptr<Corona::Systems::NetworkSystem>& sys) {
+    nlohmann::json payload;
+    payload["ok"] = true;
+    payload["active"] =
+        sys->session_state() == Corona::Systems::NetworkSystem::SessionState::Active;
+    payload["role"] = std::string(sys->session_role_name());
+    payload["peer_count"] = static_cast<int>(sys->peer_count());
+    payload["host_address"] = sys->host_address();
+    payload["host_port"] = sys->host_port();
+    return payload;
+}
 }  // namespace
 
 BrowserSideJSHandler::~BrowserSideJSHandler() {
@@ -194,13 +222,16 @@ bool BrowserSideJSHandler::OnQuery(CefRefPtr<CefBrowser> browser,
                 }
 
                 if (func == "start_session") {
-                    // args: [instance_name, project_id, port]
+                    // args: [instance_name, project_id, port, role]
                     std::string name = args.size() > 0 ? args[0].get<std::string>() : "";
                     uint64_t project_id = args.size() > 1 ? args[1].get<uint64_t>() : 0;
                     uint16_t port = args.size() > 2 ? args[2].get<uint16_t>() : 27960;
+                    auto role = args.size() > 3
+                        ? parse_network_session_role(args[3])
+                        : Corona::Systems::NetworkSystem::SessionRole::Host;
 
-                    bool ok = sys->start_session(name, project_id, port);
-                    nlohmann::json payload;
+                    bool ok = sys->start_session(name, project_id, port, role);
+                    nlohmann::json payload = build_network_session_info(sys);
                     payload["ok"] = ok;
                     callback->Success(create_success_json("start_session", payload));
                     return true;
@@ -215,10 +246,14 @@ bool BrowserSideJSHandler::OnQuery(CefRefPtr<CefBrowser> browser,
                 }
 
                 if (func == "get_peer_count") {
-                    nlohmann::json payload;
-                    payload["ok"] = true;
-                    payload["peer_count"] = static_cast<int>(sys->peer_count());
+                    nlohmann::json payload = build_network_session_info(sys);
                     callback->Success(create_success_json("get_peer_count", payload));
+                    return true;
+                }
+
+                if (func == "get_session_info") {
+                    callback->Success(create_success_json(
+                        "get_session_info", build_network_session_info(sys)));
                     return true;
                 }
 
@@ -229,7 +264,7 @@ bool BrowserSideJSHandler::OnQuery(CefRefPtr<CefBrowser> browser,
                     std::string peer_name = args.size() > 2 ? args[2].get<std::string>() : "";
 
                     bool ok = sys->connect_to_peer(ip, port, peer_name);
-                    nlohmann::json payload;
+                    nlohmann::json payload = build_network_session_info(sys);
                     payload["ok"] = ok;
                     callback->Success(create_success_json("connect_to_peer", payload));
                     return true;

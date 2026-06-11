@@ -13,18 +13,18 @@ namespace Corona::Network {
 constexpr uint8_t kProtocolVersion = 1;
 
 // ============================================================================
-// Default port for discovery and ENet communication
+// Default port for ENet communication
 // ============================================================================
 constexpr uint16_t kDefaultPort = 27960;
 
 // ============================================================================
-// Discovery uses a separate port to avoid bind conflict with ENet host.
-// Discovery port = main_port + 1 (e.g. 27960 → 27961)
+// Legacy discovery constants. NetworkSystem no longer starts LAN broadcast
+// discovery; direct IP joining is the active connection path.
 // ============================================================================
 constexpr uint16_t kDiscoveryPortOffset = 1;
 
 // ============================================================================
-// Discovery broadcast interval (ms)
+// Legacy discovery broadcast interval (ms)
 // ============================================================================
 constexpr int kDiscoveryIntervalMs = 500;
 

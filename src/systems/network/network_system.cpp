@@ -22,21 +22,22 @@ struct NetworkSystem::Impl {
     Kernel::ISystemContext* ctx = nullptr;
 
     // Subsystems
-    Network::Discovery discovery;
     Network::PeerManager peer_manager;
     Network::SyncEngine sync_engine;
     Network::NetworkIdentityRegistry identity_registry{SharedDataHub::instance()};
 
     // State
     SessionState session_state{SessionState::Idle};
+    SessionRole session_role{SessionRole::None};
     std::string instance_name;
+    std::string host_address;
+    uint16_t host_port = 0;
     uint64_t project_id = 0;
     uint16_t port = Network::kDefaultPort;
 
     // Timing for sync ticks
     using Clock = std::chrono::steady_clock;
     Clock::time_point last_sync_time;
-    Clock::time_point last_discovery_poll;
 
     // Event subscription IDs
     std::vector<Kernel::EventId> event_subscriptions;
@@ -97,6 +98,20 @@ struct NetworkSystem::Impl {
     uint64_t next_transfer_id = 1;
 };
 
+namespace {
+std::string_view session_role_label(NetworkSystem::SessionRole role) {
+    switch (role) {
+    case NetworkSystem::SessionRole::Host:
+        return "host";
+    case NetworkSystem::SessionRole::Client:
+        return "client";
+    case NetworkSystem::SessionRole::None:
+    default:
+        return "none";
+    }
+}
+}  // namespace
+
 // ============================================================================
 // Lifecycle
 // ============================================================================
@@ -155,12 +170,6 @@ bool NetworkSystem::initialize(Kernel::ISystemContext* ctx) {
             on_peer_disconnected(info);
         });
 
-    // Wire up Discovery → PeerManager connect path
-    impl_->discovery.set_on_peer_discovered(
-        [this](const std::string& ip, const std::string& name, uint64_t proj_id) {
-            on_peer_discovered(ip, name, proj_id);
-        });
-
     return true;
 }
 
@@ -171,13 +180,6 @@ void NetworkSystem::update() {
 
     // Poll ENet events every tick
     impl_->peer_manager.poll();
-
-    // Poll Discovery broadcasts
-    if (now - impl_->last_discovery_poll >=
-        std::chrono::milliseconds(Network::kDiscoveryIntervalMs)) {
-        impl_->discovery.poll();
-        impl_->last_discovery_poll = now;
-    }
 
     // Sync engine tick (~60 Hz) — paused during remote actor creation
     // to ensure both peers build identical storage layouts (seq_id alignment).
@@ -206,23 +208,31 @@ void NetworkSystem::shutdown() {
 // ============================================================================
 
 bool NetworkSystem::start_session(const std::string& instance_name,
-                                  uint64_t project_id, uint16_t port) {
+                                  uint64_t project_id, uint16_t port,
+                                  SessionRole role) {
     if (impl_->session_state == SessionState::Active) {
         CFW_LOG_WARNING("NetworkSystem: Session already active");
+        if (role != SessionRole::None) {
+            impl_->session_role = role;
+        }
         return true;
     }
 
     impl_->session_state = SessionState::Starting;
+    impl_->session_role = role == SessionRole::None ? SessionRole::Host : role;
     impl_->instance_name = instance_name;
+    impl_->host_address.clear();
+    impl_->host_port = 0;
     impl_->project_id = project_id;
     impl_->port = port;
 
-    CFW_LOG_INFO("NetworkSystem: Starting session '{}' on port {} (project={:x})",
-                 instance_name, port, project_id);
+    CFW_LOG_INFO("NetworkSystem: Starting manual-IP session '{}' on port {} role={} (project={:x})",
+                 instance_name, port, session_role_label(impl_->session_role), project_id);
 
     // 1. PeerManager
     if (!impl_->peer_manager.start(port, instance_name)) {
         impl_->session_state = SessionState::Error;
+        impl_->session_role = SessionRole::None;
         CFW_LOG_ERROR("NetworkSystem: Failed to start PeerManager");
         return false;
     }
@@ -230,27 +240,8 @@ bool NetworkSystem::start_session(const std::string& instance_name,
     // 2. SyncEngine
     impl_->sync_engine.initialize(impl_->peer_manager.local_peer_id());
 
-    // 3. Discovery (use port + 1 to avoid bind conflict with ENet)
-    // If Discovery fails (port already in use by another instance), retry
-    // with port+2, port+3 (same-machine multi-instance).
-    uint16_t disc_port = port + Network::kDiscoveryPortOffset;
-    bool disc_ok = impl_->discovery.start(disc_port, instance_name, project_id);
-    for (int retry = 1; !disc_ok && retry <= 2; ++retry) {
-        disc_port = port + Network::kDiscoveryPortOffset + static_cast<uint16_t>(retry);
-        CFW_LOG_WARNING("NetworkSystem: Discovery port {} in use, retrying on {}",
-                         port + Network::kDiscoveryPortOffset, disc_port);
-        disc_ok = impl_->discovery.start(disc_port, instance_name, project_id);
-    }
-    if (!disc_ok) {
-        impl_->peer_manager.stop();
-        impl_->session_state = SessionState::Error;
-        CFW_LOG_ERROR("NetworkSystem: Failed to start Discovery on any port");
-        return false;
-    }
-
     impl_->session_state = SessionState::Active;
     impl_->last_sync_time = Impl::Clock::now();
-    impl_->last_discovery_poll = Impl::Clock::now();
 
     // Publish event
     if (impl_->ctx && impl_->ctx->event_bus()) {
@@ -258,7 +249,8 @@ bool NetworkSystem::start_session(const std::string& instance_name,
         impl_->ctx->event_bus()->publish(ev);
     }
 
-    CFW_LOG_INFO("NetworkSystem: Session active — listening on port {}", port);
+    CFW_LOG_INFO("NetworkSystem: Session active — listening on port {} role={}",
+                 port, session_role_label(impl_->session_role));
     return true;
 }
 
@@ -266,15 +258,14 @@ void NetworkSystem::stop_session() {
     if (impl_->session_state != SessionState::Active &&
         impl_->session_state != SessionState::Error) return;
 
-    // Stop ENet host FIRST (it relies on WinSock, which discovery owns the
-    // WSAStartup/WSACleanup for). Tearing down discovery first would call
-    // WSACleanup() while ENet sockets are still open, hanging enet_host_destroy.
     impl_->peer_manager.stop();
     impl_->sync_engine.shutdown();
-    impl_->discovery.stop();
     impl_->identity_registry.clear();
 
     impl_->session_state = SessionState::Idle;
+    impl_->session_role = SessionRole::None;
+    impl_->host_address.clear();
+    impl_->host_port = 0;
 
     // Publish event
     if (impl_->ctx && impl_->ctx->event_bus()) {
@@ -289,6 +280,22 @@ NetworkSystem::SessionState NetworkSystem::session_state() const {
     return impl_->session_state;
 }
 
+NetworkSystem::SessionRole NetworkSystem::session_role() const {
+    return impl_->session_role;
+}
+
+std::string_view NetworkSystem::session_role_name() const {
+    return Corona::Systems::session_role_label(impl_->session_role);
+}
+
+const std::string& NetworkSystem::host_address() const {
+    return impl_->host_address;
+}
+
+uint16_t NetworkSystem::host_port() const {
+    return impl_->host_port;
+}
+
 size_t NetworkSystem::peer_count() const {
     return impl_->peer_manager.peer_count();
 }
@@ -299,7 +306,14 @@ bool NetworkSystem::connect_to_peer(const std::string& ip, uint16_t port,
         CFW_LOG_WARNING("NetworkSystem: Cannot connect — session not active");
         return false;
     }
+    if (ip.empty()) {
+        CFW_LOG_WARNING("NetworkSystem: Cannot connect — host IP is empty");
+        return false;
+    }
     impl_->peer_manager.connect_to_peer(ip, port, peer_name, /*force=*/true);
+    impl_->session_role = SessionRole::Client;
+    impl_->host_address = ip;
+    impl_->host_port = port;
     return true;
 }
 
@@ -370,12 +384,6 @@ void NetworkSystem::set_project_root(const std::string& project_root) {
 // ============================================================================
 // Callbacks
 // ============================================================================
-
-void NetworkSystem::on_peer_discovered(const std::string& ip,
-                                       const std::string& name,
-                                       uint64_t /*project_id*/) {
-    impl_->peer_manager.connect_to_peer(ip, impl_->port, name);
-}
 
 void NetworkSystem::on_peer_connected(const Network::PeerManager::PeerInfo& info) {
     CFW_LOG_INFO("NetworkSystem: Peer connected — {} ({})", info.id, info.name);

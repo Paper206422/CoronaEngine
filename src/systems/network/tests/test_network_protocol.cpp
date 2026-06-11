@@ -1,5 +1,6 @@
 #include <corona/systems/network/file_transfer.h>
 #include <corona/systems/network/network_identity.h>
+#include <corona/systems/network/network_system.h>
 #include <corona/systems/network/protocol.h>
 #include <corona/systems/network/sync_engine.h>
 #include <corona/shared_data_hub.h>
@@ -130,6 +131,15 @@ void test_project_relative_path_validation() {
                 "absolute path rejected");
     expect_true(!Corona::Network::resolve_project_relative_path(root, "").has_value(),
                 "empty path rejected");
+}
+
+void test_network_system_session_role_defaults_to_none() {
+    Corona::Systems::NetworkSystem sys;
+
+    expect_true(sys.session_role() == Corona::Systems::NetworkSystem::SessionRole::None,
+                "network system default session role is none");
+    expect_true(sys.session_role_name() == "none",
+                "network system default session role label");
 }
 
 void test_network_identity_registry_resolves_actor_components() {
@@ -355,6 +365,7 @@ int main() {
     test_file_request_carries_transfer_id();
     test_file_chunk_carries_transfer_id_and_offset();
     test_project_relative_path_validation();
+    test_network_system_session_role_defaults_to_none();
     test_network_identity_registry_resolves_actor_components();
     test_sync_engine_marks_actor_dirty_entries_with_guid();
     test_sync_engine_does_not_emit_geometry_resource_or_optics_entries();

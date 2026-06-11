@@ -6,7 +6,6 @@
 #include <corona/kernel/system/system_base.h>
 
 #include <corona/systems/network/protocol.h>
-#include <corona/systems/network/discovery.h>
 #include <corona/systems/network/network_identity.h>
 #include <corona/systems/network/peer_manager.h>
 #include <corona/systems/network/sync_engine.h>
@@ -22,11 +21,11 @@ namespace Corona::Systems {
 /**
  * @brief 网络系统 — 基于 ENet 可靠 UDP 的局域网多人协同编辑。
  *
- * 每个实例既是服务端也是客户端（full-mesh）。
+ * 采用手动 IP 连接模型：房主启动监听，客户端输入房主 IP 加入。
+ * 每个实例仍保留 ENet host 用于收发同步数据。
  * 采用 Last-Write-Wins (LWW) 冲突解决策略。
  *
  * 架构：
- *   Discovery   — LAN UDP 广播发现
  *   PeerManager — ENet host + full-mesh peer 管理
  *   SyncEngine  — SharedDataHub 脏轮询 + LWW 合并
  *
@@ -40,6 +39,13 @@ public:
         Starting,     ///< 正在启动
         Active,       ///< 已启动，可收发同步
         Error         ///< 启动失败
+    };
+
+    /// 当前实例在协同会话中的身份。
+    enum class SessionRole : uint8_t {
+        None = 0,      ///< 未加入任何会话
+        Host,          ///< 房主：创建房间并等待客户端输入 IP 加入
+        Client         ///< 客户端：通过房主 IP 主动加入
     };
 
     NetworkSystem();
@@ -61,14 +67,16 @@ public:
     // ========================================
 
     /**
-     * @brief 启动局域网协同会话（广播发现 + ENet host）。
+     * @brief 启动协同会话（仅 ENet host；不再自动广播发现）。
      * @param instance_name 本实例名（用于 UI 显示，最多 31 字符）
-     * @param project_id    项目标识 hash（仅同项目 peer 互联）
+     * @param project_id    保留字段，兼容旧调用；手动 IP 连接不依赖它
      * @param port          UDP 端口（默认 kDefaultPort = 27960）
+     * @param role          会话身份（房主或客户端）
      * @return true 成功
      */
     bool start_session(const std::string& instance_name, uint64_t project_id,
-                       uint16_t port = Network::kDefaultPort);
+                       uint16_t port = Network::kDefaultPort,
+                       SessionRole role = SessionRole::Host);
 
     /// 停止会话，断开所有 peer，关闭 host。
     void stop_session();
@@ -76,10 +84,22 @@ public:
     /// 当前会话状态。
     [[nodiscard]] SessionState session_state() const;
 
+    /// 当前会话身份。
+    [[nodiscard]] SessionRole session_role() const;
+
+    /// 当前会话身份字符串，用于 UI/日志：none、host、client。
+    [[nodiscard]] std::string_view session_role_name() const;
+
+    /// 客户端记录的房主地址；房主或未连接时为空。
+    [[nodiscard]] const std::string& host_address() const;
+
+    /// 客户端记录的房主端口；房主或未连接时为 0。
+    [[nodiscard]] uint16_t host_port() const;
+
     /// 已连接的 peer 数量。
     [[nodiscard]] size_t peer_count() const;
 
-    /// 手动连接到指定 IP 的 peer（绕过自动发现）。
+    /// 手动连接到指定 IP 的房主或 peer。
     /// 要求会话已启动。force=true 跳过 ID 排序，由主动方发起连接。
     bool connect_to_peer(const std::string& ip, uint16_t port,
                          const std::string& peer_name);
@@ -150,7 +170,6 @@ private:
     // 内部回调
     // ========================================
 
-    void on_peer_discovered(const std::string& ip, const std::string& name, uint64_t project_id);
     void on_peer_connected(const Network::PeerManager::PeerInfo& info);
     void on_peer_disconnected(const Network::PeerManager::PeerInfo& info);
     void on_data_received(const std::string& peer_id, const uint8_t* data, size_t len);

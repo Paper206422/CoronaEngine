@@ -34,7 +34,7 @@ public:
         bool outbound = false;    // true if WE initiated this connection
     };
 
-    /// Called when a new peer connects (after discovery handshake completes).
+    /// Called when a new peer connects (after the HELLO handshake completes).
     using OnPeerConnected = std::function<void(const PeerInfo&)>;
 
     /// Called when a peer disconnects (timeout or explicit leave).
@@ -56,7 +56,7 @@ public:
 
     /**
      * @brief Create the ENet host and start listening on `port`.
-     * @param port           UDP port for ENet (same as discovery port).
+     * @param port           UDP port for ENet.
      * @param instance_name  Local instance name (used as peer_id tiebreaker).
      * @return true on success.
      */
@@ -70,9 +70,9 @@ public:
     // ========================================================================
 
     /**
-     * @brief Connect to a remote peer discovered via Discovery.
+     * @brief Connect to a remote peer by IP/port.
      * If the peer is already connected or connecting, it is ignored.
-     * Applies the ID-ordering rule: only connect if local ID < remote ID.
+     * Unless force=true, applies the ID-ordering rule to avoid duplicate links.
      */
     void connect_to_peer(const std::string& ip, uint16_t port,
                          const std::string& peer_name, bool force = false);

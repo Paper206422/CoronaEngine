@@ -23,17 +23,6 @@
         </div>
 
         <div class="flex flex-col gap-1">
-          <label class="text-gray-400">协同会话 ID</label>
-          <input
-            v-model="sessionToken"
-            type="text"
-            maxlength="63"
-            placeholder="输入相同的会话 ID 即可互联..."
-            class="bg-[#1e1e1e] border border-gray-600 rounded px-2 py-1 text-white focus:border-[#4a9eff] focus:outline-none"
-          />
-        </div>
-
-        <div class="flex flex-col gap-1">
           <label class="text-gray-400">端口 (UDP)</label>
           <input
             v-model.number="port"
@@ -47,10 +36,10 @@
         <div class="flex gap-2">
           <button
             v-if="!sessionActive"
-            @click="startSession"
+            @click="startHostSession"
             class="px-4 py-1.5 bg-[#4a9eff] hover:bg-[#3a8eef] rounded text-white font-medium transition-colors"
           >
-            启动会话
+            创建房间
           </button>
           <button
             v-else
@@ -63,7 +52,10 @@
 
         <div v-if="sessionActive" class="flex items-center gap-2 text-green-400">
           <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-          会话运行中 — 端口 {{ port }}
+          会话运行中 — {{ roleLabel }} — 端口 {{ port }}
+        </div>
+        <div v-if="sessionActive && sessionRole === 'client' && hostAddress" class="text-gray-400">
+          房主：{{ hostAddress }}:{{ hostPort }}
         </div>
         <div v-if="errorMsg" class="text-red-400">{{ errorMsg }}</div>
       </div>
@@ -77,8 +69,7 @@
             v-model="remoteIp"
             type="text"
             placeholder="192.168.1.100"
-            :disabled="!sessionActive"
-            class="bg-[#1e1e1e] border border-gray-600 rounded px-2 py-1 text-white focus:border-[#4a9eff] focus:outline-none disabled:opacity-50"
+            class="bg-[#1e1e1e] border border-gray-600 rounded px-2 py-1 text-white focus:border-[#4a9eff] focus:outline-none"
           />
         </div>
         <div class="flex gap-2">
@@ -89,8 +80,7 @@
               type="number"
               min="1024"
               max="65535"
-              :disabled="!sessionActive"
-              class="bg-[#1e1e1e] border border-gray-600 rounded px-2 py-1 text-white w-24 focus:border-[#4a9eff] focus:outline-none disabled:opacity-50"
+              class="bg-[#1e1e1e] border border-gray-600 rounded px-2 py-1 text-white w-24 focus:border-[#4a9eff] focus:outline-none"
             />
           </div>
           <div class="flex flex-col gap-1 flex-1">
@@ -99,17 +89,16 @@
               v-model="remotePeerName"
               type="text"
               placeholder="可选"
-              :disabled="!sessionActive"
-              class="bg-[#1e1e1e] border border-gray-600 rounded px-2 py-1 text-white focus:border-[#4a9eff] focus:outline-none disabled:opacity-50"
+              class="bg-[#1e1e1e] border border-gray-600 rounded px-2 py-1 text-white focus:border-[#4a9eff] focus:outline-none"
             />
           </div>
         </div>
         <button
           @click="doConnectToPeer"
-          :disabled="!sessionActive"
+          :disabled="!remoteIp.trim() || connectStatus === 'connecting'"
           class="px-4 py-1.5 bg-[#84A65B] hover:bg-[#6f8d4a] rounded text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          连接
+          加入房间
         </button>
         <div v-if="connectStatus === 'connecting'" class="text-yellow-400 text-xs">正在连接...</div>
         <div v-else-if="connectStatus === 'success'" class="text-green-400 text-xs">连接请求已发送</div>
@@ -124,7 +113,7 @@
         </div>
 
         <div v-if="peers.length === 0" class="text-gray-500 italic">
-          {{ sessionActive ? '等待其他用户加入...' : '启动会话后可邀请他人加入' }}
+          {{ sessionActive ? '等待其他用户加入...' : '创建房间或输入房主 IP 加入' }}
         </div>
 
         <div v-else class="space-y-1">
@@ -162,9 +151,8 @@
       <div class="border-t border-gray-700 pt-3 text-gray-500 leading-relaxed">
         <p class="mb-1 font-medium text-gray-400">使用说明</p>
         <ul class="list-disc list-inside space-y-1">
-          <li>输入"协同会话 ID"（所有参与者需填写相同的 ID）</li>
-          <li>同一局域网内的实例会自动发现彼此</li>
-          <li>也可在"手动连接"中输入对方 IP 地址直接连接</li>
+          <li>房主点击"创建房间"，客户端输入房主 IP 后点击"加入房间"</li>
+          <li>两端端口需要一致，默认使用 27960/UDP</li>
           <li>同时编辑同一物体时，最后写入者胜出 (LWW)</li>
         </ul>
       </div>
@@ -173,7 +161,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue';
+import { computed, ref, onMounted, onUnmounted } from 'vue';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
 import { Bridge, networkService } from '@/utils/bridge';
 import { useDockStore } from '@/stores/dockStore';
@@ -182,9 +170,11 @@ import { coronaEventBus } from '@/utils/eventBus';
 const dock = useDockStore();
 const isDocked = ref(true);
 const instanceName = ref('');
-const sessionToken = ref('');
 const port = ref(27960);
 const sessionActive = ref(false);
+const sessionRole = ref('none');
+const hostAddress = ref('');
+const hostPort = ref(0);
 const errorMsg = ref('');
 const peers = ref([]);
 
@@ -197,37 +187,55 @@ const remoteActorLog = ref(''); // latest remote actor creation log
 
 let pollTimer = null;
 
-async function startSession() {
+const roleLabel = computed(() => {
+  if (sessionRole.value === 'host') return '房主';
+  if (sessionRole.value === 'client') return '客户端';
+  return '未加入';
+});
+
+function applySessionInfo(info) {
+  if (!info) return;
+  sessionActive.value = Boolean(info.active ?? sessionActive.value);
+  sessionRole.value = info.role || sessionRole.value || 'none';
+  hostAddress.value = info.host_address || '';
+  hostPort.value = info.host_port || 0;
+}
+
+async function ensureProjectRoot() {
+  try {
+    const mod = await import('@/utils/bridge');
+    const raw = await mod.projectSettingsService.getActiveProjectInfo();
+    const info = raw?.data || raw || {};
+    const projPath = info?.project_path || '';
+    if (projPath) {
+      await networkService.setProjectRoot(projPath);
+    }
+  } catch (_) {
+    /* best effort */
+  }
+}
+
+async function startSessionAsRole(role) {
   errorMsg.value = '';
   try {
-    // project_id is derived from the session token (user-chosen string).
-    // All peers must enter the same token to discover each other.
-    // This is independent of project directory paths, so two editors
-    // with different project root paths can still collaborate.
-    const token = sessionToken.value.trim() || 'corona-collab';
-    const projectId = hashString(token);
-
-    // Also set project root for file transfer
-    try {
-      const mod = await import('@/utils/bridge');
-      const raw = await mod.projectSettingsService.getActiveProjectInfo();
-      const info = raw?.data || raw || {};
-      const projPath = info?.project_path || '';
-      if (projPath) {
-        await networkService.setProjectRoot(projPath);
-      }
-    } catch (_) { /* best effort */ }
-
-    const res = await networkService.startSession(instanceName.value, projectId, port.value);
+    await ensureProjectRoot();
+    const res = await networkService.startSession(instanceName.value, 0, port.value, role);
     if (res && res.ok) {
-      sessionActive.value = true;
+      applySessionInfo(res);
       startPolling();
+      return true;
     } else {
       errorMsg.value = (res && res.error) || '启动失败';
+      return false;
     }
   } catch (e) {
     errorMsg.value = e.message;
+    return false;
   }
+}
+
+async function startHostSession() {
+  return startSessionAsRole('host');
 }
 
 async function stopSession() {
@@ -235,6 +243,9 @@ async function stopSession() {
   try {
     await networkService.stopSession();
     sessionActive.value = false;
+    sessionRole.value = 'none';
+    hostAddress.value = '';
+    hostPort.value = 0;
     peers.value = [];
     stopPolling();
   } catch (e) {
@@ -245,6 +256,7 @@ async function stopSession() {
 async function pollPeers() {
   try {
     const res = await networkService.getPeerCount();
+    applySessionInfo(res);
     if (res && res.peer_count !== undefined) {
       const count = res.peer_count;
       if (peers.value.length < count) {
@@ -300,9 +312,17 @@ function stopPolling() {
 async function doConnectToPeer() {
   connectStatus.value = 'connecting';
   try {
+    if (!sessionActive.value) {
+      const started = await startSessionAsRole('client');
+      if (!started) {
+        connectStatus.value = errorMsg.value || '本地会话启动失败';
+        return;
+      }
+    }
     const peerName = remotePeerName.value || remoteIp.value;
     const res = await networkService.connectToPeer(remoteIp.value, remotePort.value, peerName);
     if (res && res.ok) {
+      applySessionInfo(res);
       connectStatus.value = 'success';
       setTimeout(() => { connectStatus.value = ''; }, 3000);
     } else {
