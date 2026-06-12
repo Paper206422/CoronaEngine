@@ -342,6 +342,10 @@ void BindAll(nanobind::module_& m) {
              "Remove a camera from the scene")
         .def("clear_cameras", &Scene::clear_cameras,
              "Remove all cameras from the scene")
+        .def("set_active_camera", &Scene::set_active_camera, nb::arg("camera"),
+             "Set the active camera for this scene")
+        .def("get_active_camera_handle", &Scene::get_active_camera_handle,
+             "Get the active camera handle")
         .def("camera_count", &Scene::camera_count,
              "Get number of cameras in the scene")
         .def("has_camera", &Scene::has_camera, nb::arg("camera"),

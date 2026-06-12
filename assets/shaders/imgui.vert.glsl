@@ -1,5 +1,10 @@
 #version 460
 
+out gl_PerVertex
+{
+    vec4 gl_Position;
+};
+
 layout(push_constant) uniform PushConsts
 {
     layout(offset = 0) vec2 scale;

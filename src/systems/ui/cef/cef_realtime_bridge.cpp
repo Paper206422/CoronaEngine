@@ -20,6 +20,16 @@ namespace {
 static std::mutex s_input_mutex;
 static std::vector<InputEvent> s_input_queue;
 
+[[nodiscard]] std::uintptr_t select_scene_camera_handle(const Corona::SceneDevice& scene) {
+    if (scene.active_camera_handle != 0 &&
+        std::find(scene.camera_handles.begin(),
+                  scene.camera_handles.end(),
+                  scene.active_camera_handle) != scene.camera_handles.end()) {
+        return scene.active_camera_handle;
+    }
+    return scene.camera_handles.empty() ? 0 : scene.camera_handles.front();
+}
+
 }  // namespace (input queue)
 
 // ── drain_input_events: 消费所有积攒的输入事件 ──
@@ -227,9 +237,7 @@ bool handle_viewport_pick(const CefRefPtr<CefProcessMessage>& message) {
     // Get the scene's active camera
     std::uintptr_t camera_handle = 0;
     if (auto scene = hub.scene_storage().try_acquire_read(scene_handle)) {
-        if (!scene->camera_handles.empty()) {
-            camera_handle = scene->camera_handles[0];  // First camera = active
-        }
+        camera_handle = select_scene_camera_handle(*scene);
     }
     if (camera_handle == 0) {
         CFW_LOG_WARNING("ViewportPick: no camera found for scene {}", scene_handle);

@@ -1,6 +1,11 @@
 #version 460
 #extension GL_EXT_nonuniform_qualifier : enable
 
+out gl_PerVertex
+{
+    vec4 gl_Position;
+};
+
 layout(push_constant) uniform PushConsts
 {
     uint textureIndex;

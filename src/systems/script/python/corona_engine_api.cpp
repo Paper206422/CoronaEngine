@@ -214,6 +214,9 @@ void Corona::API::Scene::add_camera(Camera* camera) {
 
     if (auto accessor = SharedDataHub::instance().scene_storage().acquire_write(handle_)) {
         accessor->camera_handles.push_back(camera_handle);
+        if (accessor->active_camera_handle == 0) {
+            accessor->active_camera_handle = camera_handle;
+        }
     } else {
         // Roll back local state to keep Scene cache and shared storage consistent.
         cameras_.pop_back();
@@ -251,6 +254,11 @@ void Corona::API::Scene::remove_camera(Camera* camera) {
 
     if (auto accessor = SharedDataHub::instance().scene_storage().acquire_write(handle_)) {
         std::erase(accessor->camera_handles, camera->get_handle());
+        if (accessor->active_camera_handle == camera->get_handle()) {
+            accessor->active_camera_handle = accessor->camera_handles.empty()
+                                                 ? 0
+                                                 : accessor->camera_handles.front();
+        }
     } else {
         if (existed_in_vector) {
             cameras_.insert(std::next(cameras_.begin(), static_cast<std::vector<Camera*>::difference_type>(camera_pos)), camera);
@@ -273,11 +281,41 @@ void Corona::API::Scene::clear_cameras() {
 
     if (auto accessor = SharedDataHub::instance().scene_storage().acquire_write(handle_)) {
         accessor->camera_handles.clear();
+        accessor->active_camera_handle = 0;
     } else {
         cameras_ = cameras_backup;
         cameras_index_ = cameras_index_backup;
         CFW_LOG_ERROR("[Scene::clear_cameras] Failed to acquire write access to scene storage, rolled back local camera clear");
     }
+}
+
+void Corona::API::Scene::set_active_camera(Camera* camera) {
+    if (handle_ == 0) return;
+
+    if (camera == nullptr || !has_camera(camera)) {
+        CFW_LOG_WARNING("[Scene::set_active_camera] Camera not found in scene");
+        return;
+    }
+
+    if (auto accessor = SharedDataHub::instance().scene_storage().acquire_write(handle_)) {
+        accessor->active_camera_handle = camera->get_handle();
+    } else {
+        CFW_LOG_ERROR("[Scene::set_active_camera] Failed to acquire write access to scene storage");
+    }
+}
+
+std::uintptr_t Corona::API::Scene::get_active_camera_handle() const {
+    if (handle_ == 0) return 0;
+
+    if (auto accessor = SharedDataHub::instance().scene_storage().try_acquire_read(handle_)) {
+        if (accessor->active_camera_handle != 0) {
+            return accessor->active_camera_handle;
+        }
+        return accessor->camera_handles.empty() ? 0 : accessor->camera_handles.front();
+    }
+
+    CFW_LOG_ERROR("[Scene::get_active_camera_handle] Failed to acquire read access to scene storage");
+    return 0;
 }
 
 std::size_t Corona::API::Scene::camera_count() const {

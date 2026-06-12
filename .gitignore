@@ -20,6 +20,7 @@ Makefile
 .vs/
 .claude/
 codex.md
+AGENTS.md
 
 # Tool caches
 **/.cache/

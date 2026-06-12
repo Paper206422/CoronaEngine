@@ -12,7 +12,6 @@ from CoronaCore.utils.proejct_utils import (
     create_scene_from_template,
     get_project_scenes,
     set_project_scenes,
-    append_project_scene,
 )
 from utils.settings import core_path, settings_manager
 from plugins.SceneTools.main import SceneTools
@@ -24,13 +23,59 @@ logger = logging.getLogger(__name__)
 class MainView(PluginBase):
 
     @staticmethod
+    def _normalize_scene_path(scene_path: str) -> str:
+        scene_path = (scene_path or "").strip().replace("\\", "/")
+        project_path = settings_manager.active_project_path
+        if project_path and os.path.isabs(scene_path):
+            scene_path = os.path.relpath(scene_path, project_path).replace("\\", "/")
+        return scene_path
+
+    @staticmethod
+    def _sync_project_field(key: str, value: str) -> None:
+        config = settings_manager.active_project_config
+        if config is None:
+            return
+        if "Project" not in config:
+            config["Project"] = {}
+        config["Project"][key] = value
+
+    @staticmethod
+    def _write_project_scenes(ini_path: str, scenes: List[str]) -> None:
+        normalized = [MainView._normalize_scene_path(scene) for scene in scenes if scene]
+        set_project_scenes(ini_path, normalized)
+        MainView._sync_project_field("scenes", ",".join(normalized))
+
+    @staticmethod
+    def _project_scene_file(scene_path: str) -> Optional[str]:
+        project_path = settings_manager.active_project_path
+        scene_path = MainView._normalize_scene_path(scene_path)
+        if not project_path or not scene_path.lower().endswith(".scene"):
+            return None
+
+        scene_file = os.path.abspath(os.path.join(project_path, scene_path))
+        scene_dir = os.path.abspath(os.path.join(project_path, "Scene"))
+        try:
+            if os.path.commonpath([scene_file, scene_dir]) != scene_dir:
+                return None
+        except ValueError:
+            return None
+        return scene_file
+
+    @staticmethod
+    def _save_project_field(key: str, value: str) -> None:
+        MainView._sync_project_field(key, value)
+        settings_manager.save_active_project_info()
+
+    @staticmethod
     def on_init():
         project_path = settings_manager.active_project_path
         ini_path = os.path.join(project_path, 'project.ini') if project_path else None
-        default_scene = settings_manager.active_project_config['Project']['entrance_scene']
+        project_config = settings_manager.active_project_config['Project']
+        default_scene = MainView._normalize_scene_path(project_config.get('entrance_scene', ''))
+        active_scene = MainView._normalize_scene_path(project_config.get('active_scene', default_scene))
 
         # 从 project.ini 读取有序场景列表
-        ini_scenes = get_project_scenes(ini_path) if ini_path else []
+        ini_scenes = [MainView._normalize_scene_path(s) for s in get_project_scenes(ini_path)] if ini_path else []
 
         # 首次加载： ini 内没有列表时，自动扫描 Scene 目录并写回 ini
         if not ini_scenes and project_path:
@@ -42,33 +87,43 @@ class MainView(PluginBase):
                     if f.endswith('.scene')
                 ]
             # 确保入口场景在列表中，且处于首位
-            if default_scene not in ini_scenes:
+            if default_scene and default_scene not in ini_scenes:
                 ini_scenes.insert(0, default_scene)
-            elif ini_scenes[0] != default_scene:
+            elif default_scene and ini_scenes[0] != default_scene:
                 ini_scenes.remove(default_scene)
                 ini_scenes.insert(0, default_scene)
             if ini_path:
-                set_project_scenes(ini_path, ini_scenes)
+                MainView._write_project_scenes(ini_path, ini_scenes)
 
-        # 按 ini 列表顺序创建/获取场景对象，仅激活入口场景
+        # 按 ini 列表顺序创建/获取场景对象，稍后按 active_scene 激活
         scenes = []
         for route in ini_scenes:
             try:
                 s = scene_manager.get_or_create(route)
-                s.set_enabled(route == default_scene)
                 scenes.append({"path": s.route, "name": s.name})
             except Exception as e:
                 logger.warning("加载场景 '%s' 失败，已跳过：%s", route, e)
 
-        # 安全兄弟：如果入口场景不在列表中则补入头部
-        if not any(s['path'] == default_scene for s in scenes):
+        # 如果列表为空，则使用入口场景兜底
+        if not scenes and default_scene:
             s = scene_manager.get_or_create(default_scene)
-            s.set_enabled(True)
             scenes.insert(0, {"path": s.route, "name": s.name})
             if ini_path:
-                set_project_scenes(ini_path, [default_scene] + ini_scenes)
+                MainView._write_project_scenes(ini_path, [default_scene])
 
-        active_index = next((i for i, s in enumerate(scenes) if s['path'] == default_scene), 0)
+        scene_paths = [s['path'] for s in scenes]
+        if active_scene not in scene_paths:
+            active_scene = default_scene if default_scene in scene_paths else (scene_paths[0] if scene_paths else "")
+
+        for route in scene_paths:
+            scene = scene_manager.get(route)
+            if scene:
+                scene.set_enabled(route == active_scene)
+
+        if active_scene:
+            MainView._save_project_field("active_scene", active_scene)
+
+        active_index = next((i for i, s in enumerate(scenes) if s['path'] == active_scene), 0)
         return {"scenes": scenes, "active_index": active_index}
 
     @staticmethod
@@ -87,7 +142,10 @@ class MainView(PluginBase):
 
         # 将新场景追加写入 project.ini
         ini_path = os.path.join(project_path, 'project.ini')
-        append_project_scene(ini_path, route)
+        scenes = [MainView._normalize_scene_path(s) for s in get_project_scenes(ini_path)]
+        if route not in scenes:
+            scenes.append(route)
+            MainView._write_project_scenes(ini_path, scenes)
 
         logger.info("New scene file created: %s -> %s", scene_name, route)
         return {"path": route, "name": scene.name}
@@ -100,20 +158,48 @@ class MainView(PluginBase):
             raise ValueError("没有打开的项目")
 
         ini_path = os.path.join(project_path, 'project.ini')
-        scenes = get_project_scenes(ini_path)
+        scene_path = MainView._normalize_scene_path(scene_path)
+        scenes = [MainView._normalize_scene_path(s) for s in get_project_scenes(ini_path)]
         if scene_path in scenes:
             scenes.remove(scene_path)
-            set_project_scenes(ini_path, scenes)
+            MainView._write_project_scenes(ini_path, scenes)
 
         scene = scene_manager.get(scene_path)
         if scene:
             scene.set_enabled(False)
+            scene_manager.remove(scene_path)
+
+        project_config = settings_manager.active_project_config['Project']
+        active_scene = MainView._normalize_scene_path(project_config.get('active_scene', ''))
+        entrance_scene = MainView._normalize_scene_path(project_config.get('entrance_scene', ''))
+        fallback_scene = scenes[0] if scenes else ""
+
+        if active_scene == scene_path:
+            MainView._save_project_field("active_scene", fallback_scene)
+        if entrance_scene == scene_path:
+            MainView._save_project_field("entrance_scene", fallback_scene)
+
+        deleted_file = False
+        scene_file = MainView._project_scene_file(scene_path)
+        if scene_file and os.path.exists(scene_file):
+            try:
+                os.remove(scene_file)
+                deleted_file = True
+            except OSError as exc:
+                logger.exception("Failed to delete scene file: %s", scene_file)
+                return {"status": "error", "path": scene_path, "message": str(exc)}
 
         logger.info("Scene removed from project: %s", scene_path)
-        return {"status": "success", "path": scene_path}
+        return {"status": "success", "path": scene_path, "deleted_file": deleted_file}
 
     @staticmethod
     def switch_scene(current_scene_path: str, to_scene_path: str) -> bool:
+        current_scene_path = MainView._normalize_scene_path(current_scene_path)
+        to_scene_path = MainView._normalize_scene_path(to_scene_path)
+        if not to_scene_path:
+            logger.warning("switch_scene ignored empty target scene")
+            return False
+
         # 隐藏当前场景（仅禁用，不销毁任何 C++ 对象，避免 ProfileDevice 中的 handle 失效）
         if current_scene_path:
             now_scene = scene_manager.get(current_scene_path)
@@ -125,6 +211,7 @@ class MainView(PluginBase):
         scene.set_enabled(True)
 
         CoronaEditor.js_call_func("actor-change", ['scene', scene.route, ""])
+        MainView._save_project_field("active_scene", scene.route)
         return True
 
     @staticmethod

@@ -59,6 +59,13 @@ bool ScriptSystem::initialize(Kernel::ISystemContext* ctx) {
     return true;
 }
 
+void ScriptSystem::stop() {
+    if (python_api_) {
+        python_api_->begin_shutdown();
+    }
+    Kernel::SystemBase::stop();
+}
+
 void ScriptSystem::update() {
 #ifdef CORONA_ENABLE_PYTHON_API
     CameraFollowController::instance().update(1.0f / 60.0f);

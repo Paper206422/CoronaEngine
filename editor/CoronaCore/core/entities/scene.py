@@ -307,6 +307,10 @@ class Scene:
             return False
         self._cameras.append(camera)
         self.engine_scene.add_camera(getattr(camera, 'engine_obj', camera))
+        if self._main_camera is None:
+            self._main_camera = camera
+            if hasattr(self.engine_scene, 'set_active_camera'):
+                self.engine_scene.set_active_camera(getattr(camera, 'engine_obj', camera))
         return True
 
     @auto_save
@@ -315,12 +319,17 @@ class Scene:
             return False
         self._cameras.remove(camera)
         self.engine_scene.remove_camera(getattr(camera, 'engine_obj', camera))
+        if self._main_camera is camera:
+            self._main_camera = self._cameras[0] if self._cameras else None
+            if self._main_camera is not None and hasattr(self.engine_scene, 'set_active_camera'):
+                self.engine_scene.set_active_camera(getattr(self._main_camera, 'engine_obj', self._main_camera))
         return True
 
     @auto_save
     def clear_cameras(self) -> bool:
         for cam in self._cameras.copy():
             self.remove_camera_from_scene(cam)
+        self._main_camera = None
         return True
 
     def get_cameras(self) -> List[Camera]:
@@ -442,10 +451,14 @@ class Scene:
             self._cameras.append(camera)
             self.engine_scene.add_camera(getattr(camera, 'engine_obj', camera))
             self._main_camera = camera
+            if hasattr(self.engine_scene, 'set_active_camera'):
+                self.engine_scene.set_active_camera(getattr(camera, 'engine_obj', camera))
             created = True
 
         if self._main_camera is None:
             self._main_camera = self._cameras[0]
+            if hasattr(self.engine_scene, 'set_active_camera'):
+                self.engine_scene.set_active_camera(getattr(self._main_camera, 'engine_obj', self._main_camera))
 
         return created
 
@@ -479,6 +492,8 @@ class Scene:
 
         if camera is not None:
             self._main_camera = camera if isinstance(camera, Camera) else self._main_camera
+            if hasattr(self.engine_scene, 'set_active_camera'):
+                self.engine_scene.set_active_camera(getattr(camera, 'engine_obj', camera))
 
             logger.info("Scene.set_camera scene=%s camera=%s camera_type=%s",
                         self.name,

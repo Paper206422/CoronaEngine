@@ -328,6 +328,8 @@ class Scene {
     void add_camera(Camera* camera);
     void remove_camera(Camera* camera);
     void clear_cameras();
+    void set_active_camera(Camera* camera);
+    [[nodiscard]] std::uintptr_t get_active_camera_handle() const;
 
     [[nodiscard]] std::size_t camera_count() const;
     [[nodiscard]] bool has_camera(const Camera* camera) const;

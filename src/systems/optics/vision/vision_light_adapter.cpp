@@ -71,7 +71,7 @@ void setup_vision_lights(::vision::Scene& scene, const EnvironmentDevice& env) {
     constexpr float kSunDistance = 50.f;
     const float px = sx * kSunDistance;
     const float py = sy * kSunDistance;
-    const float pz = sz * kSunDistance;
+    const float pz = -sz * kSunDistance;
 
     float sun = env.sun_intensity;
     if (sun < 0.f) sun = 0.f;

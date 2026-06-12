@@ -33,17 +33,18 @@ void sync_vision_camera(::vision::Pipeline& pipeline, const CameraDevice& camera
     // host_c2w() never matched the desired matrix, so invalidate() fired every frame and
     // the path tracer could never accumulate.
     //
-    // Drive Vision's own model directly instead. From Vision's basis the forward (c2w
-    // column 2) is forward = (sin(yaw)cos(pitch), sin(pitch), -cos(yaw)cos(pitch)), so
-    // matching it to Corona's normalised forward gives:
+    // Drive Vision's own model directly instead. Corona is converted to Vision
+    // coordinates first (Z flipped). From Vision's basis the forward (c2w column 2)
+    // is forward = (sin(yaw)cos(pitch), sin(pitch), -cos(yaw)cos(pitch)), so
+    // matching it to the converted normalised forward gives:
     //   pitch = asin(fy),  yaw = atan2(fx, -fz)
-    // Geometry is uploaded in Corona world space unchanged, so aligning Vision's look
-    // direction with Corona's forward makes the scene appear in front of the camera.
+    // Geometry/light adapters apply the same Z flip, so Vision's forward/right axes
+    // match Native's screen-space movement instead of producing a horizontal mirror.
     // (Roll / arbitrary world_up cannot be expressed by Vision's yaw/pitch-only model
     // and is intentionally ignored; world up is assumed +Y.)
     float fx = camera.forward.x;
     float fy = camera.forward.y;
-    float fz = camera.forward.z;
+    float fz = -camera.forward.z;
     const float flen = std::sqrt(fx * fx + fy * fy + fz * fz);
     if (flen > 1e-6f) {
         fx /= flen;
@@ -60,7 +61,7 @@ void sync_vision_camera(::vision::Pipeline& pipeline, const CameraDevice& camera
     constexpr float kRadToDeg = 57.295779513082320876f;
     const float pitch_deg = std::asin(sin_pitch) * kRadToDeg;
     const float yaw_deg = std::atan2(fx, -fz) * kRadToDeg;
-    const auto position = ocarina::make_float3(camera.position.x, camera.position.y, camera.position.z);
+    const auto position = ocarina::make_float3(camera.position.x, camera.position.y, -camera.position.z);
 
     bool invalidate = false;
     if (ocarina::any(pipeline.resolution() != requested_resolution)) {

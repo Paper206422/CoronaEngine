@@ -79,6 +79,16 @@ vision::Device* visionDevicePtr = nullptr;
     return pipeline;
 }
 
+[[nodiscard]] auto select_scene_camera_handle(const Corona::SceneDevice& scene) -> std::uintptr_t {
+    if (scene.active_camera_handle != 0 &&
+        std::find(scene.camera_handles.begin(),
+                  scene.camera_handles.end(),
+                  scene.active_camera_handle) != scene.camera_handles.end()) {
+        return scene.active_camera_handle;
+    }
+    return scene.camera_handles.empty() ? 0 : scene.camera_handles.front();
+}
+
 // Loads a Vision scene from disk and brings it to a renderable state, mirroring
 // the reference snippet (import_scene -> init -> prepare -> prepare_view_texture).
 // Resolves relative texture/mesh references against the scene's own folder.
@@ -1233,8 +1243,9 @@ bool OpticsSystem::init_vision_lazy() {
              sd_it != SharedDataHub::instance().scene_storage().cend(); ++sd_it) {
             const auto& sd = *sd_it;
             if (!sd.enabled) continue;
-            if (sd.camera_handles.empty()) continue;
-            auto camera = SharedDataHub::instance().camera_storage().try_acquire_read(sd.camera_handles.front());
+            const auto camera_handle = select_scene_camera_handle(sd);
+            if (camera_handle == 0) continue;
+            auto camera = SharedDataHub::instance().camera_storage().try_acquire_read(camera_handle);
             if (!camera) continue;
             Vision::sync_vision_camera(*renderPipeline, *camera);
             break;
@@ -1278,7 +1289,10 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
          scene_it != SharedDataHub::instance().scene_storage().cend(); ++scene_it) {
         const auto& scene = *scene_it;
         if (!scene.enabled) continue;
+        const auto selected_camera_handle = select_scene_camera_handle(scene);
+        if (selected_camera_handle == 0) continue;
         for (auto cam_handle : scene.camera_handles) {
+            if (cam_handle != selected_camera_handle) continue;
             auto camera = SharedDataHub::instance().camera_storage().try_acquire_read(cam_handle);
             if (!camera) continue;
             try {
@@ -1389,7 +1403,7 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 }
             } catch (const std::exception&) {
             }
-            break; // process first camera only for Vision
+            break; // process selected camera only for Vision
         }
         break; // process first scene only for Vision
     }

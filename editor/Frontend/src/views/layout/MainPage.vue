@@ -297,7 +297,7 @@
       >
         <div
           v-for="(tab, index) in tabs"
-          :key="index"
+          :key="tab.id"
           class="px-5 py-2.5 cursor-pointer rounded-t-lg flex items-center gap-2 transition-all duration-200 ease-in-out"
           :class="{
             'bg-white/90 border-b-2 border-teal-500 shadow-sm': activeTab === index,
@@ -1258,14 +1258,21 @@ const loadPhysicsParams = async () => {
 const closeTab = async (index) => {
   if (tabs.value.length > 1) {
     const removedId = tabs.value[index]?.id;
-
-    if (activeTab.value === index && activeTab.value === 0) {
-      activeTab.value = 1;
-    }
+    const wasActive = activeTab.value === index;
+    const nextActiveIndex = wasActive
+      ? Math.min(index, tabs.value.length - 2)
+      : activeTab.value > index
+        ? activeTab.value - 1
+        : activeTab.value;
 
     tabs.value.splice(index, 1);
-    if (activeTab.value >= index) {
-      await switchTab(Math.max(0, activeTab.value - 1), false);
+
+    if (wasActive) {
+      activeTab.value = nextActiveIndex;
+      await projectService.sceneSwitch(removedId, tabs.value[nextActiveIndex]?.id);
+      await syncSceneCameraBinding(tabs.value[nextActiveIndex]?.id || DEFAULT_SCENE_NAME);
+    } else {
+      activeTab.value = nextActiveIndex;
     }
 
     if (removedId) {
@@ -1574,7 +1581,7 @@ onMounted(async () => {
   const result = await projectService.OnInit();
   const initData = result?.data ?? result;
   const scenes = initData?.scenes ?? [];
-  const activeIndex = initData?.active_index ?? 0;
+  const activeIndex = Number(initData?.active_index ?? 0);
 
   if (scenes.length > 0) {
     for (const s of scenes) {
@@ -1587,12 +1594,16 @@ onMounted(async () => {
       id: initData?.path ?? DEFAULT_SCENE_NAME,
     });
   }
-  activeTab.value = activeIndex;
+  const resolvedActiveIndex =
+    tabs.value.length > 0
+      ? Math.min(Math.max(Number.isFinite(activeIndex) ? activeIndex : 0, 0), tabs.value.length - 1)
+      : 0;
+  activeTab.value = resolvedActiveIndex;
 
   await startEngine();
   // 等待 Vue 渲染 dock 面板（SceneBar/Object 等），确保 eventBus 监听就绪
   await nextTick();
-  const initialSceneId = tabs.value[activeIndex]?.id || DEFAULT_SCENE_NAME;
+  const initialSceneId = tabs.value[resolvedActiveIndex]?.id || DEFAULT_SCENE_NAME;
   await projectService.sceneSwitch(null, initialSceneId);
   await syncSceneCameraBinding(tabs.value[activeTab.value]?.id || DEFAULT_SCENE_NAME);
 
