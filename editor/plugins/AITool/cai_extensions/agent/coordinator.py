@@ -217,14 +217,35 @@ class AgentCoordinator:
 
     def _acquire_model(self, target: str, intent: Dict[str, Any],
                        scene_state: Dict[str, Any] = None) -> str:
-        """获取 3D 模型文件路径（搜索 → 生成 → 下载）。
+        """获取 3D 模型文件路径（搜索 → 生成 → 下载，或直接文件路径）。
 
-        优先使用聊天中的参考图 URL (fileid://)，
-        其次使用 intent 中可能携带的 image_url。
+        若 intent 中检测到显式的模型文件路径（.obj/.glb/.fbx等），
+        直接返回该路径，跳过搜索和 3D 生成。
 
         Returns:
             本地 .glb/.fbx 路径，或空字符串表示获取失败。
         """
+        import os as _os, re as _re
+
+        # 检测显式文件路径（用户指定了具体模型文件）
+        direct_path = (
+            (scene_state or {}).get("intermediate", {}).get("direct_model_path", "")
+            or intent.get("parameters", {}).get("model_path", "")
+        )
+        if not direct_path and target:
+            # target 本身可能就是路径（如 "F:\path\to\model.obj"）
+            m = _re.search(r"((?:[A-Za-z]:|/)[^\s]{2,}\.(?:obj|glb|gltf|fbx|dae|stl))",
+                           target, _re.IGNORECASE)
+            if m:
+                direct_path = m.group(1)
+        if direct_path:
+            direct_path = direct_path.replace("/", _os.sep).replace("\\", _os.sep)
+            if _os.path.isfile(direct_path):
+                logger.info("[Coordinator][3D] _acquire_model: 使用指定文件路径 %s", direct_path)
+                return direct_path
+            else:
+                logger.warning("[Coordinator][3D] 文件路径不存在: %s", direct_path)
+
         # 收集所有可能的参考图来源
         scene = scene_state or {}
         image_url = (

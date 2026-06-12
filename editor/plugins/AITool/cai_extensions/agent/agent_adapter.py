@@ -40,7 +40,7 @@ _SCENE_COMMAND_PATTERNS = [
     r"(?:加个?|添加|放个?|增加|创建|新[增建]|导入).{1,20}",
     r"(?:删[掉除]|移除|去掉|清除).{0,20}$",
     r"(?:把|将).{1,20}(?:移[动到]?|挪[动到]?|搬[到]?|推到?|拉到?)",
-    r"(?:往|向)(?:左|右|前|后|上|下)移",
+    r"(?:往|向)(?:左|右|前|后|上|下).{0,5}(?:移|挪|搬|推|拉)",
     r"(?:放大|缩小|变大|变小|旋转|改成?|调整|修改).{1,20}",
     r"(?:布置|摆放|排列|安排|设计|规划|装饰).{1,30}",
     r"(?:灯光|光照|照明|氛围|环境光|光源).{1,20}",
@@ -427,6 +427,12 @@ class MasterAgent:
             trigger = self._extract_trigger_text(messages)
             logger.info("[MasterAgent] __call__ trigger=%r persona=%r", trigger[:80], (system or "")[:40])
 
+            # 0. 显式文件路径导入 → 跳过 LLM，直接调引擎 import_model
+            file_path = self._extract_file_path(trigger)
+            if file_path:
+                logger.info("[MasterAgent] routing → direct import %s", file_path)
+                return self._handle_direct_import(file_path)
+
             # 1. 内置命令
             cmd = is_builtin_command(trigger)
             if cmd == "help":
@@ -436,10 +442,17 @@ class MasterAgent:
             if cmd == "patrol":
                 return self._handle_patrol(system)
 
-            # 2. 场景指令
+            # 2. 场景指令 → 分两路
             if is_scene_command(trigger):
-                logger.info("[MasterAgent] routing → scene")
-                return self._handle_scene(trigger, system, messages)
+                # 场景组合（"生成欧式卧室"等）→ 走我们的 SceneComposer
+                from .scene_composer import is_compose_request
+                compose_text = self._gather_compose_text(trigger, messages)
+                if is_compose_request(trigger) or is_compose_request(compose_text):
+                    logger.info("[MasterAgent] routing → compose (场景组合)")
+                    return self._handle_scene(trigger, system, messages)
+                # 简单增删改移 → 透传给 CAIApp 原生 agent（已有全套 MCP 工具）
+                logger.info("[MasterAgent] routing → cai (delegate to built-in agent)")
+                return self._handle_chat(system, messages)
 
             # 3. 普通聊天
             logger.info("[MasterAgent] routing → chat")
@@ -451,6 +464,28 @@ class MasterAgent:
                                       "reset", "refused", "unreachable")):
                 return "🌐 网络好像不太稳定，请稍后再发一次～"
             return "🤖 抱歉，刚才处理消息时出了点问题，请换个说法再试一次。"
+
+    # ── 直接文件导入 ──────────────────────────────────────────────
+
+    def _handle_direct_import(self, file_path: str) -> str:
+        """直接导入指定模型文件到引擎场景（跳过 LLM 和混元生成）。"""
+        import os as _os
+        try:
+            from plugins.AITool.cai_extensions.flows.scene_composition_workflow.helpers import get_tool
+            tool = get_tool("import_model")
+            if tool is None:
+                return "⚠️ import_model 工具不可用，请确认引擎已启动且场景已加载。"
+            actor_name = _os.path.splitext(_os.path.basename(file_path))[0]
+            tool.invoke({
+                "model_path": file_path,
+                "actor_name": actor_name,
+                "position": [0.0, 0.0, 0.0],
+            })
+            logger.info("[MasterAgent] direct import success: %s", file_path)
+            return f"✅ 已导入「{actor_name}」到场景原点 (0,0,0)。"
+        except Exception as e:
+            logger.exception("[MasterAgent] direct import failed: %s", e)
+            return f"⚠️ 导入失败：{e}"
 
     # ── 内置命令 ──────────────────────────────────────────────────
 
@@ -688,6 +723,12 @@ class MasterAgent:
             scene_state.setdefault("intermediate", {})["reference_image_url"] = image_url
             logger.info("[MasterAgent] scene: reference image %r", image_url)
 
+        # 注入手动文件路径（用户直接指定导入的模型文件）
+        file_path = self._extract_file_path(user_text)
+        if file_path:
+            scene_state.setdefault("intermediate", {})["direct_model_path"] = file_path
+            logger.info("[MasterAgent] scene: direct file path %r", file_path)
+
         result = self.coordinator.handle(user_text=user_text, scene_state=scene_state, style_bible=style_bible)
 
         intent = result.get("intent", {})
@@ -886,6 +927,20 @@ class MasterAgent:
             m2 = _re.search(r'(https?://\S+\.(?:png|jpg|jpeg|webp|gif))', text, _re.IGNORECASE)
             if m2:
                 return m2.group(1)
+        return ""
+
+    def _extract_file_path(self, text: str) -> str:
+        """从用户消息中提取显式指定的模型文件路径（.obj/.glb/.fbx等）。
+
+        用于"导入 F:\\path\\to\\model.obj"类指令——跳过搜索/生成，直接导入。
+        """
+        import re as _re, os as _os
+        m = _re.search(r"((?:[A-Za-z]:[/\\]|/)[^\s]{3,}\.(?:obj|glb|gltf|fbx|dae|stl))",
+                       text, _re.IGNORECASE)
+        if m:
+            p = m.group(1).replace("/", _os.sep).replace("\\", _os.sep)
+            if _os.path.isfile(p):
+                return p
         return ""
 
 
