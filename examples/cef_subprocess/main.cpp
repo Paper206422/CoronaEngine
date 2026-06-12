@@ -227,6 +227,42 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
                 return true;
             }
 
+            if (name == "computeActorFocusPose") {
+                if (arguments.size() < 2) {
+                    exception = "computeActorFocusPose(actorHandle, requestId) requires 2 arguments";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                const auto actor_handle = arguments[0];
+                if (!actor_handle || (!actor_handle->IsInt() && !actor_handle->IsDouble())) {
+                    exception = "computeActorFocusPose: actorHandle must be a number";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                if (!arguments[1] || !arguments[1]->IsString()) {
+                    exception = "computeActorFocusPose: requestId must be a string";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                auto focus_ctx = CefV8Context::GetCurrentContext();
+                if (!focus_ctx || !focus_ctx->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                CefRefPtr<CefProcessMessage> focus_msg =
+                    CefProcessMessage::Create("ComputeActorFocusPoseFast");
+                CefRefPtr<CefListValue> focus_args = focus_msg->GetArgumentList();
+                focus_args->SetDouble(0, actor_handle->GetDoubleValue());
+                focus_args->SetString(1, arguments[1]->GetStringValue());
+                focus_ctx->GetFrame()->SendProcessMessage(PID_BROWSER, focus_msg);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
             if (name != "cameraMove") {
                 return false;
             }
@@ -332,12 +368,15 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
         CefRefPtr<CefV8Value> pick_actor = CefV8Value::CreateFunction("pickActor", handler);
         CefRefPtr<CefV8Value> inject_input = CefV8Value::CreateFunction("injectInput", handler);
         CefRefPtr<CefV8Value> dock_command = CefV8Value::CreateFunction("dockCommand", handler);
+        CefRefPtr<CefV8Value> compute_actor_focus_pose =
+            CefV8Value::CreateFunction("computeActorFocusPose", handler);
         bridge->SetValue("cameraMove", camera_move, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("actorTransform", actor_transform, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("setProperty", set_property, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("pickActor", pick_actor, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("injectInput", inject_input, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("dockCommand", dock_command, V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("computeActorFocusPose", compute_actor_focus_pose, V8_PROPERTY_ATTRIBUTE_NONE);
         global->SetValue("coronaBridge", bridge, V8_PROPERTY_ATTRIBUTE_NONE);
 
         std::cout << "[Renderer] V8 context created, cefQuery injected" << std::endl;

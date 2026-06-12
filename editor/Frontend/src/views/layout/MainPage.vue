@@ -1536,6 +1536,39 @@ const setupListener = () => {
     syncSceneCameraBinding(sceneId);
   };
 
+  window.applyCameraPose = (pose = {}) => {
+    const toVector3 = (value) => {
+      if (!isVector3(value)) return null;
+      const next = value.map((item) => Number(item));
+      return next.every((item) => Number.isFinite(item)) ? next : null;
+    };
+
+    const position = toVector3(pose.position);
+    const forward = toVector3(pose.forward);
+    const up = toVector3(pose.up);
+    if (!position || !forward || !up) {
+      return false;
+    }
+
+    cameraState.value = {
+      position,
+      forward,
+      up,
+      fov: Number.isFinite(Number(pose.fov)) ? Number(pose.fov) : cameraState.value.fov,
+    };
+
+    if (Number.isFinite(Number(pose.cameraHandle))) {
+      cameraBindingState.value = {
+        ...cameraBindingState.value,
+        cameraHandle: Number(pose.cameraHandle),
+        cameraName: pose.cameraName ?? cameraBindingState.value.cameraName,
+      };
+    }
+
+    scheduleCameraUpdate();
+    return true;
+  };
+
   window.addTab = (name, id) => {
     const existingIndex = tabs.value.findIndex((tab) => tab.id === id);
     if (existingIndex !== -1) {

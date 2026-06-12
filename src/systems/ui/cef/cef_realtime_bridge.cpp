@@ -1,11 +1,15 @@
 #include "cef_bridge_helpers.h"
 
 #include <corona/kernel/core/i_logger.h>
+#include <corona/resource/resource_manager.h>
+#include <corona/resource/types/scene.h>
 #include <corona/shared_data_hub.h>
 #include <include/cef_values.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -28,6 +32,30 @@ static std::vector<InputEvent> s_input_queue;
         return scene.active_camera_handle;
     }
     return scene.camera_handles.empty() ? 0 : scene.camera_handles.front();
+}
+
+[[nodiscard]] ktm::fvec3 make_fvec3(float x, float y, float z) {
+    ktm::fvec3 value;
+    value[0] = x;
+    value[1] = y;
+    value[2] = z;
+    return value;
+}
+
+[[nodiscard]] ktm::fvec4 make_fvec4(float x, float y, float z, float w) {
+    ktm::fvec4 value;
+    value[0] = x;
+    value[1] = y;
+    value[2] = z;
+    value[3] = w;
+    return value;
+}
+
+[[nodiscard]] ktm::fvec3 transform_local_point_to_world(const ktm::fmat4x4& matrix,
+                                                        const ktm::fvec3& local_point) {
+    const ktm::fvec4 local_h = make_fvec4(local_point[0], local_point[1], local_point[2], 1.0f);
+    const ktm::fvec4 world_h = matrix * local_h;
+    return make_fvec3(world_h[0], world_h[1], world_h[2]);
 }
 
 }  // namespace (input queue)
@@ -99,12 +127,13 @@ bool handle_camera_move_fast(const CefRefPtr<CefProcessMessage>& message) {
         fov = static_cast<float>(args->GetDouble(4));
     }
 
-    if (auto accessor = Corona::SharedDataHub::instance().camera_storage().try_acquire_write_nowait(camera_handle)) {
-        accessor->position = position;
-        accessor->forward = forward;
-        accessor->world_up = world_up;
-        accessor->fov = fov;
-    }
+    Corona::CameraMoveCommand move;
+    move.camera_handle = camera_handle;
+    move.position = position;
+    move.forward = forward;
+    move.world_up = world_up;
+    move.fov = fov;
+    Corona::SharedDataHub::instance().enqueue_camera_move(move);
 
     return true;
 }
@@ -150,6 +179,249 @@ std::vector<std::uintptr_t> resolve_actor_geometry_handles(std::uintptr_t actor_
     }
 
     return geometry_handles;
+}
+
+struct FocusBounds {
+    ktm::fvec3 min{};
+    ktm::fvec3 max{};
+    bool valid{false};
+};
+
+struct FocusGeometrySource {
+    std::uintptr_t geometry_handle{};
+    bool has_local_bounds{false};
+    ktm::fvec3 local_min{};
+    ktm::fvec3 local_max{};
+};
+
+void append_focus_geometry_source(std::vector<FocusGeometrySource>& sources,
+                                  std::uintptr_t geometry_handle,
+                                  bool has_local_bounds,
+                                  const ktm::fvec3& local_min,
+                                  const ktm::fvec3& local_max) {
+    if (geometry_handle == 0) {
+        return;
+    }
+
+    for (auto& source : sources) {
+        if (source.geometry_handle != geometry_handle) {
+            continue;
+        }
+        if (!source.has_local_bounds && has_local_bounds) {
+            source.has_local_bounds = true;
+            source.local_min = local_min;
+            source.local_max = local_max;
+        }
+        return;
+    }
+
+    FocusGeometrySource source;
+    source.geometry_handle = geometry_handle;
+    source.has_local_bounds = has_local_bounds;
+    source.local_min = local_min;
+    source.local_max = local_max;
+    sources.push_back(source);
+}
+
+std::vector<FocusGeometrySource> resolve_actor_focus_geometry_sources(std::uintptr_t actor_handle) {
+    std::vector<std::uintptr_t> profile_handles;
+    if (auto actor = Corona::SharedDataHub::instance().actor_storage().try_acquire_read_nowait(actor_handle)) {
+        profile_handles = actor->profile_handles;
+    }
+
+    std::vector<FocusGeometrySource> sources;
+    auto& hub = Corona::SharedDataHub::instance();
+    const ktm::fvec3 zero = make_fvec3(0.0f, 0.0f, 0.0f);
+
+    for (const auto profile_handle : profile_handles) {
+        if (auto profile = hub.profile_storage().try_acquire_read_nowait(profile_handle)) {
+            append_focus_geometry_source(sources, profile->geometry_handle, false, zero, zero);
+
+            if (auto mechanics = hub.mechanics_storage().try_acquire_read_nowait(profile->mechanics_handle)) {
+                append_focus_geometry_source(sources,
+                                             mechanics->geometry_handle,
+                                             true,
+                                             mechanics->min_xyz,
+                                             mechanics->max_xyz);
+            }
+            if (auto optics = hub.optics_storage().try_acquire_read_nowait(profile->optics_handle)) {
+                append_focus_geometry_source(sources, optics->geometry_handle, false, zero, zero);
+            }
+            if (auto acoustics = hub.acoustics_storage().try_acquire_read_nowait(profile->acoustics_handle)) {
+                append_focus_geometry_source(sources, acoustics->geometry_handle, false, zero, zero);
+            }
+        }
+    }
+
+    return sources;
+}
+
+void expand_focus_bounds(FocusBounds& bounds, const ktm::fvec3& point) {
+    if (!bounds.valid) {
+        bounds.min = point;
+        bounds.max = point;
+        bounds.valid = true;
+        return;
+    }
+
+    bounds.min[0] = std::min(bounds.min[0], point[0]);
+    bounds.min[1] = std::min(bounds.min[1], point[1]);
+    bounds.min[2] = std::min(bounds.min[2], point[2]);
+    bounds.max[0] = std::max(bounds.max[0], point[0]);
+    bounds.max[1] = std::max(bounds.max[1], point[1]);
+    bounds.max[2] = std::max(bounds.max[2], point[2]);
+}
+
+bool append_geometry_focus_bounds(const FocusGeometrySource& source, FocusBounds& bounds) {
+    auto& hub = Corona::SharedDataHub::instance();
+    std::uintptr_t transform_handle = 0;
+    std::uintptr_t model_resource_handle = 0;
+    if (auto geometry = hub.geometry_storage().try_acquire_read_nowait(source.geometry_handle)) {
+        transform_handle = geometry->transform_handle;
+        model_resource_handle = geometry->model_resource_handle;
+    }
+
+    if (transform_handle == 0) {
+        return false;
+    }
+
+    ktm::fvec3 local_min{};
+    ktm::fvec3 local_max{};
+    if (source.has_local_bounds) {
+        local_min = source.local_min;
+        local_max = source.local_max;
+    } else {
+        if (model_resource_handle == 0) {
+            return false;
+        }
+
+        std::uint64_t model_id = 0;
+        if (auto resource = hub.model_resource_storage().try_acquire_read_nowait(model_resource_handle)) {
+            model_id = resource->model_id;
+        }
+        if (model_id == 0) {
+            return false;
+        }
+
+        auto scene_resource =
+            Corona::Resource::ResourceManager::get_instance()
+                .acquire_read<Corona::Resource::Scene>(model_id);
+        if (!scene_resource) {
+            return false;
+        }
+
+        const auto aabb = scene_resource->get_scene_aabb();
+        local_min = make_fvec3(aabb.min[0], aabb.min[1], aabb.min[2]);
+        local_max = make_fvec3(aabb.max[0], aabb.max[1], aabb.max[2]);
+    }
+
+    auto transform = hub.model_transform_storage().try_acquire_read_nowait(transform_handle);
+    if (!transform) {
+        return false;
+    }
+
+    const ktm::fvec3 corners[8] = {
+        make_fvec3(local_min[0], local_min[1], local_min[2]),
+        make_fvec3(local_max[0], local_min[1], local_min[2]),
+        make_fvec3(local_min[0], local_max[1], local_min[2]),
+        make_fvec3(local_max[0], local_max[1], local_min[2]),
+        make_fvec3(local_min[0], local_min[1], local_max[2]),
+        make_fvec3(local_max[0], local_min[1], local_max[2]),
+        make_fvec3(local_min[0], local_max[1], local_max[2]),
+        make_fvec3(local_max[0], local_max[1], local_max[2]),
+    };
+
+    const ktm::fmat4x4 matrix = transform->compute_matrix();
+    for (const auto& corner : corners) {
+        expand_focus_bounds(bounds, transform_local_point_to_world(matrix, corner));
+    }
+
+    return true;
+}
+
+void send_focus_pose_result(const CefRefPtr<CefFrame>& frame,
+                            const std::string& request_id,
+                            const nlohmann::json& payload) {
+    if (!frame || request_id.empty()) {
+        return;
+    }
+
+    const std::string js = "window.__coronaFocusPoseResult&&window.__coronaFocusPoseResult(" +
+                           nlohmann::json(request_id).dump() + "," + payload.dump() + ")";
+    frame->ExecuteJavaScript(js, "", 0);
+}
+
+bool get_numeric_arg(const CefRefPtr<CefListValue>& args, size_t index, double& out) {
+    if (!args || index >= args->GetSize()) {
+        return false;
+    }
+
+    const auto type = args->GetType(index);
+    if (type == VTYPE_INT) {
+        out = static_cast<double>(args->GetInt(index));
+        return true;
+    }
+    if (type == VTYPE_DOUBLE) {
+        out = args->GetDouble(index);
+        return true;
+    }
+    return false;
+}
+
+bool handle_compute_actor_focus_pose_fast(const CefRefPtr<CefFrame>& frame,
+                                          const CefRefPtr<CefProcessMessage>& message) {
+    auto args = message->GetArgumentList();
+    if (!args || args->GetSize() < 2 || args->GetType(1) != VTYPE_STRING) {
+        return true;
+    }
+
+    const std::string request_id = args->GetString(1).ToString();
+    auto fail = [&](const std::string& message_text) {
+        nlohmann::json payload;
+        payload["status"] = "error";
+        payload["message"] = message_text;
+        send_focus_pose_result(frame, request_id, payload);
+        return true;
+    };
+
+    double actor_handle_value = 0.0;
+    if (!get_numeric_arg(args, 0, actor_handle_value)) {
+        return fail("actor handle is invalid");
+    }
+
+    const auto actor_handle = static_cast<std::uintptr_t>(actor_handle_value);
+    if (actor_handle == 0) {
+        return fail("actor handle is empty");
+    }
+
+    FocusBounds bounds;
+    for (const auto& source : resolve_actor_focus_geometry_sources(actor_handle)) {
+        append_geometry_focus_bounds(source, bounds);
+    }
+
+    if (!bounds.valid) {
+        return fail("actor bounds are unavailable");
+    }
+
+    const ktm::fvec3 center = make_fvec3(
+        (bounds.min[0] + bounds.max[0]) * 0.5f,
+        (bounds.min[1] + bounds.max[1]) * 0.5f,
+        (bounds.min[2] + bounds.max[2]) * 0.5f);
+    const float dx = bounds.max[0] - bounds.min[0];
+    const float dy = bounds.max[1] - bounds.min[1];
+    const float dz = bounds.max[2] - bounds.min[2];
+    const float diagonal = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const float distance = std::max(diagonal * 2.0f, 1.0f);
+
+    nlohmann::json payload;
+    payload["status"] = "success";
+    payload["position"] = {center[0], center[1], center[2] - distance};
+    payload["forward"] = {0.0f, 0.0f, 1.0f};
+    payload["up"] = {0.0f, 1.0f, 0.0f};
+    payload["center"] = {center[0], center[1], center[2]};
+    payload["distance"] = distance;
+    send_focus_pose_result(frame, request_id, payload);
+    return true;
 }
 
 bool handle_actor_transform_fast(const CefRefPtr<CefProcessMessage>& message) {
@@ -631,6 +903,10 @@ bool handle_realtime_process_message(CefRefPtr<CefBrowser> browser,
 
     if (message->GetName() == "CameraMoveFast") {
         return handle_camera_move_fast(message);
+    }
+
+    if (message->GetName() == "ComputeActorFocusPoseFast") {
+        return handle_compute_actor_focus_pose_fast(frame, message);
     }
 
     if (message->GetName() == "ActorTransformFast") {

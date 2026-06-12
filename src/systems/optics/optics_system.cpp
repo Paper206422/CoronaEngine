@@ -40,6 +40,25 @@
 #endif
 
 namespace {
+
+void apply_pending_camera_moves() {
+    auto& hub = Corona::SharedDataHub::instance();
+    auto moves = hub.drain_camera_moves();
+    if (moves.empty()) {
+        return;
+    }
+
+    auto& camera_storage = hub.camera_storage();
+    for (const auto& move : moves) {
+        if (auto camera = camera_storage.try_acquire_write(move.camera_handle)) {
+            camera->position = move.position;
+            camera->forward = move.forward;
+            camera->world_up = move.world_up;
+            camera->fov = move.fov;
+        }
+    }
+}
+
 #ifdef CORONA_ENABLE_VISION
 ocarina::SP<vision::Pipeline> renderPipeline;
 vision::Device* visionDevicePtr = nullptr;
@@ -320,6 +339,8 @@ bool OpticsSystem::initialize(Kernel::ISystemContext* ctx) {
 }
 
 void OpticsSystem::update() {
+    apply_pending_camera_moves();
+
     // Check for pending backend switch request before executing either render path.
     int pending = pending_backend_.load(std::memory_order_relaxed);
     RenderBackend requested = static_cast<RenderBackend>(pending);
