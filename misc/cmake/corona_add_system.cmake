@@ -25,7 +25,7 @@
 # Behavior:
 #   - Creates a static library target named `corona_<system_name>_system`
 #   - Creates an alias `corona::<namespace>::<system_name>` (default namespace: "system")
-#   - Automatically sets up include directories and links to corona::kernel
+#   - Automatically sets up include directories and links to corona::engine::kernel
 #   - Applies consistent compile features (C++20)
 # ==============================================================================
 
@@ -80,7 +80,7 @@ function(corona_add_system SYSTEM_NAME)
     endif()
 
     # 链接到核心框架（所有系统的基础依赖）
-    target_link_libraries(${TARGET_NAME} PUBLIC corona::kernel)
+    target_link_libraries(${TARGET_NAME} PUBLIC corona::engine::kernel)
 
     # 链接额外的依赖（如果有）
     if(SYS_DEPENDENCIES)

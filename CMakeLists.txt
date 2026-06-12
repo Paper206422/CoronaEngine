@@ -38,6 +38,7 @@ endif()
 include(corona_options)             # Global build options (editor/examples/runtime switches)
 include(corona_python)              # Embedded Python discovery and dependency checks
 include(corona_third_party)         # FetchContent declarations for external dependencies
+include(corona_tbb)                 # Engine-owned TBB discovery and runtime copy helpers
 include(corona_compile_config)      # Compiler settings, standards, and shared definitions
 include(corona_add_system)          # Helper for adding system modules
 include(corona_runtime_deps)        # Runtime dependency collection and copy helpers
