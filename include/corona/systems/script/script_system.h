@@ -44,6 +44,8 @@ class ScriptSystem : public Kernel::SystemBase {
      */
     bool initialize(Kernel::ISystemContext* ctx) override;
 
+    void stop() override;
+
     /**
      * @brief 每帧更新显示
      *

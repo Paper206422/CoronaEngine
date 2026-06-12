@@ -39,8 +39,12 @@ PythonAPI::~PythonAPI() {
     }
 }
 
-void PythonAPI::shutdown() {
+void PythonAPI::begin_shutdown() {
     shutting_down_.store(true);
+}
+
+void PythonAPI::shutdown() {
+    begin_shutdown();
 
     if (!Py_IsInitialized()) {
         return;

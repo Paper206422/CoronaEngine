@@ -25,6 +25,8 @@ struct PythonAPI {
      */
     void shutdown();
 
+    void begin_shutdown();
+
     void runPythonScript();
     static void checkPythonScriptChange();
     void checkReleaseScriptChange();

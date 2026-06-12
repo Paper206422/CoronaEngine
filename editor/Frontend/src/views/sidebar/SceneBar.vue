@@ -448,7 +448,7 @@
               :key="scene.name"
               class="group flex items-center px-2 py-0.5 hover:bg-[#3c3c3c]/50 cursor-pointer border-l-2 border-transparent hover:border-[#84a65b]"
               :class="{ 'bg-[#264f78]/60': selectedItem === scene.name }"
-              @click="FocusOnActor(scene)"
+              @click="SelectActor(scene)"
               @dblclick="scene.type === 'audio' ? handlePlayToggle(scene) : scene.type === 'video' ? null : ControlObject(scene)"
             >
               <!-- 图标 -->
@@ -855,19 +855,12 @@ const ControlObject = async (scene) => {
   }
 };
 
-const FocusOnActor = async (scene) => {
+const SelectActor = (scene) => {
   selectedItem.value = scene.name;
-  // 音视频是独立资源，仅作选中，不触发相机聚焦/积木上下文
+  // 音视频是独立资源，仅作选中，不触发积木上下文
   if (isMediaItem(scene)) return;
   // 通知积木编辑器当前选中的物体
   setActorContext(currentSceneName.value, scene.name);
-  try {
-    const cameraName = getTargetCameraName();
-    await sceneService.focusActor(currentSceneName.value, scene.name, cameraName);
-    await appService.callDockFunction('', 'syncCameraState', []);
-  } catch (e) {
-    logWarn('Failed to focus on actor', e);
-  }
 };
 
 /// 切换音频播放/停止
