@@ -255,6 +255,9 @@ if(NOT TARGET enet)
         "${enet_SOURCE_DIR}/win32.c"
     )
     target_include_directories(enet PUBLIC "${enet_SOURCE_DIR}/include")
+    if(WIN32)
+        target_link_libraries(enet PUBLIC ws2_32 winmm)
+    endif()
     if(MSVC)
         target_compile_definitions(enet PRIVATE _CRT_SECURE_NO_WARNINGS)
         target_compile_options(enet PRIVATE
