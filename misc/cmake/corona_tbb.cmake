@@ -1,20 +1,75 @@
 include_guard(GLOBAL)
 
+function(_corona_tbb_config_has_libraries _out_var _config_dir)
+    if(NOT EXISTS "${_config_dir}/TBBConfig.cmake")
+        set(${_out_var} FALSE PARENT_SCOPE)
+        return()
+    endif()
+
+    get_filename_component(_tbb_config_dir "${_config_dir}" ABSOLUTE)
+    get_filename_component(_tbb_root "${_tbb_config_dir}/../../.." ABSOLUTE)
+
+    set(_candidate_lib_dirs
+        "${_tbb_root}/lib/intel64/vc14"
+        "${_tbb_root}/lib/intel64/vc14_uwp"
+        "${_tbb_root}/lib/ia32/vc14"
+        "${_tbb_root}/lib/ia32/vc14_uwp"
+    )
+
+    foreach(_lib_dir IN LISTS _candidate_lib_dirs)
+        if((EXISTS "${_lib_dir}/tbb12.lib" OR EXISTS "${_lib_dir}/tbb12_debug.lib")
+           AND (EXISTS "${_lib_dir}/tbbmalloc.lib" OR EXISTS "${_lib_dir}/tbbmalloc_debug.lib")
+           AND (EXISTS "${_lib_dir}/tbbmalloc_proxy.lib" OR EXISTS "${_lib_dir}/tbbmalloc_proxy_debug.lib"))
+            set(${_out_var} TRUE PARENT_SCOPE)
+            return()
+        endif()
+    endforeach()
+
+    set(${_out_var} FALSE PARENT_SCOPE)
+endfunction()
+
 get_filename_component(
-    _corona_default_tbb_dir
+    _corona_engine_tbb_dir
     "${PROJECT_SOURCE_DIR}/third_party/tbb/oneapi-tbb-2022.3.0/lib/cmake/tbb"
     ABSOLUTE
 )
 
-if(NOT DEFINED TBB_DIR
-   OR TBB_DIR STREQUAL ""
-   OR NOT EXISTS "${TBB_DIR}/TBBConfig.cmake"
-   OR TBB_DIR MATCHES [[[/\\]build[/\\]_deps[/\\]horizon-src[/\\]modules[/\\]corona[/\\]]]
-   OR TBB_DIR MATCHES [[[/\\]build[/\\]_deps[/\\]coronaframework-src[/\\]]])
-    set(TBB_DIR "${_corona_default_tbb_dir}" CACHE PATH "Path to TBB cmake configuration directory" FORCE)
+if(DEFINED FETCHCONTENT_BASE_DIR)
+    set(_corona_fetchcontent_base_dir "${FETCHCONTENT_BASE_DIR}")
+else()
+    set(_corona_fetchcontent_base_dir "${PROJECT_SOURCE_DIR}/build/_deps")
 endif()
 
-unset(_corona_default_tbb_dir)
+get_filename_component(
+    _corona_horizon_tbb_dir
+    "${_corona_fetchcontent_base_dir}/horizon-src/modules/corona/third_party/win/oneapi-tbb-2022.3.0/lib/cmake/tbb"
+    ABSOLUTE
+)
+
+set(_corona_tbb_dir_valid FALSE)
+if(DEFINED TBB_DIR AND NOT TBB_DIR STREQUAL "")
+    _corona_tbb_config_has_libraries(_corona_tbb_dir_valid "${TBB_DIR}")
+endif()
+
+if(NOT _corona_tbb_dir_valid)
+    _corona_tbb_config_has_libraries(_corona_engine_tbb_valid "${_corona_engine_tbb_dir}")
+    _corona_tbb_config_has_libraries(_corona_horizon_tbb_valid "${_corona_horizon_tbb_dir}")
+
+    if(_corona_engine_tbb_valid)
+        set(TBB_DIR "${_corona_engine_tbb_dir}" CACHE PATH "Path to TBB cmake configuration directory" FORCE)
+    elseif(_corona_horizon_tbb_valid)
+        set(TBB_DIR "${_corona_horizon_tbb_dir}" CACHE PATH "Path to TBB cmake configuration directory" FORCE)
+    elseif(NOT DEFINED TBB_DIR OR TBB_DIR STREQUAL "")
+        set(TBB_DIR "${_corona_engine_tbb_dir}" CACHE PATH "Path to TBB cmake configuration directory" FORCE)
+    endif()
+endif()
+
+unset(_corona_engine_tbb_dir)
+unset(_corona_fetchcontent_base_dir)
+unset(_corona_horizon_tbb_dir)
+unset(_corona_tbb_dir_valid)
+unset(_corona_engine_tbb_valid)
+unset(_corona_horizon_tbb_valid)
 
 find_package(TBB REQUIRED)
 
