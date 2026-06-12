@@ -1,5 +1,7 @@
 #include <corona/shared_data_hub.h>
 
+#include <algorithm>
+
 namespace Corona {
 
 ktm::fmat4x4 ModelTransform::compute_matrix() const {
@@ -60,4 +62,31 @@ const SharedDataHub::SceneStorage& SharedDataHub::scene_storage() const { return
 
 SharedDataHub::ImageStorage& SharedDataHub::image_storage() { return image_storage_; }
 const SharedDataHub::ImageStorage& SharedDataHub::image_storage() const { return image_storage_; }
+
+void SharedDataHub::enqueue_camera_move(CameraMoveCommand command) {
+    if (command.camera_handle == 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(camera_move_mutex_);
+    command.sequence = ++camera_move_sequence_;
+    pending_camera_moves_[command.camera_handle] = command;
+}
+
+std::vector<CameraMoveCommand> SharedDataHub::drain_camera_moves() {
+    std::vector<CameraMoveCommand> moves;
+    {
+        std::lock_guard<std::mutex> lock(camera_move_mutex_);
+        moves.reserve(pending_camera_moves_.size());
+        for (auto& [_, command] : pending_camera_moves_) {
+            moves.push_back(command);
+        }
+        pending_camera_moves_.clear();
+    }
+
+    std::sort(moves.begin(), moves.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.sequence < rhs.sequence;
+    });
+    return moves;
+}
 }  // namespace Corona

@@ -4,6 +4,8 @@
 
 #include <array>
 #include <cstdint>
+#include <mutex>
+#include <unordered_map>
 #include <memory>
 #include <vector>
 #include <filesystem>
@@ -205,6 +207,15 @@ struct ActorPickDevice {
     bool result_ready{false};
 };
 
+struct CameraMoveCommand {
+    std::uintptr_t camera_handle{};
+    ktm::fvec3 position{};
+    ktm::fvec3 forward{};
+    ktm::fvec3 world_up{};
+    float fov{45.0f};
+    std::uint64_t sequence{};
+};
+
 struct EnvironmentDevice {
     ktm::fvec3 sun_position;
     std::uint32_t floor_grid_enabled{1};
@@ -312,6 +323,9 @@ class SharedDataHub {
     ImageStorage& image_storage();
     const ImageStorage& image_storage() const;
 
+    void enqueue_camera_move(CameraMoveCommand command);
+    std::vector<CameraMoveCommand> drain_camera_moves();
+
    private:
     ModelResourceStorage model_resource_storage_;
     GeometryStorage geometry_storage_;
@@ -326,6 +340,9 @@ class SharedDataHub {
     ActorPickStorage actor_pick_storage_;
     SceneStorage scene_storage_;
     ImageStorage image_storage_;
+    std::mutex camera_move_mutex_;
+    std::unordered_map<std::uintptr_t, CameraMoveCommand> pending_camera_moves_;
+    std::uint64_t camera_move_sequence_{0};
 };
 
 }  // namespace Corona
