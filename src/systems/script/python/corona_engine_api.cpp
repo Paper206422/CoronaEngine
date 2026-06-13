@@ -1395,6 +1395,13 @@ Corona::API::Actor::Actor()
 }
 
 Corona::API::Actor::~Actor() {
+    for (const auto& [_, storage_profile_handle] : profile_storage_handles_) {
+        if (storage_profile_handle != 0) {
+            SharedDataHub::instance().profile_storage().deallocate(storage_profile_handle);
+        }
+    }
+    profile_storage_handles_.clear();
+
     if (handle_ != 0) {
         SharedDataHub::instance().actor_storage().deallocate(handle_);
     }
@@ -1441,6 +1448,7 @@ Corona::API::Actor::Profile* Corona::API::Actor::add_profile(const Profile& prof
         SharedDataHub::instance().profile_storage().deallocate(storage_profile_handle);
         storage_profile_handle = 0;
     }
+    profile_storage_handles_[profile_handle] = storage_profile_handle;
 
     if (handle_ != 0) {
         if (auto accessor = SharedDataHub::instance().actor_storage().acquire_write(handle_)) {
@@ -1479,7 +1487,12 @@ void Corona::API::Actor::remove_profile(const Profile* profile) {
         return;
     }
 
+    const auto storage_profile_it = profile_storage_handles_.find(profile_handle);
+    const std::uintptr_t storage_profile_handle =
+        storage_profile_it != profile_storage_handles_.end() ? storage_profile_it->second : 0;
+
     profiles_.erase(it);
+    profile_storage_handles_.erase(profile_handle);
 
     if (active_profile_handle_ == profile_handle) {
         if (!profiles_.empty()) {
@@ -1490,7 +1503,13 @@ void Corona::API::Actor::remove_profile(const Profile* profile) {
     }
 
     if (auto accessor = SharedDataHub::instance().actor_storage().acquire_write(handle_)) {
-        std::erase(accessor->profile_handles, profile_handle);
+        if (storage_profile_handle != 0) {
+            std::erase(accessor->profile_handles, storage_profile_handle);
+        }
+    }
+
+    if (storage_profile_handle != 0) {
+        SharedDataHub::instance().profile_storage().deallocate(storage_profile_handle);
     }
 }
 
@@ -1518,6 +1537,33 @@ Corona::API::Actor::Profile* Corona::API::Actor::get_active_profile() {
 
 std::size_t Corona::API::Actor::profile_count() const {
     return profiles_.size();
+}
+
+void Corona::API::Actor::set_follow_camera(bool enabled) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Actor::set_follow_camera] Invalid actor handle");
+        return;
+    }
+
+    if (auto accessor = SharedDataHub::instance().actor_storage().acquire_write(handle_)) {
+        accessor->follow_camera = enabled;
+    } else {
+        CFW_LOG_ERROR("[Actor::set_follow_camera] Failed to acquire write access to actor storage");
+    }
+}
+
+bool Corona::API::Actor::get_follow_camera() const {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Actor::get_follow_camera] Invalid actor handle");
+        return false;
+    }
+
+    if (auto accessor = SharedDataHub::instance().actor_storage().try_acquire_read(handle_)) {
+        return accessor->follow_camera;
+    }
+
+    CFW_LOG_ERROR("[Actor::get_follow_camera] Failed to acquire read access to actor storage");
+    return false;
 }
 
 std::uintptr_t Corona::API::Actor::get_handle() const {

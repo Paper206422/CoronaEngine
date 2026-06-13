@@ -236,6 +236,10 @@ void BindAll(nanobind::module_& m) {
              nb::rv_policy::reference_internal)
         .def("profile_count", &Actor::profile_count,
              "Get number of profiles in this actor")
+        .def("set_follow_camera", &Actor::set_follow_camera, nb::arg("enabled"),
+             "Render this actor in camera-local orthographic pass 2")
+        .def("get_follow_camera", &Actor::get_follow_camera,
+             "Return whether this actor renders in camera-local orthographic pass 2")
         .def("get_handle", &Actor::get_handle, "Get the underlying handle of this actor");
 
     // ============================================================================

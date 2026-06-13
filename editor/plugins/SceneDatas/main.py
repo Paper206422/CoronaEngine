@@ -65,6 +65,8 @@ class SceneDatas(PluginBase):
             actor.set_damping(float(vector[0]))
         elif operation == "SetVisible":
             actor.set_visible(bool(vector[0]))
+        elif operation == "SetFollowCamera":
+            actor.set_follow_camera(vector[0])
         elif operation == "SetCameraLock":
             actor.set_camera_lock_enabled(bool(vector[0]))
         elif operation == "SetCameraLockOffset":

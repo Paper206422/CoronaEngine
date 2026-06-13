@@ -315,6 +315,33 @@
                   </div>
                 </div>
               </div>
+
+              <div
+                class="bg-[#3c3c3c]/50 p-2 rounded border-l-2"
+                :class="actorData.follow_camera ? 'border-cyan-500' : 'border-[#545454]'"
+              >
+                <div class="flex items-center justify-between gap-2">
+                  <label class="text-[#e0e0e0] font-medium w-16">渲染空间</label>
+                  <div class="flex bg-[#1a1a1a] rounded p-0.5">
+                    <button
+                      type="button"
+                      class="px-2 py-1 rounded text-[10px] transition-colors"
+                      :class="!actorData.follow_camera ? 'bg-[#545454] text-[#ffffff]' : 'text-[#909090] hover:text-[#e0e0e0]'"
+                      @click="setActorRenderSpace(false)"
+                    >
+                      场景
+                    </button>
+                    <button
+                      type="button"
+                      class="px-2 py-1 rounded text-[10px] transition-colors"
+                      :class="actorData.follow_camera ? 'bg-cyan-600 text-[#ffffff]' : 'text-[#909090] hover:text-[#e0e0e0]'"
+                      @click="setActorRenderSpace(true)"
+                    >
+                      屏幕 UI
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- 单位 - 模型 -->
@@ -905,6 +932,33 @@
                   <label class="text-[#e0e0e0] font-medium w-16">文件</label>
                   <div class="flex-1 text-[#909090] truncate text-[10px]" :title="currentModelFile">
                     {{ currentModelFile.split('/').pop() }}
+                  </div>
+                </div>
+              </div>
+
+              <div
+                class="bg-[#3c3c3c]/50 p-2 rounded border-l-2"
+                :class="modelData.follow_camera ? 'border-cyan-500' : 'border-[#545454]'"
+              >
+                <div class="flex items-center justify-between gap-2">
+                  <label class="text-[#e0e0e0] font-medium w-16">渲染空间</label>
+                  <div class="flex bg-[#1a1a1a] rounded p-0.5">
+                    <button
+                      type="button"
+                      class="px-2 py-1 rounded text-[10px] transition-colors"
+                      :class="!modelData.follow_camera ? 'bg-[#545454] text-[#ffffff]' : 'text-[#909090] hover:text-[#e0e0e0]'"
+                      @click="setModelRenderSpace(false)"
+                    >
+                      场景
+                    </button>
+                    <button
+                      type="button"
+                      class="px-2 py-1 rounded text-[10px] transition-colors"
+                      :class="modelData.follow_camera ? 'bg-cyan-600 text-[#ffffff]' : 'text-[#909090] hover:text-[#e0e0e0]'"
+                      @click="setModelRenderSpace(true)"
+                    >
+                      屏幕 UI
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1578,6 +1632,8 @@ const actorData = ref({
   handle: 0,
   parentScene: '',
   file: '',
+  follow_camera: false,
+  render_space: 'scene',
   model: {
     path: '',
   },
@@ -1617,6 +1673,8 @@ const modelData = ref({
   handle: 0,
   targetScene: '',
   file: '',
+  follow_camera: false,
+  render_space: 'scene',
   defaultTransform: {
     position: { x: 0.0, y: 0.0, z: 0.0 },
     rotation: { x: 0.0, y: 0.0, z: 0.0 },
@@ -1655,6 +1713,13 @@ const switchMainTab = (tab) => {
   mainActiveTab.value = tab;
   ActiveSubTab.value = 'Basic'; // 重置子标签
 };
+
+const readFollowCameraState = (data) =>
+  data?.render_space === 'ui' ||
+  data?.follow_camera === true ||
+  data?.follow_camera === 1 ||
+  data?.follow_camera === 'true' ||
+  data?.follow_camera === '1';
 
 // 加载场景数据
 const loadSceneData = async (sceneId) => {
@@ -1717,6 +1782,9 @@ const loadActorData = async (sceneId, actorId) => {
       actorData.value.parentScene = sceneId || '';
       actorData.value.file = data.path;
       actorData.value.model.path = data.model || '';
+      const followCamera = readFollowCameraState(data);
+      actorData.value.follow_camera = followCamera;
+      actorData.value.render_space = followCamera ? 'ui' : 'scene';
 
       if (data.geometry) {
         actorData.value.hasGeometry = true;
@@ -1794,6 +1862,9 @@ const loadModelData = async (sceneId, modelId) => {
       modelData.value.handle = Number(data.handle || 0);
       modelData.value.targetScene = sceneId || '';
       modelData.value.file = data.path;
+      const followCamera = readFollowCameraState(data);
+      modelData.value.follow_camera = followCamera;
+      modelData.value.render_space = followCamera ? 'ui' : 'scene';
 
       if (data.geometry) {
         modelData.value.defaultTransform.position = {
@@ -2179,6 +2250,31 @@ const updateActorCollision = () => {
   });
 };
 
+// 更新单位渲染空间：场景 Actor 或屏幕 UI Actor
+const setActorRenderSpace = async (followCamera) => {
+  if (!currentActorFile.value || !actorData.value.parentScene) return;
+
+  const enabled = Boolean(followCamera);
+  const previous = Boolean(actorData.value.follow_camera);
+  if (previous === enabled) return;
+
+  actorData.value.follow_camera = enabled;
+  actorData.value.render_space = enabled ? 'ui' : 'scene';
+
+  try {
+    await sceneService.actorOperation(
+      actorData.value.parentScene,
+      currentActorFile.value,
+      'SetFollowCamera',
+      [enabled]
+    );
+  } catch (e) {
+    actorData.value.follow_camera = previous;
+    actorData.value.render_space = previous ? 'ui' : 'scene';
+    logError('更新单位渲染空间失败', e);
+  }
+};
+
 // 更新相机锁定
 const updateCameraLock = () => {
   if (!currentActorFile.value || !actorData.value.parentScene) return;
@@ -2250,6 +2346,31 @@ const updateModelTransform = (operationType) => {
       logError('更新模型变换失败', e);
     }
   });
+};
+
+// 更新模型渲染空间：场景 Actor 或屏幕 UI Actor
+const setModelRenderSpace = async (followCamera) => {
+  if (!currentModelFile.value || !modelData.value.targetScene) return;
+
+  const enabled = Boolean(followCamera);
+  const previous = Boolean(modelData.value.follow_camera);
+  if (previous === enabled) return;
+
+  modelData.value.follow_camera = enabled;
+  modelData.value.render_space = enabled ? 'ui' : 'scene';
+
+  try {
+    await sceneService.actorOperation(
+      modelData.value.targetScene,
+      currentModelFile.value,
+      'SetFollowCamera',
+      [enabled]
+    );
+  } catch (e) {
+    modelData.value.follow_camera = previous;
+    modelData.value.render_space = previous ? 'ui' : 'scene';
+    logError('更新模型渲染空间失败', e);
+  }
 };
 
 // 更新模型物理属性

@@ -134,6 +134,8 @@ class OpticsSystem : public Kernel::SystemBase {
     // visibility/depth 仍是逐相机的中间产物，继续由 hardware_ 共享。
     struct SurfaceRenderTarget {
         HardwareImage final_output;        ///< 该 surface 专属的 RGBA16F 最终输出
+        HardwareImage ui_overlay;          ///< Pass 2 camera-follow actor overlay
+        HardwareImage composite_output;    ///< Optics-internal scene+overlay result
         std::uintptr_t image_handle = 0;   ///< 该 surface 专属的 image_storage 句柄
         uint32_t width = 0;                ///< 该输出图当前分辨率
         uint32_t height = 0;

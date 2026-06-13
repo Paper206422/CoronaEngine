@@ -212,6 +212,7 @@ class Actor:
         # 兼容旧构造签名（path），但不再使用
         self._profiles: List[ActorProfile] = []
         self._active: Optional[ActorProfile] = None
+        self._follow_camera = False
 
     def add_profile(self, profile: ActorProfile) -> Optional[ActorProfile]:
         _log(f"[Fallback][Actor.add_profile] profile={profile}")
@@ -250,6 +251,14 @@ class Actor:
     def profile_count(self) -> int:
         _log("[Fallback][Actor.profile_count]")
         return len(self._profiles)
+
+    def set_follow_camera(self, enabled: bool):
+        _log(f"[Fallback][Actor.set_follow_camera] enabled={enabled}")
+        self._follow_camera = bool(enabled)
+
+    def get_follow_camera(self) -> bool:
+        _log("[Fallback][Actor.get_follow_camera]")
+        return self._follow_camera
 
 
 # ================================
