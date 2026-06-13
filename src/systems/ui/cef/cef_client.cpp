@@ -267,6 +267,7 @@ void CefAppConfig::OnBeforeCommandLineProcessing(const CefString& process_type,
     command_line->AppendSwitch("disable-pdf-viewer");
     command_line->AppendSwitch("disable-component-update");
     command_line->AppendSwitch("disable-background-networking");
+    command_line->AppendSwitchWithValue("disable-features", "PushMessaging");
     command_line->AppendSwitch("disable-d3d11");
     command_line->AppendSwitch("disable-accelerated-video-decode");
 }
