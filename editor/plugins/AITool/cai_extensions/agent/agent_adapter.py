@@ -109,8 +109,12 @@ _COMPOSE_INTENT_SYSTEM_PROMPT = """你是 LANChat 场景生成助手的意图判
 只输出 JSON: {"compose": true} 或 {"compose": false}"""
 
 
-def _llm_is_compose_intent(text: str, timeout: float = 8.0) -> Optional[bool]:
-    """LLM 判断是否为整场景生成意图。返回 True/False；失败返回 None（交由调用方兜底）。"""
+def _llm_is_compose_intent(text: str, timeout: float = 20.0) -> Optional[bool]:
+    """LLM 判断是否为整场景生成意图。返回 True/False；失败返回 None（交由调用方兜底）。
+
+    超时：future timeout(20s) 必须 > HTTP request_timeout(18s)，否则 HTTP 还没超时
+    就被 future 掐断（曾因 future=8 < http=15 导致 GPT-5.5 在 8s 临界处被误杀掉进 chat）。
+    """
     if not text or not text.strip():
         return None
     try:
@@ -119,7 +123,7 @@ def _llm_is_compose_intent(text: str, timeout: float = 8.0) -> Optional[bool]:
         from Quasar.ai_models.base_pool.registry import get_chat_model
 
         def _do():
-            model = get_chat_model(temperature=0, request_timeout=15.0)
+            model = get_chat_model(temperature=0, request_timeout=18.0)
             return model.invoke([
                 SystemMessage(content=_COMPOSE_INTENT_SYSTEM_PROMPT),
                 HumanMessage(content=text.strip()[:500]),
@@ -418,7 +422,7 @@ class MasterAgent:
         self,
         fallback_chat: Callable[[str, List[str]], str] = None,
         global_style: Dict[str, Any] = None,
-        scene_max_items: int = 12,
+        scene_max_items: int = 8,  # 阶段测试期降到 4，省 hunyuan 消耗（之前 12）
     ) -> None:
         self._fallback_chat = fallback_chat
         self._global_style = global_style or {}
@@ -528,10 +532,11 @@ class MasterAgent:
                 return self._handle_chat(system, messages)
 
             # 3. 关键词未命中 → 开放式意图判别（LLM）：可能是清单外的场景描述
-            #    "做一个海底世界""来个蒙古包草原"等不含关键词的整场景生成在此捕获
+            #    "做一个海底世界""来个蒙古包草原""暗黑游戏风教堂"等不含关键词的整场景生成在此捕获
+            #    force_compose=True：跳过 _handle_scene 内层的关键词二次过滤，直接走 compose
             if is_compose_intent(trigger):
                 logger.info("[MasterAgent] routing → compose (开放式意图)")
-                return self._handle_scene(trigger, system, messages)
+                return self._handle_scene(trigger, system, messages, force_compose=True)
 
             # 4. 普通聊天
             logger.info("[MasterAgent] routing → chat")
@@ -654,9 +659,11 @@ class MasterAgent:
 
     # ── 场景指令 ──────────────────────────────────────────────────
 
-    def _handle_scene(self, user_text: str, persona: str, messages: List[str]) -> str:
+    def _handle_scene(self, user_text: str, persona: str, messages: List[str],
+                      force_compose: bool = False) -> str:
         specialist = self._router.route(persona)
-        logger.info("[MasterAgent] scene → %s: %s", specialist.key, user_text[:80])
+        logger.info("[MasterAgent] scene → %s: %s (force_compose=%s)",
+                    specialist.key, user_text[:80], force_compose)
 
         style_bible = dict(self._global_style)
         if specialist.style_bible:
@@ -673,9 +680,11 @@ class MasterAgent:
         # 场景组合（物品清单/整体布置）→ SceneComposer 批量建模+布局+导入
         # 判断同时看当前指令 + 历史消息：用户可能只说"生成3d模型/按清单生成"，
         # 而真正的物品清单在之前 AI 给出的消息里。
+        # force_compose：外层已用开放式 LLM 判定是整场景生成（如"教堂""海底世界"），
+        # 跳过这道关键词门，否则清单外场景词会被二次过滤掉、掉进单步编辑。
         from .scene_composer import is_compose_request
         compose_text = self._gather_compose_text(user_text, messages)
-        if is_compose_request(user_text) or is_compose_request(compose_text):
+        if force_compose or is_compose_request(user_text) or is_compose_request(compose_text):
             logger.info("[MasterAgent] scene → compose (整体场景组合)")
             return self._handle_scene_compose(user_text, messages, specialist)
 
@@ -1030,7 +1039,7 @@ class MasterAgent:
 def create_master_agent(
     global_style: Dict[str, Any] = None,
     fallback_chat: Callable[[str, List[str]], str] = None,
-    scene_max_items: int = 12,
+    scene_max_items: int = 8,
 ) -> MasterAgent:
     """创建 MasterAgent — 替换 LANChat 的 _make_agent_ai_chat()。
 
@@ -1038,7 +1047,7 @@ def create_master_agent(
         from cai_extensions.agent.agent_adapter import create_master_agent
         server._agent_runner = AgentRunner(ai_chat=create_master_agent())
 
-    scene_max_items: 单次场景组合生成的物体数量上限（默认 8）。
+    scene_max_items: 单次场景组合生成的物体数量上限（阶段测试期 4，省 hunyuan 消耗）。
     """
     return MasterAgent(fallback_chat=fallback_chat, global_style=global_style,
                        scene_max_items=scene_max_items)

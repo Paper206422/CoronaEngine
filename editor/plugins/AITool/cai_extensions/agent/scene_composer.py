@@ -131,49 +131,60 @@ class SceneComposer:
         return filtered
 
     def _llm_extract(self, text: str) -> List[Dict[str, Any]]:
-        try:
-            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FTimeout
-            from Quasar.ai_models.base_pool.registry import get_chat_model
-            from langchain_core.messages import HumanMessage, SystemMessage
+        # extract 是推理任务（自然语言→结构化清单），与布局同级，超时不应比布局短。
+        # request_timeout 30→90（布局是 120~180），future timeout 必须 > request_timeout。
+        # 超时/空结果重试 1 次：它是 compose 的第一步，单点 API 抖动不该让整链失败。
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FTimeout
+        from Quasar.ai_models.base_pool.registry import get_chat_model
+        from langchain_core.messages import HumanMessage, SystemMessage
 
-            def _call():
-                llm = get_chat_model(temperature=0, request_timeout=30.0)
-                return llm.invoke([
-                    SystemMessage(content=_EXTRACT_SYSTEM_PROMPT),
-                    HumanMessage(content=text[:2000]),
-                ])
+        def _call():
+            llm = get_chat_model(temperature=0, request_timeout=90.0)
+            return llm.invoke([
+                SystemMessage(content=_EXTRACT_SYSTEM_PROMPT),
+                HumanMessage(content=text[:2000]),
+            ])
 
-            ex = ThreadPoolExecutor(max_workers=1)
-            fut = ex.submit(_call)
+        max_attempts = 2
+        for attempt in range(1, max_attempts + 1):
             try:
-                resp = fut.result(timeout=35.0)
-            except FTimeout:
-                ex.shutdown(wait=False, cancel_futures=True)
-                logger.warning("[SceneComposer] LLM 提取超时")
-                return []
-            finally:
-                ex.shutdown(wait=False)
+                ex = ThreadPoolExecutor(max_workers=1)
+                fut = ex.submit(_call)
+                try:
+                    resp = fut.result(timeout=95.0)
+                except FTimeout:
+                    ex.shutdown(wait=False, cancel_futures=True)
+                    logger.warning("[SceneComposer] LLM 提取超时 (第 %d/%d 次)%s",
+                                   attempt, max_attempts,
+                                   "，重试" if attempt < max_attempts else "，放弃")
+                    continue
+                finally:
+                    ex.shutdown(wait=False)
 
-            raw = (resp.content if hasattr(resp, "content") else str(resp)).strip()
-            if "```" in raw:
-                s = raw.find("["); e = raw.rfind("]")
-                if s != -1 and e != -1:
-                    raw = raw[s:e + 1]
-            data = json.loads(raw)
-            if not isinstance(data, list):
-                return []
-            items = []
-            for d in data[:20]:
-                if isinstance(d, dict) and d.get("name"):
-                    items.append({
-                        "name": str(d["name"]).strip(),
-                        "quantity": int(d.get("quantity", 1) or 1),
-                        "keywords": str(d.get("keywords", "") or d["name"]).strip(),
-                    })
-            return items
-        except Exception as e:
-            logger.warning("[SceneComposer] LLM 提取失败: %s", e)
-            return []
+                raw = (resp.content if hasattr(resp, "content") else str(resp)).strip()
+                if "```" in raw:
+                    s = raw.find("["); e = raw.rfind("]")
+                    if s != -1 and e != -1:
+                        raw = raw[s:e + 1]
+                data = json.loads(raw)
+                if not isinstance(data, list):
+                    return []
+                items = []
+                for d in data[:20]:
+                    if isinstance(d, dict) and d.get("name"):
+                        items.append({
+                            "name": str(d["name"]).strip(),
+                            "quantity": int(d.get("quantity", 1) or 1),
+                            "keywords": str(d.get("keywords", "") or d["name"]).strip(),
+                        })
+                if attempt > 1:
+                    logger.info("[SceneComposer] LLM 提取第 %d 次重试成功", attempt)
+                return items
+            except Exception as e:
+                logger.warning("[SceneComposer] LLM 提取失败 (第 %d/%d 次): %s%s",
+                               attempt, max_attempts, e,
+                               "，重试" if attempt < max_attempts else "，放弃")
+        return []
 
     def _regex_extract(self, text: str) -> List[Dict[str, Any]]:
         """正则回退：抓取 "1. 双人床：..." 这类列表项。"""
@@ -465,13 +476,14 @@ class SceneComposer:
                     "v -0.5 -0.5  0.5\nv  0.5 -0.5  0.5\nv  0.5  0.5  0.5\nv -0.5  0.5  0.5\n"
                     "vn  0.0  0.0 -1.0\nvn  1.0  0.0  0.0\nvn  0.0  0.0  1.0\nvn -1.0  0.0  0.0\n"
                     "vn  0.0  1.0  0.0\nvn  0.0 -1.0  0.0\n"
-                    "# 6 faces (quads), normals inward so camera sees through to inside\n"
-                    "f 1//1 4//1 3//1 2//1\n"
-                    "f 2//2 6//2 5//2 1//2\n"
-                    "f 5//3 7//3 8//3 4//3\n"
-                    "f 4//4 8//4 6//4 2//4\n"
-                    "f 3//5 7//5 6//5 2//5\n"
-                    "f 1//6 5//6 8//6 4//6\n")
+                    "# 6 faces (quads): each is a planar quad, normals inward.\n"
+                    "# verified by cross-product: 4 coplanar verts + inward normal.\n"
+                    "f 1//3 2//3 3//3 4//3\n"   # 背墙 z=-0.5  法向内向 +Z
+                    "f 5//1 8//1 7//1 6//1\n"   # 前墙 z=+0.5  法向内向 -Z (旧表缺失)
+                    "f 1//2 4//2 8//2 5//2\n"   # 左墙 x=-0.5  法向内向 +X
+                    "f 2//4 6//4 7//4 3//4\n"   # 右墙 x=+0.5  法向内向 -X
+                    "f 1//5 5//5 6//5 2//5\n"   # 底面 y=-0.5  法向内向 +Y
+                    "f 4//6 3//6 7//6 8//6\n")  # 顶面 y=+0.5  法向内向 -Y (旧表缺失)
 
         # 2. 场景 + Actor
         try:

@@ -90,8 +90,8 @@ class IntentAgent:
         try: result = json.loads(text)
         except json.JSONDecodeError: return _keyword_fallback(original_input)
         if not isinstance(result, dict): return _keyword_fallback(original_input)
-        return {"action": str(result.get("action", "add")).strip().lower(), "target": str(result.get("target", "")).strip(), "confidence": float(result.get("confidence", 0.7)),
-                "parameters": {"zone": str(result.get("parameters", {}).get("zone", "general")), "partition": str(result.get("parameters", {}).get("partition", "indoor")), "relation": str(result.get("parameters", {}).get("relation", "near")).lower(), "relation_target": str(result.get("parameters", {}).get("relation_target", "")), "distance_guide": float(result.get("parameters", {}).get("distance_guide", 0.5)), "quantity": int(result.get("parameters", {}).get("quantity", 1)), "style_deviation": bool(result.get("parameters", {}).get("style_deviation", False)), "deviation_reason": result.get("parameters", {}).get("deviation_reason")},
+        return {"action": str(result.get("action") or "add").strip().lower(), "target": str(result.get("target") or "").strip(), "confidence": float(result.get("confidence") or 0.7),
+                "parameters": {"zone": str(result.get("parameters", {}).get("zone") or "general"), "partition": str(result.get("parameters", {}).get("partition") or "indoor"), "relation": str(result.get("parameters", {}).get("relation") or "near").lower(), "relation_target": str(result.get("parameters", {}).get("relation_target") or ""), "distance_guide": float(result.get("parameters", {}).get("distance_guide") or 0.5), "quantity": int(result.get("parameters", {}).get("quantity") or 1), "style_deviation": bool(result.get("parameters", {}).get("style_deviation", False)), "deviation_reason": result.get("parameters", {}).get("deviation_reason")},
                 "reasoning": result.get("reasoning", []), "ambiguities": result.get("ambiguities", [])}
 
     def _empty_intent(self) -> Dict[str, Any]:
