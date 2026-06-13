@@ -638,6 +638,14 @@ class SceneComposer:
             except Exception as e:
                 logger.warning("[SceneComposer] 场景分解异常，退化单盒: %s", e)
                 self.zone_tree = None
+        # 关键：建树后把 room_size 同步成 indoor box 的真实体积。下游布局 prompt 与
+        # 导入后钳制都读 self.room_size——同步后它们自动按真实盒尺寸工作，无需改布局代码。
+        if self.zone_tree is not None:
+            box = self._get_room_zone()
+            if box is not None and getattr(box, "enclosure", "") in ("box", "shell"):
+                self.room_size = list(box.volume.size)
+                logger.info("[SceneComposer] room_size 同步为 indoor box 体积: %s",
+                            self.room_size)
 
         # ── Phase 1: generate_all (并行, 纯 API) ──
         resolved = self._run_model_retrieval(items)
