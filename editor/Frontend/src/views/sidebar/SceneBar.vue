@@ -399,7 +399,7 @@
               <div
                 class="group flex items-center px-2 py-0.5 hover:bg-[#3c3c3c]/50 cursor-pointer border-l-2 border-transparent hover:border-[#90caf9]"
                 :class="{ 'bg-[#264f78]/60': selectedItem === 'cam:' + cam.name }"
-                @click="selectedItem = 'cam:' + cam.name"
+                @click="SelectCamera(cam)"
               >
                 <span class="w-5 flex-shrink-0">
                   <svg class="w-4 h-4 text-[#90caf9]" fill="currentColor" viewBox="0 0 24 24">
@@ -448,8 +448,8 @@
               :key="scene.name"
               class="group flex items-center px-2 py-0.5 hover:bg-[#3c3c3c]/50 cursor-pointer border-l-2 border-transparent hover:border-[#84a65b]"
               :class="{ 'bg-[#264f78]/60': selectedItem === scene.name }"
-              @click="SelectActor(scene)"
-              @dblclick="scene.type === 'audio' ? handlePlayToggle(scene) : scene.type === 'video' ? null : ControlObject(scene)"
+              @click="onActorRowClick(scene, $event)"
+              @dblclick="onActorRowDoubleClick(scene, $event)"
             >
               <!-- 图标 -->
               <span class="w-5 flex-shrink-0">
@@ -507,6 +507,7 @@
                 "
                 :title="scene.visible === false ? '显示' : '隐藏'"
                 @click.stop="ToggleVisible(scene)"
+                @dblclick.stop
               >
                 <svg
                   v-if="scene.visible !== false"
@@ -556,6 +557,7 @@
                   (playingStates[scene.name] ?? scene._playing) ? '停止' : '播放'
                 "
                 @click.stop="handlePlayToggle(scene)"
+                @dblclick.stop
               >
                 <!-- 播放 ▶ -->
                 <svg
@@ -581,6 +583,7 @@
                 class="w-5 h-5 flex items-center justify-center text-[#666] hover:text-red-400 hover:bg-red-400/20 rounded transition-all"
                 title="删除"
                 @click.stop="DeleteActor(scene)"
+                @dblclick.stop
               >
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path
@@ -656,6 +659,7 @@ const getTypeShort = (type) => {
 };
 
 const selectedItem = ref(null);
+const selectedCameraName = ref(null);
 const sceneCameras = ref([]);
 const camerasExpanded = ref(true);
 const actorsExpanded = ref(true);
@@ -668,6 +672,17 @@ const px = ref('1.0'),
   py = ref('1.0'),
   pz = ref('1.0');
 const recording = ref(false);
+
+const ACTOR_SINGLE_CLICK_DELAY_MS = 280;
+const FOCUS_POSE_TIMEOUT_MS = 1500;
+const CAMERA_FOCUS_WRITE_ATTEMPTS = 6;
+let actorSingleClickTimer = null;
+let actorFocusSeq = 0;
+let focusPoseRequestSeq = 0;
+let previousFocusPoseResult = null;
+const pendingFocusPoseRequests = new Map();
+const pendingFocusCameraMoveFrames = new Set();
+let lastActorFocusPose = null;
 
 // ===========================================================================
 //  资源智能搜索(场景栏新增功能)
@@ -845,6 +860,92 @@ const OnLocateSearchItem = async (item) => {
 
 const isMediaItem = (scene) => scene && (scene.type === 'video' || scene.type === 'audio');
 
+const normalizeHandle = (value) => {
+  const handle = Number(value);
+  return Number.isFinite(handle) && handle > 0 ? handle : 0;
+};
+
+const normalizePoseVector = (value) => {
+  if (!Array.isArray(value) || value.length !== 3) return null;
+  const next = value.map((item) => Number(item));
+  return next.every((item) => Number.isFinite(item)) ? next : null;
+};
+
+const normalizeFocusPose = (payload) => {
+  const position = normalizePoseVector(payload?.position);
+  const forward = normalizePoseVector(payload?.forward);
+  const up = normalizePoseVector(payload?.up);
+  if (!position || !forward || !up) return null;
+
+  const center = normalizePoseVector(payload?.center);
+  const distance = Number(payload?.distance);
+  return {
+    position,
+    forward,
+    up,
+    center: center || null,
+    distance: Number.isFinite(distance) ? distance : null,
+  };
+};
+
+const clearActorSingleClickTimer = () => {
+  if (actorSingleClickTimer) {
+    clearTimeout(actorSingleClickTimer);
+    actorSingleClickTimer = null;
+  }
+};
+
+const handleFocusPoseResult = (requestId, payload) => {
+  const pending = pendingFocusPoseRequests.get(requestId);
+  if (!pending) return;
+
+  clearTimeout(pending.timeout);
+  pendingFocusPoseRequests.delete(requestId);
+
+  if (!payload || payload.status === 'error') {
+    pending.reject(new Error(payload?.message || 'computeActorFocusPose failed'));
+    return;
+  }
+
+  const pose = normalizeFocusPose(payload);
+  if (!pose) {
+    pending.reject(new Error('computeActorFocusPose returned invalid pose'));
+    return;
+  }
+
+  pending.resolve(pose);
+};
+
+const computeActorFocusPose = (actorHandle) => {
+  const bridge = window.coronaBridge;
+  if (!bridge || typeof bridge.computeActorFocusPose !== 'function') {
+    return Promise.reject(new Error('coronaBridge.computeActorFocusPose is unavailable'));
+  }
+
+  const requestId = `actor_focus_${Date.now()}_${++focusPoseRequestSeq}`;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingFocusPoseRequests.delete(requestId);
+      reject(new Error('computeActorFocusPose timed out'));
+    }, FOCUS_POSE_TIMEOUT_MS);
+
+    pendingFocusPoseRequests.set(requestId, { resolve, reject, timeout });
+
+    try {
+      const ok = bridge.computeActorFocusPose(actorHandle, requestId);
+      if (!ok) {
+        clearTimeout(timeout);
+        pendingFocusPoseRequests.delete(requestId);
+        reject(new Error('computeActorFocusPose bridge call failed'));
+      }
+    } catch (e) {
+      clearTimeout(timeout);
+      pendingFocusPoseRequests.delete(requestId);
+      reject(e);
+    }
+  });
+};
+
 const ControlObject = async (scene) => {
   // 音视频是独立资源，没有可操作的 Actor
   if (isMediaItem(scene)) return;
@@ -861,6 +962,180 @@ const SelectActor = (scene) => {
   if (isMediaItem(scene)) return;
   // 通知积木编辑器当前选中的物体
   setActorContext(currentSceneName.value, scene.name);
+};
+
+const SelectCamera = (cam) => {
+  selectedItem.value = 'cam:' + cam.name;
+  selectedCameraName.value = cam.name;
+};
+
+const isActorRowActionEvent = (event) => !!event?.target?.closest?.('button');
+
+const resolveActorHandleForFocus = async (scene) => {
+  let actorHandle = normalizeHandle(scene?.handle);
+  if (actorHandle) {
+    return actorHandle;
+  }
+
+  await OnInitObjTree();
+  const refreshed = sceneImages.value.find((item) => item.name === scene?.name);
+  actorHandle = normalizeHandle(refreshed?.handle);
+  if (actorHandle && refreshed && scene) {
+    scene.handle = actorHandle;
+  }
+  return actorHandle;
+};
+
+const getTargetCamera = () => {
+  const cameraName = getTargetCameraName();
+  return sceneCameras.value.find((cam) => cam.name === cameraName) || sceneCameras.value[0] || null;
+};
+
+const clearFocusPoseCache = () => {
+  lastActorFocusPose = null;
+};
+
+const getCachedFocusPose = (actorHandle, cameraHandle) => {
+  if (
+    lastActorFocusPose &&
+    lastActorFocusPose.actorHandle === actorHandle &&
+    lastActorFocusPose.cameraHandle === cameraHandle
+  ) {
+    return lastActorFocusPose.pose;
+  }
+  return null;
+};
+
+const setCachedFocusPose = (actorHandle, cameraHandle, pose) => {
+  lastActorFocusPose = {
+    actorHandle,
+    cameraHandle,
+    pose,
+  };
+};
+
+const queueFocusCameraMoveFrame = (callback) => {
+  const rafId = window.requestAnimationFrame(() => {
+    pendingFocusCameraMoveFrames.delete(rafId);
+    callback();
+  });
+  pendingFocusCameraMoveFrames.add(rafId);
+};
+
+const sendFocusCameraMoveBurst = (bridge, cameraHandle, pose, fov, focusSeq) => {
+  let attempt = 0;
+  let immediateSendOk = false;
+
+  const sendOnce = () => {
+    if (focusSeq !== actorFocusSeq) {
+      return;
+    }
+
+    attempt++;
+    try {
+      immediateSendOk =
+        bridge.cameraMove(cameraHandle, pose.position, pose.forward, pose.up, fov) ||
+        immediateSendOk;
+    } catch (e) {
+      logError('Actor focus cameraMove failed', e);
+      return;
+    }
+
+    if (attempt < CAMERA_FOCUS_WRITE_ATTEMPTS) {
+      queueFocusCameraMoveFrame(sendOnce);
+    }
+  };
+
+  sendOnce();
+  return immediateSendOk;
+};
+
+const focusActorFromList = async (scene) => {
+  const focusSeq = ++actorFocusSeq;
+  SelectActor(scene);
+
+  try {
+    const actorHandle = await resolveActorHandleForFocus(scene);
+    if (focusSeq !== actorFocusSeq) return;
+    if (!actorHandle) {
+      logWarn('Actor focus skipped: missing actor handle', scene?.name);
+      return;
+    }
+
+    const camera = getTargetCamera();
+    const cameraHandle = normalizeHandle(camera?.handle);
+    if (!cameraHandle) {
+      logWarn('Actor focus skipped: missing camera handle', camera?.name);
+      return;
+    }
+
+    const cachedPose = getCachedFocusPose(actorHandle, cameraHandle);
+    const pose = cachedPose || await computeActorFocusPose(actorHandle);
+    if (focusSeq !== actorFocusSeq) return;
+    if (!cachedPose) {
+      setCachedFocusPose(actorHandle, cameraHandle, pose);
+    }
+
+    const fov = Number.isFinite(Number(camera?.fov)) ? Number(camera.fov) : 45;
+    const bridge = window.coronaBridge;
+    if (!bridge || typeof bridge.cameraMove !== 'function') {
+      logWarn('Actor focus skipped: coronaBridge.cameraMove is unavailable');
+      return;
+    }
+
+    const ok = sendFocusCameraMoveBurst(bridge, cameraHandle, pose, fov, focusSeq);
+    if (!ok) {
+      logWarn('Actor focus skipped: cameraMove bridge call failed');
+      return;
+    }
+
+    await appService.callDockFunction('', 'applyCameraPose', [
+      {
+        ...pose,
+        fov,
+        cameraHandle,
+        cameraName: camera?.name,
+      },
+    ]);
+  } catch (e) {
+    if (focusSeq === actorFocusSeq) {
+      logError('Actor focus failed', e);
+    }
+  }
+};
+
+const onActorRowClick = (scene, event) => {
+  clearActorSingleClickTimer();
+  SelectActor(scene);
+
+  if (isActorRowActionEvent(event) || Number(event?.detail) > 1 || isMediaItem(scene)) {
+    return;
+  }
+
+  actorSingleClickTimer = setTimeout(() => {
+    actorSingleClickTimer = null;
+    ControlObject(scene);
+  }, ACTOR_SINGLE_CLICK_DELAY_MS);
+};
+
+const onActorRowDoubleClick = (scene, event) => {
+  clearActorSingleClickTimer();
+  SelectActor(scene);
+
+  if (isActorRowActionEvent(event)) {
+    return;
+  }
+
+  if (scene?.type === 'audio') {
+    handlePlayToggle(scene);
+    return;
+  }
+
+  if (scene?.type === 'video') {
+    return;
+  }
+
+  focusActorFromList(scene);
 };
 
 /// 切换音频播放/停止
@@ -917,9 +1192,19 @@ const SaveScene = async () => {
 };
 
 const getTargetCameraName = () => {
+  if (
+    selectedCameraName.value &&
+    sceneCameras.value.some((cam) => cam.name === selectedCameraName.value)
+  ) {
+    return selectedCameraName.value;
+  }
+
   const item = selectedItem.value || '';
   if (item.startsWith('cam:')) {
-    return item.slice(4);
+    const cameraName = item.slice(4);
+    if (sceneCameras.value.some((cam) => cam.name === cameraName)) {
+      return cameraName;
+    }
   }
   return sceneCameras.value[0]?.name;
 };
@@ -1164,6 +1449,7 @@ const addActorToList = async (actor) => {
     path: actor.path,
     type: actor.type || 'obj',
     visible: actor.visible !== false,
+    handle: normalizeHandle(actor.handle),
   });
 };
 
@@ -1290,27 +1576,28 @@ const HandleSceneImport = async () => {
   await appService.callDockFunction('', 'showLoading', ['加载中', '请稍候...', 0]);
   try {
     const result = await projectService.importResourceFileByDialog(currentSceneName.value, 'scene');
-    if (result.success === true) {
-      await appService.callDockFunction('', 'updateLoading', ['导入中', 40]);
-      if (Array.isArray(result.data.actors)) {
-        sceneImages.value = sceneImages.value.concat(
-          result.data.actors.map((actor) => ({
-            name: actor.name || actor.path.split('/').pop().split('.')[0],
-            path: actor.path,
-            type: actor.type || 'obj',
-          }))
-        );
-      }
-
-      await appService.callDockFunction('', 'updateLoading', ['导入完成', 100]);
+    const payload = result?.data ?? result;
+    const status = payload?.status;
+    if (result?.success === false || status === 'error') {
+      logError('Scene import failed', payload?.message || result?.error || 'unknown error');
+      return;
     }
+    if (status === 'canceled') {
+      return;
+    }
+
+    await appService.callDockFunction('', 'updateLoading', ['导入中', 40]);
+    await OnInitObjTree();
+    await appService.callDockFunction('', 'updateLoading', ['导入完成', 100]);
   } catch (e) {
     logError('Scene import failed', e);
+  } finally {
+    await appService.callDockFunction('', 'hideLoading', []);
   }
-  await appService.callDockFunction('', 'hideLoading', []);
 };
 
 const DeleteActor = async (scene) => {
+  clearFocusPoseCache();
   sceneImages.value = sceneImages.value.filter((item) => item.name !== scene.name);
 
   try {
@@ -1354,6 +1641,7 @@ const setupFragmentListener = () => {
 
 const OnInitObjTree = async () => {
   try {
+    clearFocusPoseCache();
     const result = await sceneService.listSceneTree(currentSceneName.value);
     sceneImages.value = [];
     sceneCameras.value = [];
@@ -1368,6 +1656,7 @@ const OnInitObjTree = async () => {
             path: item.path,
             type: item.type || 'obj',
             visible: item.visible !== false,
+            handle: normalizeHandle(item.handle),
           });
         });
       }
@@ -1378,7 +1667,11 @@ const OnInitObjTree = async () => {
           width: cam.width || 0,
           height: cam.height || 0,
           fov: cam.fov ?? null,
+          handle: normalizeHandle(cam.handle ?? cam.camera_handle),
         }));
+        if (!sceneCameras.value.some((cam) => cam.name === selectedCameraName.value)) {
+          selectedCameraName.value = sceneCameras.value[0]?.name || null;
+        }
       }
     }
   } catch (e) {
@@ -1387,6 +1680,9 @@ const OnInitObjTree = async () => {
 };
 
 onMounted(async () => {
+  previousFocusPoseResult = window.__coronaFocusPoseResult;
+  window.__coronaFocusPoseResult = handleFocusPoseResult;
+
   const result = await projectService.OnInit();
   const queryString = window.location.hash?.split('?')[1] || window.location.search?.slice(1);
   const urlSceneName = queryString ? new URLSearchParams(queryString).get('sceneName') : null;
@@ -1420,6 +1716,20 @@ const onSceneTreeChangedEvent = (sceneName) => {
 };
 
 onUnmounted(() => {
+  clearFocusPoseCache();
+  clearActorSingleClickTimer();
+  actorFocusSeq++;
+  pendingFocusPoseRequests.forEach((pending) => {
+    clearTimeout(pending.timeout);
+    pending.reject(new Error('SceneBar unmounted'));
+  });
+  pendingFocusPoseRequests.clear();
+  pendingFocusCameraMoveFrames.forEach((rafId) => window.cancelAnimationFrame(rafId));
+  pendingFocusCameraMoveFrames.clear();
+  if (window.__coronaFocusPoseResult === handleFocusPoseResult) {
+    window.__coronaFocusPoseResult = previousFocusPoseResult;
+  }
+
   coronaEventBus.off('actor-change', onActorChangeEvent);
   coronaEventBus.off('scene-tree-changed', onSceneTreeChangedEvent);
 });

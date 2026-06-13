@@ -7,6 +7,8 @@
 # ------------------------------------------------------------------------------
 # 自动发现并添加系统模块
 # ------------------------------------------------------------------------------
+add_subdirectory(kernel)
+
 message(STATUS "[CoronaEngine] Discovering system modules...")
 
 file(GLOB _CORONA_SYSTEM_DIRS LIST_DIRECTORIES true
@@ -57,7 +59,7 @@ target_include_directories(CoronaEngine PUBLIC
 
 # 链接依赖
 target_link_libraries(CoronaEngine PUBLIC
-        corona::kernel
+        corona::engine::kernel
         corona::system::acoustics
         corona::system::optics
         corona::system::mechanics

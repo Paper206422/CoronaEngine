@@ -89,6 +89,7 @@ target_link_libraries(CoronaResourceManager
     astcenc-native-static
     PUBLIC
     corona::kernel
+    TBB::tbb
     INTERFACE
     ktm
 )

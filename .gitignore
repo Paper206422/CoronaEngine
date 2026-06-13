@@ -30,6 +30,8 @@ __pycache__/
 /third_party/*
 !/third_party/node-v22.19.0-win-x64/
 !/third_party/node-v22.19.0-win-x64/**
+!/third_party/tbb/
+!/third_party/tbb/**
 
 # Log files
 *.log

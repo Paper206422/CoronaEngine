@@ -305,6 +305,7 @@ class SceneTools(PluginBase):
                 "path": actor.route,
                 "type": actor.actor_type,
                 "visible": actor.get_visible(),
+                "handle": int(getattr(actor, "handle", 0) or 0),
             })
 
         cameras = []
