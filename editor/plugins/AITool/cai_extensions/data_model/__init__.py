@@ -1,12 +1,13 @@
 """
-数据模型：AssetPool / SceneLayout / UserLayer
+数据模型：AssetPool / SceneLayout / UserLayer / ZoneTree
 
-M1 里程碑：纯数据骨架，不碰引擎，对照探针结论写。
-为 M3/M4 的渐进式生成 + 用户介入提供数据基础。
+M1：AssetPool/SceneLayout/UserLayer + provenance 7 字段
+M2：ZoneTree（室内外混合 + 多 Zone 嵌套）
 """
 from .asset_pool import AssetPoolEntry, AssetPool
 from .layout import LayoutInstance, SceneLayout
 from .user_layer import UserLayer
+from .zone_tree import Zone, ZoneTree, Volume, InteriorSkin, Connector
 
 __all__ = [
     "AssetPoolEntry",
@@ -14,4 +15,9 @@ __all__ = [
     "LayoutInstance",
     "SceneLayout",
     "UserLayer",
+    "Zone",
+    "ZoneTree",
+    "Volume",
+    "InteriorSkin",
+    "Connector",
 ]
