@@ -38,3 +38,13 @@ __pycache__/
 .claude/
 .codex/
 .codegraph/
+
+# Thoth local dashboard/runtime cache
+/research.db
+/research.db-*
+/.pytest_cache/
+/.pre-commit-config.yaml
+/scripts/
+/tests/test_structure.py
+/tools/dashboard/
+*.py[cod]
