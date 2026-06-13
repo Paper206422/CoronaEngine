@@ -44,7 +44,7 @@ _SCENE_COMMAND_PATTERNS = [
     r"(?:放大|缩小|变大|变小|旋转|改成?|调整|修改).{1,20}",
     r"(?:布置|摆放|排列|安排|设计|规划|装饰).{1,30}",
     r"(?:灯光|光照|照明|氛围|环境光|光源).{1,20}",
-    r"生成.{0,8}(?:3d|3D|模型|物体|场景|家具|清单)",
+    r"生成.{0,9}(?:3d|3D|模型|物体|场景|家具|清单|卧室|客厅|厨房|书房|房间|浴室|办公室|餐厅)",
     r"(?:按|根据|依据).{0,10}清单",
     r"(?:组合|搭建).{0,8}(?:场景|房间|卧室|客厅|酒吧)",
     r"@agent\s", r"@场景\s", r"/sc_agent\s",
@@ -88,6 +88,79 @@ def is_builtin_command(text: str) -> Optional[str]:
     if re.match(r"^/(?:检查|巡检|patrol|check)\b", text) or re.match(r"^(?:巡检一下|风格检查|检查风格)\b", text):
         return "patrol"
     return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 开放式意图路由（LLM 判别，替代关键词清单）
+# ═══════════════════════════════════════════════════════════════════════════
+
+_COMPOSE_INTENT_SYSTEM_PROMPT = """你是 LANChat 场景生成助手的意图判别器。
+判断用户这条消息是否在要求【生成/搭建一个完整的 3D 场景或环境】。
+
+是 compose(返回 true)的例子(不限关键词，任何室内/室外/混合环境都算):
+- "生成一个现代客厅" / "做一个赛博朋克酒吧街" / "来个蒙古包草原"
+- "我想要一片露营地" / "搭一个海底世界" / "弄个中世纪集市"
+- "布置一个北欧风卧室" / "整一个篝火露营的场景"
+
+不是 compose(返回 false)的例子:
+- 对【已有场景里单个/少数物体】的增删改移: "把椅子放大" / "删掉那盏灯" / "加一个茶几" / "沙发往左移"
+- 闲聊/提问/建议: "你好" / "客厅一般放什么" / "谢谢" / "这个配色好看吗"
+
+只输出 JSON: {"compose": true} 或 {"compose": false}"""
+
+
+def _llm_is_compose_intent(text: str, timeout: float = 8.0) -> Optional[bool]:
+    """LLM 判断是否为整场景生成意图。返回 True/False；失败返回 None（交由调用方兜底）。"""
+    if not text or not text.strip():
+        return None
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        from langchain_core.messages import HumanMessage, SystemMessage
+        from Quasar.ai_models.base_pool.registry import get_chat_model
+
+        def _do():
+            model = get_chat_model(temperature=0, request_timeout=15.0)
+            return model.invoke([
+                SystemMessage(content=_COMPOSE_INTENT_SYSTEM_PROMPT),
+                HumanMessage(content=text.strip()[:500]),
+            ])
+
+        ex = ThreadPoolExecutor(max_workers=1)
+        try:
+            resp = ex.submit(_do).result(timeout=timeout)
+        finally:
+            ex.shutdown(wait=False)
+
+        raw = (resp.content if hasattr(resp, "content") else str(resp)).strip()
+        if "```" in raw:
+            s = raw.find("{")
+            e = raw.rfind("}")
+            if s != -1 and e != -1:
+                raw = raw[s:e + 1]
+        data = json.loads(raw)
+        result = bool(data.get("compose", False))
+        logger.info("[MasterAgent] LLM 意图判别: compose=%s for %r", result, text[:40])
+        return result
+    except Exception as e:
+        logger.warning("[MasterAgent] LLM 意图判别失败, 回退关键词: %s", e)
+        return None
+
+
+def is_compose_intent(text: str) -> bool:
+    """关键词未命中后，判断是否仍是【整场景生成】意图（开放式）。
+
+    设计：本函数只在 is_scene_command 关键词【未命中】时调用，所以这里：
+    1. 明显闲聊/提问（_NON_SCENE_PATTERNS）→ False，不调 LLM（省延迟）
+    2. 否则交 LLM 开放式判断（"做个海底世界""来个蒙古包草原"等清单外描述在此被捕获）
+    3. LLM 不可用 → 保守 False（退回旧关键词行为，宁可漏判不误触发）
+    """
+    t = (text or "").strip()
+    if not t or len(t) < 2:
+        return False
+    for pat in _NON_SCENE_PATTERNS:
+        if re.match(pat, t):
+            return False
+    return bool(_llm_is_compose_intent(t))  # None(失败) → False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -454,7 +527,13 @@ class MasterAgent:
                 logger.info("[MasterAgent] routing → cai (delegate to built-in agent)")
                 return self._handle_chat(system, messages)
 
-            # 3. 普通聊天
+            # 3. 关键词未命中 → 开放式意图判别（LLM）：可能是清单外的场景描述
+            #    "做一个海底世界""来个蒙古包草原"等不含关键词的整场景生成在此捕获
+            if is_compose_intent(trigger):
+                logger.info("[MasterAgent] routing → compose (开放式意图)")
+                return self._handle_scene(trigger, system, messages)
+
+            # 4. 普通聊天
             logger.info("[MasterAgent] routing → chat")
             return self._handle_chat(system, messages)
         except Exception as e:

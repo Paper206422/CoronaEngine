@@ -94,7 +94,10 @@ def build_asset_metadata(model_path: str) -> Optional[Dict[str, Any]]:
         bmax = vertices.max(axis=0)
         size = bmax - bmin
 
-        name = os.path.splitext(os.path.basename(model_path))[0]
+        # 混元3D 输出统一为 .../models/<物体名>/base.glb，basename 永远是 "base"，
+        # 六个物体会撞同一个 key 互相覆盖。改用父目录名（物体中文名）作为 key。
+        name = (os.path.basename(os.path.dirname(model_path))
+                or os.path.splitext(os.path.basename(model_path))[0])
         placement_type = _infer_placement_type(name, list(bmin), list(bmax))
 
         meta = {

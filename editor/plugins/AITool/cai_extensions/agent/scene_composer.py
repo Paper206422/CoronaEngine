@@ -325,7 +325,7 @@ class SceneComposer:
 
     def compose(self, text: str, image_url: str = "",
                 do_import: bool = True,
-                do_review: bool = True) -> Dict[str, Any]:
+                do_review: bool = False) -> Dict[str, Any]:
         """完整场景组合: 提取清单 → 获取模型 → 审查 → 布局+导入。
 
         三阶段:
@@ -456,7 +456,7 @@ class SceneComposer:
         obj_path = _os.path.join(tmp_dir, "box.obj")
         with open(mtl_path, "w", encoding="ascii") as f:
             f.write("newmtl wall\nKa 0.85 0.85 0.85\nKd 0.92 0.92 0.92\n"
-                    "Ks 0.0 0.0 0.0\nNs 0.0\nd 0.6\n")
+                    "Ks 0.0 0.0 0.0\nNs 0.0\nd 1.0\n")
         # 1×1×1 中心在原点，面法向内（从外面看逆时针=法向外；我们需要法向内）
         with open(obj_path, "w", encoding="ascii") as f:
             f.write("mtllib box.mtl\nusemtl wall\n"

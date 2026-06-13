@@ -136,17 +136,39 @@ def generate_images_node(state: MultiSceneWorkflowState) -> Dict[str, Any]:
             return name, cached, ""
 
         token = set_current_session(session_id)
+        # 文生图对瞬时失败（read timeout / 空结果）做一次有界重试。
+        # 混元链路里一个物体图片失败 = 该物体整条生成断掉（如客厅缺茶几），
+        # 重试 1 次显著降低单点丢失；最坏耗时翻倍但不会无限拖。
+        max_attempts = 2
+        last_error = ""
         try:
-            raw_result = image_tool.invoke({"prompt": prompt})
-            image_url = extract_image_url(raw_result)
-            if not image_url:
-                return name, "", "图片生成结果为空"
-            # 生成成功后写入缓存
-            _set_cached_image(name, image_url)
-            return name, image_url, ""
-        except Exception as e:
-            logger.error("[Workflow][generate_images] %s 生成失败: %s", name, e)
-            return name, "", str(e)
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    raw_result = image_tool.invoke({"prompt": prompt})
+                    image_url = extract_image_url(raw_result)
+                    if not image_url:
+                        last_error = "图片生成结果为空"
+                        logger.warning(
+                            "[Workflow][generate_images] %s 第 %d/%d 次结果为空%s",
+                            name, attempt, max_attempts,
+                            "，重试" if attempt < max_attempts else "，放弃",
+                        )
+                        continue
+                    # 生成成功后写入缓存
+                    _set_cached_image(name, image_url)
+                    if attempt > 1:
+                        logger.info(
+                            "[Workflow][generate_images] %s 第 %d 次重试成功", name, attempt
+                        )
+                    return name, image_url, ""
+                except Exception as e:
+                    last_error = str(e)
+                    logger.error(
+                        "[Workflow][generate_images] %s 第 %d/%d 次生成失败: %s%s",
+                        name, attempt, max_attempts, e,
+                        "，重试" if attempt < max_attempts else "，放弃",
+                    )
+            return name, "", last_error
         finally:
             reset_current_session(token)
 
