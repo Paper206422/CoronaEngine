@@ -967,6 +967,18 @@ class SceneComposer:
         return 0.0
 
     @staticmethod
+    def _get_object_depth(actor_name: str, asset_meta: Dict[str, Any],
+                          geo_map: Dict[str, Any]) -> float:
+        """取物体的深度（z 向厚度，米）。壁挂物贴墙时要把中心往房内拉半个深度，
+        否则中心贴墙=后半截穿墙（F5 兽头穿模根因）。取不到返回 0。"""
+        meta = (asset_meta.get(actor_name)
+                or asset_meta.get(geo_map.get(actor_name, {}).get("name", ""))
+                or {})
+        if meta and meta.get("size") and len(meta["size"]) >= 3:
+            return float(meta["size"][2])  # size = [width, height, depth]
+        return 0.0
+
+    @staticmethod
     def _get_placement_type(actor_name: str, asset_meta: Dict[str, Any],
                             geo_map: Dict[str, Any]) -> str:
         """读物体的放置类型（M2 步骤 15d）。
@@ -1105,6 +1117,14 @@ class SceneComposer:
                 platform_radius = max(platform_radius, max(sw, sd) / 2.0 * 2.2)
         # 锚定链-2：存平台半径，供 _place_shells 夹回 + _generate_interior_floor 派生用。
         self._platform_radius = platform_radius
+
+        # 问题1（草原太小）：terrain 尺寸跟建筑足迹挂钩——建筑直径越大、草原越开阔。
+        # 平台直径(2×radius)外至少留 3 圈建筑宽度的坡地，避免放大建筑后草原只剩窄边。
+        # 通用：不写死场景尺寸，按 platform_radius 派生（无建筑 → 保持声明尺寸）。
+        if platform_radius > 1e-6:
+            min_extent = platform_radius * 8.0   # 建筑直径 ~8.8m → 草原 ~35m，开阔不局促
+            width = max(width, min_extent)
+            depth = max(depth, min_extent)
 
         tmp_dir = _os.path.join(_tf.gettempdir(), "corona_room_box")
         _os.makedirs(tmp_dir, exist_ok=True)
@@ -1601,11 +1621,16 @@ class SceneComposer:
                                 wall_r = shell_wall_r if shell_wall_r > 1e-6 else (hd - 0.1)
                                 wx = (wall_hung_n - 0.5) * 0.9 if wall_hung_n > 0 else 0.0
                                 wx = max(-wall_r + margin, min(wall_r - margin, wx))
-                                actor.set_position([wx, h * 0.55, wall_r])
+                                # 修穿模：中心放 z=wall_r 会让后半截穿墙。往房内拉半个自身深度，
+                                # 让背面贴墙、整体在墙内（_get_object_depth 取真实 z 厚度，取不到留 0.1m 余量）。
+                                obj_depth = self._get_object_depth(actor_name, asset_meta, geo_map)
+                                back_off = obj_depth / 2.0 if obj_depth > 1e-6 else 0.1
+                                wz = wall_r - back_off
+                                actor.set_position([wx, h * 0.55, wz])
                                 actor.set_rotation([0.0, 0.0, 0.0])  # 后墙法向 +Z 朝内
                                 wall_hung_n += 1
-                                logger.info("[SceneComposer] 壁挂物贴墙: %s → (%.1f, %.2f, %.1f) 壁半径=%.2f",
-                                            actor_name, wx, h * 0.55, wall_r, wall_r)
+                                logger.info("[SceneComposer] 壁挂物贴墙: %s → (%.1f, %.2f, %.2f) 壁半径=%.2f 深度=%.2f",
+                                            actor_name, wx, h * 0.55, wz, wall_r, obj_depth)
                                 continue
 
                             mech = getattr(actor, "_mechanics", None)
