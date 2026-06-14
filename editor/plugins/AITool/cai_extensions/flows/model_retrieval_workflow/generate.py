@@ -17,6 +17,7 @@ from .formatters import (
     publish_node_progress,
 )
 from .helpers import get_3d_generate_tool, parse_3d_result
+from .local_model_library import save_model
 from .test_cases import get_test_case
 
 logger = logging.getLogger(__name__)
@@ -188,6 +189,9 @@ def generate_single_item(
                 attempt,
                 elapsed,
             )
+            # 自动入库（幂等）：下一轮同名物体在 retrieve 顶部命中库 → 跳过混元3D。
+            # best-effort，失败仅 warning，绝不影响本次返回。
+            save_model(name, model_info.get("model_path", ""))
             return result
         except Exception as e:
             last_error = str(e)

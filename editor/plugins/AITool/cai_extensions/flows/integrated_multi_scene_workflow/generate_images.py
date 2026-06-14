@@ -14,6 +14,11 @@ from .constants import IMAGE_MAX_WORKERS
 from .formatters import NO_OUTPUT, format_generate_image_progress_parts
 from .helpers import extract_image_url, get_generate_image_tool
 from .test_cases import get_test_case
+from ..model_retrieval_workflow.local_model_library import (
+    lookup_image,
+    lookup_model,
+    save_image,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,21 +33,31 @@ def _normalize_cache_key(item_name: str) -> str:
 
 
 def _get_cached_image(item_name: str) -> str | None:
-    """线程安全读取缓存，命中返回 URL，否则返回 None。"""
+    """三级缓存读取：内存 → 本地图片库 → None。命中本地库则回填内存。"""
     key = _normalize_cache_key(item_name)
     if not key:
         return None
     with _image_cache_lock:
-        return _image_cache.get(key)
+        hit = _image_cache.get(key)
+    if hit:
+        return hit
+    # 内存未命中 → 查本地图片库（跨进程持久化），命中回填内存
+    disk = lookup_image(item_name)
+    if disk:
+        with _image_cache_lock:
+            _image_cache[key] = disk
+        return disk
+    return None
 
 
 def _set_cached_image(item_name: str, url: str) -> None:
-    """线程安全写入缓存。"""
+    """写内存缓存的同时落盘到本地图片库（best-effort，失败不影响主链路）。"""
     key = _normalize_cache_key(item_name)
     if not key or not url:
         return
     with _image_cache_lock:
         _image_cache[key] = url
+    save_image(item_name, url)
 
 
 def _publish_generate_image_progress(
@@ -125,6 +140,15 @@ def generate_images_node(state: MultiSceneWorkflowState) -> Dict[str, Any]:
         prompt = element.get("image_prompt", "")
         if not prompt:
             return name, "", "缺少图片生成提示词"
+
+        # 本地模型库已有该物体 → 连图都不用生成（retrieve 顶部会按名命中库、与图无关），
+        # 既省混元3D 又省文生图 token。返回空 URL，下游 dispatch/retrieve 照常按名查库。
+        if lookup_model(name):
+            logger.info(
+                "[Workflow][generate_images] %s 已在本地模型库，跳过文生图",
+                name,
+            )
+            return name, "", ""
 
         # 先查缓存：同物品名复用已生成图片
         cached = _get_cached_image(name)

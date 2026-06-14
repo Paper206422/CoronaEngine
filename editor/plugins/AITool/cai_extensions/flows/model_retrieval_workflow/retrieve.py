@@ -11,6 +11,7 @@ from Quasar.ai_workflow.streaming import stream_output_node
 from .constants import SEARCH_MAX_WORKERS
 from .formatters import NO_OUTPUT, publish_node_progress
 from .helpers import get_search_tool, parse_search_result
+from .local_model_library import lookup_model
 from .test_cases import get_test_case
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,22 @@ def retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, An
     }
     if image_prompt:
         result["image_prompt"] = image_prompt
+
+    # 本地模型库（最高优先级）：按名命中即复用，跳过图搜 + 混元3D 生成。
+    # 放最顶 → 连"文生图失败降级成 __text_to_3d__"、图搜工具不可用的任务也能被库接住。
+    # source="retrieval" 复用现有路由进 model_results，混元3D 不被调用。
+    cached_dir = lookup_model(name)
+    if cached_dir:
+        result.update(
+            {
+                "source": "retrieval",
+                "model_path": cached_dir,
+                "search_status": "local_library",
+                "distance": 0.0,
+            }
+        )
+        logger.info("[Workflow][retrieve] %s 命中本地模型库，跳过生成: %s", name, cached_dir)
+        return result
 
     # text_to_3d 任务（文生图失败降级而来）：image_url 是文字标记，不能拿去图搜，
     # 直接转 pending_generation，让 generate_single_item 用 text_to_3d 模式接住。
