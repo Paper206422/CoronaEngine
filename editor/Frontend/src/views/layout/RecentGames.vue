@@ -28,7 +28,11 @@
               proj.if_exists
                 ? 'cursor-pointer hover:bg-[#3d3d3d]'
                 : 'cursor-not-allowed opacity-60',
+              selectedProject === proj.path
+                ? 'border border-[#84a65b]'
+                : 'border border-transparent',
             ]"
+            @click="proj.if_exists && (selectedProject = proj.path)"
             @dblclick="proj.if_exists && handleOpenProject(proj.path)"
           >
             <div class="text-base font-medium truncate">
@@ -46,13 +50,22 @@
         </div>
       </div>
 
-      <div class="mt-6 pt-6 border-t border-[#333] space-y-3">
+      <div class="mt-6 pt-6 border-t border-[#333] flex items-center gap-3">
         <button
-          class="w-full py-3 px-6 text-left text-base hover:bg-[#333] rounded flex items-center gap-3"
+          class="flex-1 py-3 px-6 text-left text-base hover:bg-[#333] rounded flex items-center gap-3"
           @click="handleImport"
         >
           <span class="text-xl">📁</span>
           打开现有项目...
+        </button>
+        <button
+          class="py-3 px-10 text-base rounded flex items-center justify-center gap-2 transition-colors shrink-0"
+          :class="selectedProject ? 'bg-[#84a65b] text-white hover:bg-[#9bc46d]' : 'bg-[#333] text-gray-500 cursor-not-allowed'"
+          :disabled="!selectedProject"
+          @click="selectedProject && handleOpenProject(selectedProject)"
+        >
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          开始
         </button>
       </div>
 
@@ -79,6 +92,7 @@ const router = useRouter();
 
 const appVersion = ref('V1.0.0');
 const recentProjects = ref([]);
+const selectedProject = ref(null);
 
 const goBack = () => {
   router.push('/StartScreen');

@@ -9,29 +9,10 @@
       @close="closeFloat"
     />
 
-    <!-- Tab bar -->
-    <div class="flex border-b border-[#444] bg-[#1e1e1e] shrink-0">
-      <button
-        v-for="tab in tabs"
-        :key="tab.id"
-        class="px-5 py-3 text-sm font-medium transition-colors relative"
-        :class="activeTab === tab.id ? 'text-[#84a65b]' : 'text-gray-400 hover:text-gray-200'"
-        @click="activeTab = tab.id"
-      >
-        {{ tab.label }}
-        <span
-          v-if="activeTab === tab.id"
-          class="absolute bottom-0 left-0 right-0 h-0.5 bg-[#84a65b]"
-        ></span>
-      </button>
-    </div>
-
     <!-- Tab content -->
     <div class="flex-1 p-12 bg-[#252525] flex flex-col overflow-y-auto">
-
-      <!-- Tab 1: 基础信息 -->
-      <div v-show="activeTab === 'basic'" class="max-w-3xl space-y-8">
-        <h2 class="text-2xl font-light mb-4">基础信息</h2>
+      <div class="max-w-3xl space-y-8">
+        <h2 class="text-2xl font-light mb-4">创造模式</h2>
         <div class="space-y-2">
           <label class="text-sm text-gray-400">项目名称</label>
           <input v-model="projectName" type="text"
@@ -47,205 +28,6 @@
           </div>
         </div>
       </div>
-
-      <!-- Tab 2: 世界构建 -->
-      <div v-show="activeTab === 'world'" class="max-w-3xl space-y-8">
-        <h2 class="text-2xl font-light mb-4">世界构建</h2>
-        <div class="space-y-4">
-          <label class="text-sm text-gray-400">地形类型</label>
-          <div class="grid grid-cols-3 gap-3">
-            <div v-for="tt in terrainTypes" :key="tt.id"
-              :class="['p-4 border rounded-lg cursor-pointer transition-all text-center',
-                gameSettings.terrainType === tt.id ? 'border-[#84a65b] bg-[#84a65b]/10' : 'border-[#444] hover:border-[#666]']"
-              @click="gameSettings.terrainType = tt.id">
-              <div class="text-lg font-medium">{{ tt.label }}</div>
-              <div class="text-xs text-gray-500 mt-1">{{ tt.desc }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="space-y-4">
-          <label class="text-sm text-gray-400">世界尺寸</label>
-          <div class="grid grid-cols-4 gap-3">
-            <div v-for="ws in worldSizes" :key="ws.id"
-              :class="['p-3 border rounded-lg cursor-pointer transition-all text-center',
-                gameSettings.worldSize === ws.id ? 'border-[#84a65b] bg-[#84a65b]/10' : 'border-[#444] hover:border-[#666]']"
-              @click="gameSettings.worldSize = ws.id">
-              <div class="text-base font-medium">{{ ws.label }}</div>
-              <div class="text-xs text-gray-500 mt-0.5">{{ ws.desc }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="space-y-2">
-          <label class="text-sm text-gray-400">生态群落</label>
-          <select v-model="gameSettings.biome"
-            class="w-full bg-[#1a1a1a] border border-[#444] rounded p-3 text-base focus:border-[#84a65b] outline-none transition-all">
-            <option value="temperate">温带</option>
-            <option value="tropical">热带</option>
-            <option value="desert">沙漠</option>
-            <option value="arctic">极地</option>
-            <option value="mixed">混合</option>
-          </select>
-        </div>
-        <div class="flex items-center gap-6">
-          <label class="flex items-center gap-2 cursor-pointer">
-            <input v-model="gameSettings.waterSystem" type="checkbox" class="accent-[#84a65b] w-4 h-4" />
-            <span class="text-sm text-gray-400">水体系统（河流/湖泊/海洋）</span>
-          </label>
-        </div>
-        <div class="space-y-2">
-          <label class="text-sm text-gray-400">天空盒预设</label>
-          <select v-model="gameSettings.skybox"
-            class="w-full bg-[#1a1a1a] border border-[#444] rounded p-3 text-base focus:border-[#84a65b] outline-none transition-all">
-            <option value="day_clear">晴朗白昼</option>
-            <option value="day_cloudy">多云</option>
-            <option value="sunset">日落</option>
-            <option value="night_starry">星夜</option>
-            <option value="procedural">程序化动态天空</option>
-          </select>
-        </div>
-      </div>
-
-      <!-- Tab 3: 物理系统 -->
-      <div v-show="activeTab === 'physics'" class="max-w-3xl space-y-8">
-        <h2 class="text-2xl font-light mb-4">物理系统</h2>
-        <div class="space-y-4">
-          <label class="text-sm text-gray-400">物理引擎</label>
-          <div class="grid grid-cols-3 gap-3">
-            <div v-for="pe in physicsEngines" :key="pe.id"
-              :class="['p-4 border rounded-lg cursor-pointer transition-all text-center',
-                gameSettings.physicsEngine === pe.id ? 'border-[#84a65b] bg-[#84a65b]/10' : 'border-[#444] hover:border-[#666]']"
-              @click="gameSettings.physicsEngine = pe.id">
-              <div class="text-lg font-medium">{{ pe.label }}</div>
-              <div class="text-xs text-gray-500 mt-1">{{ pe.desc }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="space-y-4">
-          <label class="text-sm text-gray-400">重力方案</label>
-          <div class="grid grid-cols-3 gap-3">
-            <div v-for="gp in gravityPresets" :key="gp.id"
-              :class="['p-4 border rounded-lg cursor-pointer transition-all text-center',
-                gameSettings.gravityPreset === gp.id ? 'border-[#84a65b] bg-[#84a65b]/10' : 'border-[#444] hover:border-[#666]']"
-              @click="gameSettings.gravityPreset = gp.id">
-              <div class="text-lg font-medium">{{ gp.label }}</div>
-              <div class="text-xs text-gray-500 mt-1">{{ gp.desc }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="space-y-4">
-          <label class="text-sm text-gray-400">角色控制器</label>
-          <div class="grid grid-cols-3 gap-3">
-            <div v-for="cc in characterControllers" :key="cc.id"
-              :class="['p-4 border rounded-lg cursor-pointer transition-all text-center',
-                gameSettings.characterController === cc.id ? 'border-[#84a65b] bg-[#84a65b]/10' : 'border-[#444] hover:border-[#666]']"
-              @click="gameSettings.characterController = cc.id">
-              <div class="text-lg font-medium">{{ cc.label }}</div>
-              <div class="text-xs text-gray-500 mt-1">{{ cc.desc }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="space-y-2">
-          <label class="text-sm text-gray-400">碰撞精度</label>
-          <select v-model="gameSettings.collisionDetail"
-            class="w-full bg-[#1a1a1a] border border-[#444] rounded p-3 text-base focus:border-[#84a65b] outline-none transition-all">
-            <option value="low">低（简单碰撞体）</option>
-            <option value="medium">中（凸包近似）</option>
-            <option value="high">高（精确网格碰撞）</option>
-          </select>
-        </div>
-      </div>
-
-      <!-- Tab 4: 渲染管线 -->
-      <div v-show="activeTab === 'rendering'" class="max-w-3xl space-y-8">
-        <h2 class="text-2xl font-light mb-4">渲染管线</h2>
-        <div class="space-y-4">
-          <label class="text-sm text-gray-400">渲染管线</label>
-          <div class="grid grid-cols-3 gap-3">
-            <div v-for="rp in renderPipelines" :key="rp.id"
-              :class="['p-4 border rounded-lg cursor-pointer transition-all text-center',
-                gameSettings.renderPipeline === rp.id ? 'border-[#84a65b] bg-[#84a65b]/10' : 'border-[#444] hover:border-[#666]']"
-              @click="gameSettings.renderPipeline = rp.id">
-              <div class="text-lg font-medium">{{ rp.label }}</div>
-              <div class="text-xs text-gray-500 mt-1">{{ rp.desc }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="space-y-4">
-          <label class="text-sm text-gray-400">画质预设</label>
-          <div class="grid grid-cols-4 gap-3">
-            <div v-for="qp in qualityPresets" :key="qp.id"
-              :class="['p-3 border rounded-lg cursor-pointer transition-all text-center',
-                gameSettings.qualityPreset === qp.id ? 'border-[#84a65b] bg-[#84a65b]/10' : 'border-[#444] hover:border-[#666]']"
-              @click="gameSettings.qualityPreset = qp.id">
-              <div class="text-base font-medium">{{ qp.label }}</div>
-              <div class="text-xs text-gray-500 mt-0.5">{{ qp.desc }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="space-y-2">
-          <label class="text-sm text-gray-400">阴影质量</label>
-          <select v-model="gameSettings.shadowQuality"
-            class="w-full bg-[#1a1a1a] border border-[#444] rounded p-3 text-base focus:border-[#84a65b] outline-none transition-all">
-            <option value="off">关闭</option>
-            <option value="low">低（512px）</option>
-            <option value="medium">中（1024px）</option>
-            <option value="high">高（2048px）</option>
-            <option value="ultra">极高（4096px）</option>
-          </select>
-        </div>
-        <div class="space-y-2">
-          <label class="text-sm text-gray-400 mb-3">后处理效果</label>
-          <div class="flex flex-wrap gap-3">
-            <label v-for="pp in postProcessOptions" :key="pp.id"
-              class="flex items-center gap-2 cursor-pointer bg-[#1a1a1a] border border-[#444] rounded px-4 py-2 hover:border-[#666] transition-all">
-              <input v-model="gameSettings.postProcessing" type="checkbox" :value="pp.id" class="accent-[#84a65b] w-4 h-4" />
-              <span class="text-sm text-gray-300">{{ pp.label }}</span>
-            </label>
-          </div>
-        </div>
-      </div>
-
-      <!-- Tab 5: 玩法模板 -->
-      <div v-show="activeTab === 'gameplay'" class="max-w-3xl space-y-8">
-        <h2 class="text-2xl font-light mb-4">玩法模板</h2>
-        <div class="space-y-4">
-          <label class="text-sm text-gray-400">玩法模板</label>
-          <div class="grid grid-cols-3 gap-3">
-            <div v-for="gt in gameplayTemplates" :key="gt.id"
-              :class="['p-4 border rounded-lg cursor-pointer transition-all text-center',
-                gameSettings.template === gt.id ? 'border-[#84a65b] bg-[#84a65b]/10' : 'border-[#444] hover:border-[#666]']"
-              @click="gameSettings.template = gt.id">
-              <div class="text-2xl mb-1">{{ gt.icon }}</div>
-              <div class="text-base font-medium">{{ gt.label }}</div>
-              <div class="text-xs text-gray-500 mt-1">{{ gt.desc }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="space-y-4">
-          <label class="text-sm text-gray-400">输入预设</label>
-          <div class="grid grid-cols-3 gap-3">
-            <div v-for="ip in inputPresets" :key="ip.id"
-              :class="['p-4 border rounded-lg cursor-pointer transition-all text-center',
-                gameSettings.inputPreset === ip.id ? 'border-[#84a65b] bg-[#84a65b]/10' : 'border-[#444] hover:border-[#666]']"
-              @click="gameSettings.inputPreset = ip.id">
-              <div class="text-lg font-medium">{{ ip.label }}</div>
-              <div class="text-xs text-gray-500 mt-1">{{ ip.desc }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="space-y-4">
-          <label class="text-sm text-gray-400">相机类型</label>
-          <div class="grid grid-cols-3 gap-3">
-            <div v-for="ct in cameraTypes" :key="ct.id"
-              :class="['p-4 border rounded-lg cursor-pointer transition-all text-center',
-                gameSettings.cameraType === ct.id ? 'border-[#84a65b] bg-[#84a65b]/10' : 'border-[#444] hover:border-[#666]']"
-              @click="gameSettings.cameraType = ct.id">
-              <div class="text-lg font-medium">{{ ct.label }}</div>
-              <div class="text-xs text-gray-500 mt-1">{{ ct.desc }}</div>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
 
     <!-- Bottom buttons -->
@@ -255,7 +37,6 @@
         返回
       </button>
       <div class="flex gap-4 items-center">
-        <span class="text-xs text-gray-500">{{ activeTabLabel }}</span>
         <button class="px-10 py-3 text-base text-gray-400 hover:text-white transition-colors" @click="closeFloat">取消</button>
         <button
           :disabled="!projectName || !projectPath"

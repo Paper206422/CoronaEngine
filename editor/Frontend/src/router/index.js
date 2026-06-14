@@ -30,9 +30,9 @@ const routes = [
     component: () => import('../views/layout/ProjectLauncher.vue'),
   },
   {
-    path: '/StoryMode',
-    name: 'StoryMode',
-    component: () => import('../views/layout/StoryMode.vue'),
+    path: '/NewGame',
+    name: 'NewGame',
+    component: () => import('../views/layout/NewGame.vue'),
   },
   {
     path: '/CreateGame',
