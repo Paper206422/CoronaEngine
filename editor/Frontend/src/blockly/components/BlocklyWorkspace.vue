@@ -260,7 +260,7 @@ function setupCefFieldInputFix() {
     }
 
     // 特殊功能键：先聚焦到输入框，让 Blockly 的内部处理器接管
-    if (['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape', 'Enter', 'Tab'].includes(e.key)) {
+    if (['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter', 'Tab'].includes(e.key)) {
       htmlInput.focus();
     }
   };

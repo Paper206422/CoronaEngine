@@ -9,6 +9,15 @@
     />
 
     <div class="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3 text-xs">
+      <!-- 返回主页 -->
+      <button
+        class="w-full py-2 text-sm text-[#5b8def] bg-[#5b8def]/10 border border-[#5b8def]/30 rounded-lg hover:bg-[#5b8def]/20 transition-colors flex items-center justify-center gap-2"
+        @click="goHome"
+      >
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+        返回主页
+      </button>
+
       <!-- ═══ 工作流与提示 ═══ -->
       <div class="section-header" :class="{ collapsed: !sections.workflow }" @click="sections.workflow = !sections.workflow">
         <span class="arrow">▼</span> 工作流与提示
@@ -124,10 +133,19 @@
 
 <script setup>
 import { ref, reactive, watch, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
+import { useDockStore } from '@/stores/dockStore.js';
 import { useDockPanel } from '@/composables/useDockPanel.js';
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
 
+const router = useRouter();
+const dockStore = useDockStore();
 const { closePanel: closeDockPanel, isDocked } = useDockPanel();
+
+function goHome() {
+  dockStore.closePanel('EditorSettings');
+  router.push('/StartScreen');
+}
 
 const STORAGE_KEY = 'corona_editor_settings';
 
