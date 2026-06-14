@@ -1113,6 +1113,7 @@ class SceneComposer:
             report["failed"] = [f"{(m.get('name') or '?')}: 无可用场景" for m in shell_models]
             return report
 
+        import os as _os
         WRAP = 1.25  # 外壳比 volume 略大，内部舒适包住（墙厚占比 + 留白）
         for m in shell_models:
             name = (m.get("name") or "").strip()
@@ -1128,18 +1129,38 @@ class SceneComposer:
                 continue
             vw, vd, vh = zone.volume.size[0], zone.volume.size[1], zone.volume.size[2]
             scale = [1.0, 1.0, 1.0]
-            meta = asset_meta.get(name) or {}
+            # bug 修复(a)：asset_meta 的 key 是模型路径父目录名（如"蒙古包_1"，带索引），
+            # 不是物体名"蒙古包"。用 path 派生 key（与 asset_metadata 完全一致），name 兜底。
+            meta_key = _os.path.basename(_os.path.dirname(path)) if path else name
+            meta = asset_meta.get(meta_key) or asset_meta.get(name) or {}
             size = meta.get("size")
             if size and len(size) >= 3 and all(float(s) > 1e-6 for s in size[:3]):
                 scale = [vw / float(size[0]) * WRAP,
                          vh / float(size[1]) * WRAP,
                          vd / float(size[2]) * WRAP]
+                logger.info("[SceneComposer] 外壳 %s AABB=%s → scale=%s (key=%s)",
+                            name, size, [round(s, 2) for s in scale], meta_key)
+            else:
+                logger.warning("[SceneComposer] 外壳 %s 未取到 AABB（key=%s），用缺省缩放 1.0",
+                               name, meta_key)
             try:
                 actor = Actor(name=f"__shell_{name}", route=path, actor_type="mesh",
                               parent_scene=scene)
-                # 落地居中（生成模型 pivot 多在底部中心）。入口朝向无法保证，rot=0，待 F5。
                 actor.set_position([0.0, 0.0, 0.0], True)
                 actor.set_scale(scale, True)
+                # bug 修复(b)：模型 pivot 可能在几何中心 → 放 y=0 会半埋地下。
+                # 缩放后读真实世界 AABB，把最低点抬到 y=0（pivot 无关，底部贴地）。
+                try:
+                    geo = getattr(actor, "_geometry", None)
+                    aabb = geo.get_aabb() if geo is not None else None
+                    if aabb and len(aabb) >= 6:
+                        min_y = float(aabb[1])
+                        if abs(min_y) > 1e-4:
+                            actor.set_position([0.0, -min_y, 0.0], True)
+                            logger.info("[SceneComposer] 外壳 %s 贴地修正: min_y=%.3f → 抬高 %.3f",
+                                        name, min_y, -min_y)
+                except Exception as e:
+                    logger.warning("[SceneComposer] 外壳 %s 贴地修正失败（忽略）: %s", name, e)
                 mech = getattr(actor, "_mechanics", None)
                 if mech is not None:
                     try:
