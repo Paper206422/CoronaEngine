@@ -203,6 +203,8 @@ class Actor {
     void set_active_profile(const Profile* profile);
     [[nodiscard]] Profile* get_active_profile();
     [[nodiscard]] std::size_t profile_count() const;
+    void set_follow_camera(bool enabled);
+    [[nodiscard]] bool get_follow_camera() const;
 
     [[nodiscard]] std::uintptr_t get_handle() const;
 
@@ -211,6 +213,7 @@ class Actor {
 
     std::uintptr_t handle_{};
     std::unordered_map<std::uintptr_t, Profile> profiles_;
+    std::unordered_map<std::uintptr_t, std::uintptr_t> profile_storage_handles_;
     std::uintptr_t active_profile_handle_{0};
     std::uintptr_t next_profile_handle_{1};
 };

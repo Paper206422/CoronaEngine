@@ -246,11 +246,13 @@ void DisplaySystem::compose_and_present(HardwareDisplayer& displayer,
                                         HardwareExecutor* optics_executor,
                                         HardwareImage& ui_image,
                                         HardwareExecutor* ui_executor) {
-    if (state.ui.width == 0 || state.ui.height == 0) {
+    const uint32_t output_width = state.ui.width != 0 ? state.ui.width : state.optics.width;
+    const uint32_t output_height = state.ui.height != 0 ? state.ui.height : state.optics.height;
+    if (output_width == 0 || output_height == 0) {
         return;
     }
 
-    if (!ensure_composite_resources(state.ui.width, state.ui.height)) {
+    if (!ensure_composite_resources(output_width, output_height)) {
         return;
     }
 
@@ -258,13 +260,13 @@ void DisplaySystem::compose_and_present(HardwareDisplayer& displayer,
     composite_pipeline_.pushConsts.bgImage = optics_image.storeDescriptor();
     composite_pipeline_.pushConsts.fgImage = ui_image.storeDescriptor();
     composite_pipeline_.pushConsts.outputImage = composite_output_.storeDescriptor();
-    composite_pipeline_.pushConsts.outputWidth = state.ui.width;
-    composite_pipeline_.pushConsts.outputHeight = state.ui.height;
+    composite_pipeline_.pushConsts.outputWidth = output_width;
+    composite_pipeline_.pushConsts.outputHeight = output_height;
     composite_pipeline_.pushConsts.bgWidth = std::max(state.optics.width, 1u);
     composite_pipeline_.pushConsts.bgHeight = std::max(state.optics.height, 1u);
 
-    const uint32_t dispatch_x = (state.ui.width + 7u) / 8u;
-    const uint32_t dispatch_y = (state.ui.height + 7u) / 8u;
+    const uint32_t dispatch_x = (output_width + 7u) / 8u;
+    const uint32_t dispatch_y = (output_height + 7u) / 8u;
 
     // GPU sync: wait for each producer's rendering to finish before reading their images
     if (optics_executor) {

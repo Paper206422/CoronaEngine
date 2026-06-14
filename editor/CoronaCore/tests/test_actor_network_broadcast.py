@@ -1,3 +1,4 @@
+import configparser
 import unittest
 import sys
 import tempfile
@@ -8,11 +9,13 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from CoronaCore.core.entities import actor as actor_module
+from CoronaCore.core.entities import scene as scene_module
 
 
 class FakeActorEngineObject:
     def __init__(self):
         self.active_profile = None
+        self.follow_camera = False
 
     def add_profile(self, profile):
         return profile
@@ -22,6 +25,12 @@ class FakeActorEngineObject:
 
     def get_handle(self):
         return 1234
+
+    def set_follow_camera(self, enabled):
+        self.follow_camera = bool(enabled)
+
+    def get_follow_camera(self):
+        return self.follow_camera
 
 
 class FakeGeometry:
@@ -221,6 +230,110 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
         claims = [args[0] for name, args in events if name == "actor-ownership-claim"]
         self.assertTrue(claims)
         self.assertEqual(claims[-1]["actor_guid"], actor.actor_guid)
+
+    def test_follow_camera_round_trips_to_engine_and_to_dict(self):
+        fake_editor = SimpleNamespace(
+            CoronaEngine=SimpleNamespace(
+                active_project_path="D:/project/test",
+                Actor=FakeActorEngineObject,
+                ActorProfile=SimpleNamespace,
+            ),
+            js_call_func=lambda name, args: None,
+        )
+        parent = SimpleNamespace(route="Scene/main.scene", save_data=lambda: None)
+
+        with patch.object(actor_module, "CoronaEditor", fake_editor), \
+             patch.object(actor_module, "CoronaEngine", fake_editor.CoronaEngine), \
+             patch.object(actor_module, "Geometry", FakeGeometry), \
+             patch.object(actor_module, "Optics", FakeOptics), \
+             patch.object(actor_module, "Mechanics", FakeComponent), \
+             patch.object(actor_module, "Acoustics", FakeComponent):
+            actor = actor_module.Actor(route="Resource/cube.obj",
+                                       actor_type="model",
+                                       parent_scene=parent)
+
+            self.assertFalse(actor.to_dict()["follow_camera"])
+
+            actor.set_follow_camera(True)
+            data = actor.to_dict()
+            self.assertTrue(actor.engine_obj.get_follow_camera())
+            self.assertTrue(data["follow_camera"])
+            self.assertEqual(data["render_space"], "ui")
+
+            actor.set_follow_camera(False)
+            data = actor.to_dict()
+            self.assertFalse(actor.engine_obj.get_follow_camera())
+            self.assertFalse(data["follow_camera"])
+            self.assertEqual(data["render_space"], "scene")
+
+    def test_follow_camera_disables_physics_once_without_restore(self):
+        fake_editor = SimpleNamespace(
+            CoronaEngine=SimpleNamespace(
+                active_project_path="D:/project/test",
+                Actor=FakeActorEngineObject,
+                ActorProfile=SimpleNamespace,
+            ),
+            js_call_func=lambda name, args: None,
+        )
+        parent = SimpleNamespace(route="Scene/main.scene", save_data=lambda: None)
+
+        with patch.object(actor_module, "CoronaEditor", fake_editor), \
+             patch.object(actor_module, "CoronaEngine", fake_editor.CoronaEngine), \
+             patch.object(actor_module, "Geometry", FakeGeometry), \
+             patch.object(actor_module, "Optics", FakeOptics), \
+             patch.object(actor_module, "Mechanics", FakeComponent), \
+             patch.object(actor_module, "Acoustics", FakeComponent):
+            actor = actor_module.Actor(route="Resource/cube.obj",
+                                       actor_type="model",
+                                       parent_scene=parent)
+
+            self.assertTrue(actor.get_physics_enabled())
+
+            actor.set_follow_camera(True)
+            self.assertTrue(actor.get_follow_camera())
+            self.assertFalse(actor.get_physics_enabled())
+
+            actor.set_follow_camera(False)
+            self.assertFalse(actor.get_follow_camera())
+            self.assertFalse(actor.get_physics_enabled())
+
+            actor.set_physics_enabled(True)
+            actor.set_follow_camera(True, if_init=True)
+            self.assertTrue(actor.get_follow_camera())
+            self.assertTrue(actor.get_physics_enabled())
+
+    def test_scene_actor_follow_camera_persists_in_scene_actor_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene_path = Path(tmp) / "main.scene"
+            scene = scene_module.Scene.__new__(scene_module.Scene)
+            scene.route = str(scene_path)
+            scene.name = "main"
+            scene.file_data = configparser.ConfigParser()
+            scene._environment = None
+            scene._cameras = []
+            scene.script_path = ""
+            scene.terrain_path = ""
+            scene._actors = [
+                SimpleNamespace(
+                    name="hud_quad",
+                    actor_type="model",
+                    route="Resource/hud.obj",
+                    _geometry=True,
+                    get_position=lambda: [0.0, 0.0, 2.0],
+                    get_rotation=lambda: [0.0, 0.0, 0.0],
+                    get_scale=lambda: [1.0, 1.0, 1.0],
+                    get_follow_camera=lambda: True,
+                )
+            ]
+
+            scene.save_data()
+
+            saved = configparser.ConfigParser()
+            saved.read(scene_path, encoding="utf-8")
+            self.assertTrue(saved["actors"].getboolean("hud_quad.follow_camera"))
+
+            actor_data = scene._build_actor_json(saved["actors"], "hud_quad")
+            self.assertTrue(actor_data["follow_camera"])
 
 
 if __name__ == "__main__":

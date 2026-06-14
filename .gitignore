@@ -19,6 +19,7 @@ Makefile
 .idea/
 .vs/
 .claude/
+.codegraph/
 codex.md
 AGENTS.md
 

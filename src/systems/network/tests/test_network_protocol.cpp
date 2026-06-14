@@ -186,6 +186,27 @@ void test_network_system_session_role_defaults_to_none() {
                 "network system default session role label");
 }
 
+void test_actor_device_follow_camera_defaults_false_and_round_trips() {
+    auto& hub = Corona::SharedDataHub::instance();
+
+    auto actor = hub.actor_storage().allocate();
+
+    {
+        auto a = hub.actor_storage().acquire_read(actor);
+        expect_true(!a->follow_camera, "actor follow-camera flag defaults to false");
+    }
+    {
+        auto a = hub.actor_storage().acquire_write(actor);
+        a->follow_camera = true;
+    }
+    {
+        auto a = hub.actor_storage().acquire_read(actor);
+        expect_true(a->follow_camera, "actor follow-camera flag round trips");
+    }
+
+    hub.actor_storage().deallocate(actor);
+}
+
 void test_network_identity_registry_resolves_actor_components() {
     auto& hub = Corona::SharedDataHub::instance();
 
@@ -677,6 +698,7 @@ int main() {
     test_ownership_claim_carries_actor_guid();
     test_project_relative_path_validation();
     test_network_system_session_role_defaults_to_none();
+    test_actor_device_follow_camera_defaults_false_and_round_trips();
     test_network_identity_registry_resolves_actor_components();
     test_network_identity_registry_tracks_local_ownership();
     test_network_identity_registry_applies_pending_ownership_override();

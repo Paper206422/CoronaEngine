@@ -67,6 +67,7 @@ _BLOCKED_PATH_PREFIXES: Tuple[str, ...] = (
     # ---- 编辑器桥接层与内部工具(非资源)----
     "editor/CoronaPlugin/", "editor/CoronaPlugin\\",
     "editor/CoronaCore/utils/", "editor/CoronaCore/utils\\",
+    "CabbageEditor/", "CabbageEditor\\",
     # ---- 测试与备份 ----
     "editor/tests/", "editor/tests\\",
     "tests/", "tests\\",
@@ -87,7 +88,7 @@ _IGNORE_DIRS: FrozenSet[str] = frozenset({
     # 常见生成目录(Unity / UE / VS)
     "Library", "Temp", "tmp", "Logs", "log",
     "obj", "bin", "DerivedDataCache", "Intermediate", "Saved",
-    ".cache", "Cache", "SavedGames", "Build",
+    ".cache", "cache", "Cache", "SavedGames", "Build", "CabbageEditor",
     # 第三方依赖 / 工具链
     "third_party", "thirdparty", "ThirdParty", "vendor",
     "node-v22.19.0-win-x64",
@@ -152,6 +153,28 @@ def _is_ignored_dir(name: str) -> bool:
     return name in _IGNORE_DIRS or name.startswith(".")
 
 
+def _normalize_project_roots(project_roots: Iterable[str]) -> List[str]:
+    normalized: List[str] = []
+    seen: Set[str] = set()
+    for root in project_roots:
+        if not root:
+            continue
+        try:
+            absolute = os.path.abspath(root)
+        except (TypeError, ValueError):
+            logger.warning("扫描根路径无效,跳过: %r", root)
+            continue
+        if not os.path.isdir(absolute):
+            logger.warning("扫描根不存在或不是目录,跳过: %s", absolute)
+            continue
+        key = os.path.normcase(absolute)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(absolute)
+    return normalized
+
+
 @dataclass(slots=True)
 class ResourceItem:
     """单条资源索引项(用 __slots__ 节省内存,提升属性访问速度)"""
@@ -210,25 +233,7 @@ class ResourceIndex:
         Args:
             project_roots: 一个或多个扫描根(顺序敏感,后扫描的根覆盖先扫描的)
         """
-        normalized: List[str] = []
-        seen: Set[str] = set()
-        for r in project_roots:
-            if not r:
-                continue
-            try:
-                abs_r = os.path.abspath(r)
-            except (TypeError, ValueError):
-                logger.warning("扫描根路径无效,跳过: %r", r)
-                continue
-            if not os.path.isdir(abs_r):
-                logger.warning("扫描根不存在或不是目录,跳过: %s", abs_r)
-                continue
-            if abs_r in seen:
-                continue
-            seen.add(abs_r)
-            normalized.append(abs_r)
-
-        self.project_roots: List[str] = normalized
+        self.project_roots = _normalize_project_roots(project_roots)
         self._items: Dict[str, ResourceItem] = {}
         self._lock = threading.RLock()
         self._build_time: float = 0.0
@@ -239,8 +244,8 @@ class ResourceIndex:
         self._fingerprint: str = ""
         self._tokenize_cache: Dict[str, Tuple[str, ...]] = {}
 
-        logger.info("ResourceIndex 初始化, 扫描根: %s",
-                    self.project_roots or "(空)")
+        logger.debug("ResourceIndex 初始化, 扫描根: %s",
+                     self.project_roots or "(空)")
 
     # ------------------------------------------------------------------ #
     #  构建 / 刷新
@@ -272,9 +277,13 @@ class ResourceIndex:
             self._dirty = False
 
         elapsed = time.perf_counter() - start
-        logger.info("资源索引已重建: %d 项, 扫描 %d 个目录(根=%d 个), 耗时 %.3fs",
-                    self._item_count, visited_dirs,
-                    len(self.project_roots), elapsed)
+        logger.debug(
+            "资源索引构建完成: items=%d dirs=%d roots=%d elapsed=%.3fs",
+            self._item_count,
+            visited_dirs,
+            len(self.project_roots),
+            elapsed,
+        )
         return {
             "status": "ok",
             "count": self._item_count,
@@ -367,7 +376,7 @@ class ResourceIndex:
     def filesystem_fingerprint(cls, project_roots: Iterable[str]) -> str:
         """计算当前可搜索资源集合的稳定指纹，不做分词或预览图处理。"""
         metadata: Dict[str, Tuple[str, int, float]] = {}
-        normalized = cls(project_roots).project_roots
+        normalized = _normalize_project_roots(project_roots)
 
         def walk(dir_abs: str, root: str, depth: int) -> None:
             if depth > cls._MAX_SCAN_DEPTH:
@@ -428,7 +437,7 @@ class ResourceIndex:
         """外部调用:标记索引为脏,下次访问触发重建"""
         with self._lock:
             if not self._dirty:
-                logger.info("资源索引被标记为脏:%s", reason or "(无原因)")
+                logger.debug("资源索引被标记为脏: %s", reason or "(无原因)")
             self._dirty = True
 
     def rebuild_if_needed(self, check_mtime: bool = True) -> bool:
@@ -453,7 +462,7 @@ class ResourceIndex:
                 return False
 
             reason = "explicit mark" if dirty_explicit else "mtime 兜底检测到新文件"
-            logger.info("触发智能重建:%s", reason)
+            logger.debug("触发智能重建: %s", reason)
             self.rebuild()
             return True
 

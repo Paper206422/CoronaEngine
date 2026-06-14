@@ -41,6 +41,18 @@
 
 namespace {
 
+struct RenderInstanceBatch {
+    std::vector<Hardware::InstanceInfo> instances;
+    std::vector<Hardware::MaterialInfo> materials;
+    std::vector<std::uintptr_t> actorHandles;
+
+    void clear() {
+        instances.clear();
+        materials.clear();
+        actorHandles.clear();
+    }
+};
+
 void apply_pending_camera_moves() {
     auto& hub = Corona::SharedDataHub::instance();
     auto moves = hub.drain_camera_moves();
@@ -57,6 +69,60 @@ void apply_pending_camera_moves() {
             camera->fov = move.fov;
         }
     }
+}
+
+[[nodiscard]] ktm::fmat4x4 make_orthographic_lh(float width,
+                                                float height,
+                                                float near_plane,
+                                                float far_plane) {
+    ktm::fmat4x4 proj = ktm::fmat4x4::from_eye();
+    const float depth = std::max(far_plane - near_plane, 1e-4f);
+
+    proj[0][0] = 2.0f / std::max(width, 1e-4f);
+    proj[1][1] = -2.0f / std::max(height, 1e-4f);
+    proj[2][2] = 1.0f / depth;
+    proj[3][2] = -near_plane / depth;
+    return proj;
+}
+
+[[nodiscard]] ktm::fmat4x4 make_camera_basis_matrix(const Corona::CameraDevice& camera) {
+    const ktm::fvec3 forward = ktm::normalize(camera.forward);
+    ktm::fvec3 right = ktm::cross(camera.world_up, forward);
+    if (ktm::length(right) < 1e-5f) {
+        right = ktm::fvec3{1.0f, 0.0f, 0.0f};
+    } else {
+        right = ktm::normalize(right);
+    }
+    const ktm::fvec3 up = ktm::normalize(ktm::cross(forward, right));
+
+    ktm::fmat4x4 basis = ktm::fmat4x4::from_eye();
+    basis[0][0] = right.x;
+    basis[0][1] = right.y;
+    basis[0][2] = right.z;
+    basis[1][0] = up.x;
+    basis[1][1] = up.y;
+    basis[1][2] = up.z;
+    basis[2][0] = forward.x;
+    basis[2][1] = forward.y;
+    basis[2][2] = forward.z;
+    basis[3][0] = camera.position.x;
+    basis[3][1] = camera.position.y;
+    basis[3][2] = camera.position.z;
+    return basis;
+}
+
+[[nodiscard]] ktm::fmat4x4 multiply_ktm_mat4(const ktm::fmat4x4& lhs,
+                                             const ktm::fmat4x4& rhs) {
+    ktm::fmat4x4 out{};
+    for (std::size_t col = 0; col < 4; ++col) {
+        for (std::size_t row = 0; row < 4; ++row) {
+            out[col][row] = lhs[0][row] * rhs[col][0] +
+                            lhs[1][row] * rhs[col][1] +
+                            lhs[2][row] * rhs[col][2] +
+                            lhs[3][row] * rhs[col][3];
+        }
+    }
+    return out;
 }
 
 #ifdef CORONA_ENABLE_VISION
@@ -172,12 +238,16 @@ bool OpticsSystem::initialize_hardware_resources() {
         // --- Visibility Buffer (逐相机共享的中间产物) ---
         hardware_->visibilityImage = HardwareImage(w, h, ImageFormat::RGBA32_UINT, ImageUsage::StorageImage);
         hardware_->depthImage = HardwareImage(w, h, ImageFormat::D32_FLOAT, ImageUsage::DepthImage);
+        hardware_->uiVisibilityImage = HardwareImage(w, h, ImageFormat::RGBA32_UINT, ImageUsage::StorageImage);
+        hardware_->uiDepthImage = HardwareImage(w, h, ImageFormat::D32_FLOAT, ImageUsage::DepthImage);
 
         // --- Uniform buffers ---
         hardware_->uniformBuffer =
             HardwareBuffer(sizeof(Hardware::UniformBufferObject), BufferUsage::StorageBuffer);
         hardware_->vpUniformBuffer = HardwareBuffer(sizeof(Hardware::VPUniformBufferObject),
                                                     BufferUsage::StorageBuffer);
+        hardware_->uiVpUniformBuffer = HardwareBuffer(sizeof(Hardware::VPUniformBufferObject),
+                                                      BufferUsage::StorageBuffer);
 
         // --- Instance & Material table buffers (pre-allocate reasonable capacity) ---
         constexpr uint32_t kMaxInstances = 4096;
@@ -185,7 +255,13 @@ bool OpticsSystem::initialize_hardware_resources() {
         hardware_->instanceInfoBuffer = HardwareBuffer(
             kMaxInstances * static_cast<uint32_t>(sizeof(Hardware::InstanceInfo)),
             BufferUsage::StorageBuffer);
+        hardware_->uiInstanceInfoBuffer = HardwareBuffer(
+            kMaxInstances * static_cast<uint32_t>(sizeof(Hardware::InstanceInfo)),
+            BufferUsage::StorageBuffer);
         hardware_->materialTableBuffer = HardwareBuffer(
+            kMaxMaterials * static_cast<uint32_t>(sizeof(Hardware::MaterialInfo)),
+            BufferUsage::StorageBuffer);
+        hardware_->uiMaterialTableBuffer = HardwareBuffer(
             kMaxMaterials * static_cast<uint32_t>(sizeof(Hardware::MaterialInfo)),
             BufferUsage::StorageBuffer);
         hardware_->actorPickBuffer = HardwareBuffer(sizeof(std::uint32_t), BufferUsage::StorageBuffer);
@@ -203,11 +279,14 @@ bool OpticsSystem::initialize_hardware_resources() {
 bool OpticsSystem::initialize_render_pipelines() {
     try {
         hardware_->visibilityPipeline.emplace();
+        hardware_->uiVisibilityPipeline.emplace();
         hardware_->lightingPipeline.emplace();
         hardware_->skyPipeline.emplace();
         hardware_->tonemapPipeline.emplace();
         hardware_->debugResolvePipeline.emplace();
         hardware_->actorPickPipeline.emplace();
+        hardware_->opticsOverlayPipeline.emplace();
+        hardware_->opticsCompositePipeline.emplace();
 #ifdef CORONA_ENABLE_VISION
         hardware_->visionResolvePipeline.emplace();
 #endif
@@ -225,7 +304,8 @@ void OpticsSystem::ensure_camera_render_resources(uint32_t width, uint32_t heigh
     height = std::max(height, 1u);
 
     if (hardware_->gbufferSize.x == width && hardware_->gbufferSize.y == height &&
-        hardware_->visibilityImage && hardware_->depthImage) {
+        hardware_->visibilityImage && hardware_->depthImage &&
+        hardware_->uiVisibilityImage && hardware_->uiDepthImage) {
         return;
     }
 
@@ -235,6 +315,10 @@ void OpticsSystem::ensure_camera_render_resources(uint32_t width, uint32_t heigh
                                                ImageUsage::StorageImage);
     hardware_->depthImage = HardwareImage(width, height, ImageFormat::D32_FLOAT,
                                           ImageUsage::DepthImage);
+    hardware_->uiVisibilityImage = HardwareImage(width, height, ImageFormat::RGBA32_UINT,
+                                                 ImageUsage::StorageImage);
+    hardware_->uiDepthImage = HardwareImage(width, height, ImageFormat::D32_FLOAT,
+                                            ImageUsage::DepthImage);
 }
 
 OpticsSystem::SurfaceRenderTarget& OpticsSystem::acquire_surface_target(void* surface,
@@ -256,9 +340,14 @@ OpticsSystem::SurfaceRenderTarget& OpticsSystem::acquire_surface_target(void* su
         }
     }
 
-    // 分辨率变化或首次：创建/重建该 surface 的最终输出图。
-    if (!target.final_output || target.width != width || target.height != height) {
+    // 分辨率变化或首次：创建/重建该 surface 的 Optics 输出图。
+    if (!target.final_output || !target.ui_overlay || !target.composite_output ||
+        target.width != width || target.height != height) {
         target.final_output =
+            HardwareImage(width, height, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
+        target.ui_overlay =
+            HardwareImage(width, height, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
+        target.composite_output =
             HardwareImage(width, height, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
         target.width = width;
         target.height = height;
@@ -409,6 +498,9 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
     auto& lighting = *hardware_->lightingPipeline;
     auto& sky = *hardware_->skyPipeline;
     auto& tonemap = *hardware_->tonemapPipeline;
+    auto& opticsOverlay = *hardware_->opticsOverlayPipeline;
+    auto& opticsComposite = *hardware_->opticsCompositePipeline;
+    auto& uiVisibility = *hardware_->uiVisibilityPipeline;
 
     for (auto scene_it = SharedDataHub::instance().scene_storage().cbegin();
          scene_it != SharedDataHub::instance().scene_storage().cend(); ++scene_it) {
@@ -444,14 +536,6 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                 hardware_->vpUniformBuffer.copyFromData(&hardware_->vpUniformBufferObjects,
                                                         sizeof(hardware_->vpUniformBufferObjects));
 
-                // ================================================================
-                // 2. Build per-frame Instance Table & Material Table
-                //    仅遍历本场景 actor → profile → optics，隔离多场景数据
-                // ================================================================
-                hardware_->instanceInfoData.clear();
-                hardware_->instanceActorHandles.clear();
-                hardware_->materialTableData.clear();
-
                 // Configure visibility pipeline render targets
                 visibility.visibilityData = hardware_->visibilityImage;
                 visibility.setDepthImage(hardware_->depthImage);
@@ -462,133 +546,167 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                 auto& geom_storage = SharedDataHub::instance().geometry_storage();
                 auto& transform_storage = SharedDataHub::instance().model_transform_storage();
 
-                uint32_t object_id = 1;
-                for (auto actor_handle : scene.actor_handles) {
-                    auto actor = actor_storage.try_acquire_read(actor_handle);
-                    if (!actor) {
-                        ++object_id;
-                        continue;
-                    }
+                RenderInstanceBatch sceneBatch;
+                RenderInstanceBatch uiBatch;
 
-                    for (auto profile_handle : actor->profile_handles) {
-                        auto profile = profile_storage.try_acquire_read(profile_handle);
-                        if (!profile || profile->optics_handle == 0) continue;
+                auto collect_actor_instances_for_pass =
+                    [&](auto& target_visibility,
+                        uint32_t target_vp_descriptor,
+                        bool follow_camera_pass,
+                        const ktm::fmat4x4* camera_basis,
+                        RenderInstanceBatch& batch) -> bool {
+                    batch.clear();
 
-                        auto optics_acc = optics_storage.try_acquire_read(profile->optics_handle);
-                        if (!optics_acc) continue;
-                        const auto& optics = *optics_acc;
-
-                        if (!optics.visible) {
+                    bool has_instances = false;
+                    uint32_t object_id = 1;
+                    for (auto actor_handle : scene.actor_handles) {
+                        auto actor = actor_storage.try_acquire_read(actor_handle);
+                        if (!actor) {
                             ++object_id;
                             continue;
                         }
-                        // 阻塞写锁：mesh 的 textureBuffer.storeDescriptor() 是非 const，
-                        // 必须持写句柄。此处绝不能用 _nowait——拿不到锁就跳过会导致该物体
-                        // 本帧不进 instance/material 表（模型没上 GPU），表现为闪烁。用阻塞
-                        // 版 try_acquire_write 等锁（不漏帧），槽位失效时返回无效句柄而非抛异常。
-                        if (auto geom = geom_storage.try_acquire_write(optics.geometry_handle)) {
-                            ktm::fmat4x4 model_matrix{ktm::fmat4x4::from_eye()};
-                            if (auto transform = transform_storage.try_acquire_read(geom->transform_handle)) {
-                                model_matrix = transform->compute_matrix();
+
+                        if (actor->follow_camera != follow_camera_pass) {
+                            ++object_id;
+                            continue;
+                        }
+
+                        for (auto profile_handle : actor->profile_handles) {
+                            auto profile = profile_storage.try_acquire_read(profile_handle);
+                            if (!profile || profile->optics_handle == 0) continue;
+
+                            auto optics_acc = optics_storage.try_acquire_read(profile->optics_handle);
+                            if (!optics_acc) continue;
+                            const auto& optics = *optics_acc;
+
+                            if (!optics.visible) {
+                                ++object_id;
+                                continue;
                             }
+                            // 阻塞写锁：mesh 的 textureBuffer.storeDescriptor() 是非 const，
+                            // 必须持写句柄。此处绝不能用 _nowait——拿不到锁就跳过会导致该物体
+                            // 本帧不进 instance/material 表（模型没上 GPU），表现为闪烁。用阻塞
+                            // 版 try_acquire_write 等锁（不漏帧），槽位失效时返回无效句柄而非抛异常。
+                            if (auto geom = geom_storage.try_acquire_write(optics.geometry_handle)) {
+                                ktm::fmat4x4 model_matrix{ktm::fmat4x4::from_eye()};
+                                if (auto transform = transform_storage.try_acquire_read(geom->transform_handle)) {
+                                    model_matrix = transform->compute_matrix();
+                                    if (camera_basis != nullptr) {
+                                        model_matrix = multiply_ktm_mat4(*camera_basis, model_matrix);
+                                    }
+                                }
 
-                            for (auto& m : geom->mesh_handles) {
-                                // --- Collect material info ---
-                                auto materialID = static_cast<uint32_t>(hardware_->materialTableData.size());
-                                {
-                                    Hardware::MaterialInfo mat_info{};
+                                for (auto& m : geom->mesh_handles) {
+                                    // --- Collect material info ---
+                                    auto materialID = static_cast<uint32_t>(batch.materials.size());
+                                    {
+                                        Hardware::MaterialInfo mat_info{};
 
-                                    // 光照开关：bEnableLighting 为 true 时物体接收光照，false 时不接收光照
-                                    float lighting_enabled = optics.bEnableLighting ? 1.0f : 0.0f;
+                                        // 光照开关：bEnableLighting 为 true 时物体接收光照，false 时不接收光照
+                                        float lighting_enabled = optics.bEnableLighting ? 1.0f : 0.0f;
 
-                                    mat_info.textureDescriptor = m.textureBuffer
-                                                                     ? m.textureBuffer.storeDescriptor()
-                                                                     : 0;
+                                        mat_info.textureDescriptor = m.textureBuffer
+                                                                         ? m.textureBuffer.storeDescriptor()
+                                                                         : 0;
 
-                                    // 当光照关闭时，将 BRDF 参数设为中性值，使物体不受方向光影响
-                                    if (optics.bEnableLighting) {
-                                        mat_info.metallic = optics.metallic;
-                                        mat_info.roughness = optics.roughness;
-                                        mat_info.subsurface = optics.subsurface;
-                                        mat_info.specular = optics.specular;
-                                        mat_info.specularTint = optics.specularTint;
-                                        mat_info.anisotropic = optics.anisotropic;
-                                        mat_info.sheen = optics.sheen;
-                                        mat_info.sheenTint = optics.sheenTint;
-                                        mat_info.clearcoat = optics.clearcoat;
-                                        mat_info.clearcoatGloss = optics.clearcoatGloss;
-                                    } else {
-                                        // 关闭光照：使用中性BRDF参数（完全漫反射，无高光，无清漆等）
-                                        mat_info.metallic = 0.0f;
-                                        mat_info.roughness = 1.0f;
-                                        mat_info.subsurface = 0.0f;
-                                        mat_info.specular = 0.0f;
-                                        mat_info.specularTint = 0.0f;
-                                        mat_info.anisotropic = 0.0f;
-                                        mat_info.sheen = 0.0f;
-                                        mat_info.sheenTint = 0.0f;
-                                        mat_info.clearcoat = 0.0f;
-                                        mat_info.clearcoatGloss = 0.0f;
+                                        // 当光照关闭时，将 BRDF 参数设为中性值，使物体不受方向光影响
+                                        if (optics.bEnableLighting) {
+                                            mat_info.metallic = optics.metallic;
+                                            mat_info.roughness = optics.roughness;
+                                            mat_info.subsurface = optics.subsurface;
+                                            mat_info.specular = optics.specular;
+                                            mat_info.specularTint = optics.specularTint;
+                                            mat_info.anisotropic = optics.anisotropic;
+                                            mat_info.sheen = optics.sheen;
+                                            mat_info.sheenTint = optics.sheenTint;
+                                            mat_info.clearcoat = optics.clearcoat;
+                                            mat_info.clearcoatGloss = optics.clearcoatGloss;
+                                        } else {
+                                            // 关闭光照：使用中性BRDF参数（完全漫反射，无高光，无清漆等）
+                                            mat_info.metallic = 0.0f;
+                                            mat_info.roughness = 1.0f;
+                                            mat_info.subsurface = 0.0f;
+                                            mat_info.specular = 0.0f;
+                                            mat_info.specularTint = 0.0f;
+                                            mat_info.anisotropic = 0.0f;
+                                            mat_info.sheen = 0.0f;
+                                            mat_info.sheenTint = 0.0f;
+                                            mat_info.clearcoat = 0.0f;
+                                            mat_info.clearcoatGloss = 0.0f;
+                                        }
+
+                                        mat_info.lightingEnabled = lighting_enabled;
+                                        mat_info.materialColor = ktm::fvec4{
+                                            m.materialColor[0], m.materialColor[1],
+                                            m.materialColor[2], m.materialColor[3]};
+                                        batch.materials.push_back(mat_info);
                                     }
 
-                                    mat_info.lightingEnabled = lighting_enabled;
-                                    mat_info.materialColor = ktm::fvec4{
-                                        m.materialColor[0], m.materialColor[1],
-                                        m.materialColor[2], m.materialColor[3]};
-                                    hardware_->materialTableData.push_back(mat_info);
-                                }
+                                    // --- Collect instance info ---
+                                    auto instanceID = static_cast<uint32_t>(batch.instances.size());
+                                    {
+                                        Hardware::InstanceInfo inst{};
+                                        inst.modelMatrix = model_matrix;
+                                        inst.vertexBufferIndex = m.vertexStorageBuffer
+                                                                     ? m.vertexStorageBuffer.storeDescriptor()
+                                                                     : 0;
+                                        inst.indexBufferIndex = m.indexStorageBuffer
+                                                                    ? m.indexStorageBuffer.storeDescriptor()
+                                                                    : 0;
+                                        inst.materialID = materialID;
+                                        inst.objectID = object_id;
+                                        batch.instances.push_back(inst);
+                                        batch.actorHandles.push_back(actor_handle);
+                                        has_instances = true;
+                                    }
 
-                                // --- Collect instance info ---
-                                auto instanceID = static_cast<uint32_t>(hardware_->instanceInfoData.size());
-                                {
-                                    Hardware::InstanceInfo inst{};
-                                    inst.modelMatrix = model_matrix;
-                                    inst.vertexBufferIndex = m.vertexStorageBuffer
-                                                                 ? m.vertexStorageBuffer.storeDescriptor()
-                                                                 : 0;
-                                    inst.indexBufferIndex = m.indexStorageBuffer
-                                                                ? m.indexStorageBuffer.storeDescriptor()
-                                                                : 0;
-                                    inst.materialID = materialID;
-                                    inst.objectID = object_id;
-                                    hardware_->instanceInfoData.push_back(inst);
-                                    hardware_->instanceActorHandles.push_back(actor_handle);
+                                    // --- Record visibility draw call ---
+                                    target_visibility.pushConsts.modelMatrix = model_matrix;
+                                    target_visibility.pushConsts.uniformBufferIndex =
+                                        target_vp_descriptor;
+                                    // VBuffer uses 1-based instanceID (0 = background sentinel after clear)
+                                    target_visibility.pushConsts.instanceID = instanceID + 1;
+                                    // Alpha-cutout: pass texture descriptor for discard test
+                                    if (m.textureBuffer) {
+                                        target_visibility[visibility_frag_glsl::pushConsts::textureIndex] =
+                                            m.textureBuffer.storeDescriptor();
+                                    } else {
+                                        target_visibility[visibility_frag_glsl::pushConsts::textureIndex] =
+                                            static_cast<uint32_t>(0);
+                                    }
+                                    target_visibility.record(m.indexBuffer, m.vertexBuffer);
                                 }
-
-                                // --- Record visibility draw call ---
-                                visibility.pushConsts.modelMatrix = model_matrix;
-                                visibility.pushConsts.uniformBufferIndex =
-                                    hardware_->vpUniformBuffer.storeDescriptor();
-                                // VBuffer uses 1-based instanceID (0 = background sentinel after clear)
-                                visibility.pushConsts.instanceID = instanceID + 1;
-                                // Alpha-cutout: pass texture descriptor for discard test
-                                if (m.textureBuffer) {
-                                    visibility[visibility_frag_glsl::pushConsts::textureIndex] =
-                                        m.textureBuffer.storeDescriptor();
-                                } else {
-                                    visibility[visibility_frag_glsl::pushConsts::textureIndex] =
-                                        static_cast<uint32_t>(0);
-                                }
-                                visibility.record(m.indexBuffer, m.vertexBuffer);
                             }
+                            ++object_id;
                         }
-                        ++object_id;
                     }
-                }
+                    return has_instances;
+                };
 
-                // ================================================================
-                // 3. Upload instance & material tables to GPU
-                // ================================================================
-                if (!hardware_->instanceInfoData.empty()) {
-                    hardware_->instanceInfoBuffer.copyFromData(
-                        hardware_->instanceInfoData.data(),
-                        hardware_->instanceInfoData.size() * sizeof(Hardware::InstanceInfo));
-                }
-                if (!hardware_->materialTableData.empty()) {
-                    hardware_->materialTableBuffer.copyFromData(
-                        hardware_->materialTableData.data(),
-                        hardware_->materialTableData.size() * sizeof(Hardware::MaterialInfo));
-                }
+                auto upload_instance_tables = [&](const RenderInstanceBatch& batch,
+                                                  HardwareBuffer& instance_buffer,
+                                                  HardwareBuffer& material_buffer) {
+                    if (!batch.instances.empty()) {
+                        instance_buffer.copyFromData(
+                            batch.instances.data(),
+                            batch.instances.size() * sizeof(Hardware::InstanceInfo));
+                    }
+                    if (!batch.materials.empty()) {
+                        material_buffer.copyFromData(
+                            batch.materials.data(),
+                            batch.materials.size() * sizeof(Hardware::MaterialInfo));
+                    }
+                };
+
+                const uint32_t sceneVpDescriptor = hardware_->vpUniformBuffer.storeDescriptor();
+                collect_actor_instances_for_pass(visibility,
+                                                 sceneVpDescriptor,
+                                                 false,
+                                                 nullptr,
+                                                 sceneBatch);
+                upload_instance_tables(sceneBatch,
+                                       hardware_->instanceInfoBuffer,
+                                       hardware_->materialTableBuffer);
 
                 // ================================================================
                 // 4. Environment parameters
@@ -637,6 +755,7 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                 HardwareImage& render_target =
                     is_offscreen ? offscreen_image_
                                  : surface_targets_[surface].final_output;
+                HardwareImage* presented_target = &render_target;
                 const uint32_t finalOutputDescriptor = render_target.storeDescriptor();
 
                 // ================================================================
@@ -763,17 +882,80 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                 hardware_->executor << hardware_->executor.commit();
 
                 if (actor_pick_request) {
-                    complete_actor_pick(*actor_pick_request);
+                    complete_actor_pick(*actor_pick_request, sceneBatch.actorHandles);
                 }
 
-                // 截图对任意相机（显示/离屏）都适用，从其 render_target 读取。
-                process_pending_screenshots(cam_handle, render_target);
+                if (!is_debug_mode && !is_offscreen) {
+                    auto& target = surface_targets_[surface];
+                    const ktm::fmat4x4 camera_basis = make_camera_basis_matrix(*camera);
+                    constexpr float kFollowCameraOrthoHeight = 2.0f;
+                    constexpr float kFollowCameraNear = -1000.0f;
+                    constexpr float kFollowCameraFar = 1000.0f;
+                    const float ortho_width = kFollowCameraOrthoHeight * camera->aspect;
+                    const ktm::fmat4x4 ortho_proj =
+                        make_orthographic_lh(ortho_width,
+                                             kFollowCameraOrthoHeight,
+                                             kFollowCameraNear,
+                                             kFollowCameraFar);
+
+                    hardware_->vpUniformBufferObjects.viewProjMatrix =
+                        multiply_ktm_mat4(ortho_proj, camera->compute_view_matrix());
+                    hardware_->uiVpUniformBuffer.copyFromData(&hardware_->vpUniformBufferObjects,
+                                                              sizeof(hardware_->vpUniformBufferObjects));
+                    const uint32_t uiVpDescriptor =
+                        hardware_->uiVpUniformBuffer.storeDescriptor();
+
+                    uiVisibility.visibilityData = hardware_->uiVisibilityImage;
+                    uiVisibility.setDepthImage(hardware_->uiDepthImage);
+
+                    const bool has_follow_camera_instances =
+                        collect_actor_instances_for_pass(uiVisibility,
+                                                         uiVpDescriptor,
+                                                         true,
+                                                         &camera_basis,
+                                                         uiBatch);
+                    if (has_follow_camera_instances) {
+                        upload_instance_tables(uiBatch,
+                                               hardware_->uiInstanceInfoBuffer,
+                                               hardware_->uiMaterialTableBuffer);
+
+                        const uint32_t overlayDescriptor = target.ui_overlay.storeDescriptor();
+                        opticsOverlay.pushConsts.gbufferSize = hardware_->gbufferSize;
+                        opticsOverlay.pushConsts.visibilityImageIndex =
+                            hardware_->uiVisibilityImage.storeDescriptor();
+                        opticsOverlay.pushConsts.instanceInfoBufferIndex =
+                            hardware_->uiInstanceInfoBuffer.storeDescriptor();
+                        opticsOverlay.pushConsts.materialTableBufferIndex =
+                            hardware_->uiMaterialTableBuffer.storeDescriptor();
+                        opticsOverlay.pushConsts.vpBufferIndex =
+                            uiVpDescriptor;
+                        opticsOverlay.pushConsts.outputImage = overlayDescriptor;
+
+                        opticsComposite.pushConsts.bgImage = render_target.storeDescriptor();
+                        opticsComposite.pushConsts.fgImage = overlayDescriptor;
+                        opticsComposite.pushConsts.outputImage =
+                            target.composite_output.storeDescriptor();
+                        opticsComposite.pushConsts.outputWidth = hardware_->gbufferSize.x;
+                        opticsComposite.pushConsts.outputHeight = hardware_->gbufferSize.y;
+
+                        hardware_->executor << uiVisibility(hardware_->gbufferSize.x,
+                                                            hardware_->gbufferSize.y)
+                                            << opticsOverlay(dispatchX, dispatchY, 1)
+                                            << opticsComposite(dispatchX, dispatchY, 1)
+                                            << hardware_->executor.commit();
+
+                        presented_target = &target.composite_output;
+                    }
+                }
+
+                // 截图对任意相机（显示/离屏）都适用，从最终 Optics 输出读取。
+                process_pending_screenshots(cam_handle, *presented_target);
 
                 // 显示相机把自己 surface 的输出发布给 DisplaySystem（按 surface 区分）。
                 if (!is_offscreen) {
                     auto& target = surface_targets_[surface];
                     if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(target.image_handle)) {
-                        image_device->image = target.final_output;
+                        image_device->image = *presented_target;
                         image_device->executor = hardware_->executor;
                     }
 
@@ -850,7 +1032,8 @@ std::optional<OpticsSystem::ActorPickRequest> OpticsSystem::take_pending_actor_p
     return request;
 }
 
-void OpticsSystem::complete_actor_pick(const ActorPickRequest& request) {
+void OpticsSystem::complete_actor_pick(const ActorPickRequest& request,
+                                       const std::vector<std::uintptr_t>& scene_actor_handles) {
     std::uint32_t instance_id = 0;
     if (!hardware_->actorPickBuffer.copyToData(&instance_id, sizeof(instance_id))) {
         CFW_LOG_ERROR("OpticsSystem: Failed to read actor pick result from GPU");
@@ -859,8 +1042,8 @@ void OpticsSystem::complete_actor_pick(const ActorPickRequest& request) {
     std::uintptr_t actor_handle = 0;
     if (instance_id > 0) {
         const auto instance_index = static_cast<std::size_t>(instance_id - 1);
-        if (instance_index < hardware_->instanceActorHandles.size()) {
-            actor_handle = hardware_->instanceActorHandles[instance_index];
+        if (instance_index < scene_actor_handles.size()) {
+            actor_handle = scene_actor_handles[instance_index];
         }
     }
 

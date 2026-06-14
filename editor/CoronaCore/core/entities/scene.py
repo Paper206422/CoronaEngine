@@ -189,6 +189,10 @@ class Scene:
 
             self.file_data['actors'][f'{actor_key}.actor_type'] = getattr(actor, 'actor_type', 'actor')
             self.file_data['actors'][f'{actor_key}.route'] = getattr(actor, 'route', '')
+            if hasattr(actor, 'get_follow_camera'):
+                self.file_data['actors'][f'{actor_key}.follow_camera'] = (
+                    'true' if actor.get_follow_camera() else 'false'
+                )
 
             # 获取几何体属性
             if hasattr(actor, '_geometry'):
@@ -598,6 +602,9 @@ class Scene:
             "route": actors_section.get(f'{actor_name}.route', ''),
             "geometry": {}
         }
+        follow_camera_key = f'{actor_name}.follow_camera'
+        if follow_camera_key in actors_section:
+            actor_data["follow_camera"] = actors_section.getboolean(follow_camera_key)
 
         # 解析几何体属性
         pos_str = actors_section.get(f'{actor_name}.geometry.position', '0.0, 0.0, 0.0')

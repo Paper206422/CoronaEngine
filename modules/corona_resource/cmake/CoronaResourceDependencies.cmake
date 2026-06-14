@@ -48,8 +48,7 @@ message(STATUS "Fetching tinyexr library...")
 FetchContent_Declare(
     tinyexr
     GIT_REPOSITORY https://github.com/syoyo/tinyexr.git
-    GIT_TAG release
-    GIT_SHALLOW TRUE
+    GIT_TAG 438361c2ec0b52dec940644bba677f0421a262e6
     EXCLUDE_FROM_ALL
 )
 

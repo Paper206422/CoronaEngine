@@ -144,7 +144,7 @@ def _check_caller(caller: str) -> Optional[Dict[str, Any]]:
 
     # 黑名单:硬拒绝 + 警告日志
     if caller in DENIED_CALLERS:
-        logger.warning("[fuzzy_search] 拒绝调用: caller=%r 在黑名单内", caller)
+        logger.warning("[ResourceSearch] 拒绝调用: caller=%r 在黑名单内", caller)
         return {
             "status": "error",
             "code": "permission_denied",
@@ -155,7 +155,7 @@ def _check_caller(caller: str) -> Optional[Dict[str, Any]]:
 
     # 白名单:必须命中
     if caller not in ALLOWED_CALLERS:
-        logger.warning("[fuzzy_search] 拒绝调用: caller=%r 不在白名单", caller)
+        logger.warning("[ResourceSearch] 拒绝调用: caller=%r 不在白名单", caller)
         return {
             "status": "error",
             "code": "permission_denied",
@@ -172,7 +172,7 @@ def _check_type(type_filter: Optional[str]) -> Optional[Dict[str, Any]]:
     if type_filter is None:
         return None
     if type_filter not in ALLOWED_SEARCH_TYPES:
-        logger.warning("[fuzzy_search] 拒绝类型: type_filter=%r 不在白名单",
+        logger.warning("[ResourceSearch] 拒绝类型: type_filter=%r 不在白名单",
                        type_filter)
         return {
             "status": "error",
@@ -337,9 +337,15 @@ class ResourceSearch(PluginBase):
             idx = service.current_index()
             index_status = service.status()
             roots = index_status["roots"]
-            logger.info("[fuzzy_search] caller=%s query=%r top_k=%s "
-                        "type_filter=%s roots=%s",
-                        caller, query, top_k, type_filter, roots)
+            logger.debug(
+                "[ResourceSearch] 搜索开始: caller=%s query=%r top_k=%s "
+                "type=%s roots=%d",
+                caller,
+                query,
+                top_k,
+                type_filter,
+                len(roots),
+            )
 
             if idx is None:
                 elapsed_ms = (time.perf_counter() - t_start) * 1000.0
@@ -360,9 +366,14 @@ class ResourceSearch(PluginBase):
             match_ms = (time.perf_counter() - t_match) * 1000.0
 
             elapsed_ms = (time.perf_counter() - t_start) * 1000.0
-            logger.info("[fuzzy_search] 命中 %d 项, 匹配耗时 %.2fms, "
-                        "总耗时 %.2fms",
-                        len(items), match_ms, elapsed_ms)
+            logger.debug(
+                "[ResourceSearch] 搜索完成: query=%r hits=%d match=%.2fms "
+                "total=%.2fms",
+                query,
+                len(items),
+                match_ms,
+                elapsed_ms,
+            )
 
             return {
                 "status": "success",

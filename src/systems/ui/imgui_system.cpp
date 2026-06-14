@@ -2,9 +2,6 @@
 #include <corona/systems/script/script_system.h>
 #include <corona/systems/ui/imgui_system.h>
 
-#include <chrono>
-#include <thread>
-
 #include "cef/browser_manager.h"
 #include "cef/cef_client.h"
 #include "imgui/imgui_ui.h"
@@ -87,11 +84,6 @@ void ImguiSystem::shutdown() {
     // 关闭所有浏览器标签页
     CFW_LOG_INFO("ImGuiSystem: Closing all browser tabs...");
     UI::BrowserManager::instance().close_all_tabs();
-
-    // 给 CEF 消息循环一些时间来处理浏览器关闭事件
-    // 在 multi_threaded_message_loop 模式下，CEF 在后台线程处理消息
-    CFW_LOG_INFO("ImGuiSystem: Waiting for CEF to process close events...");
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     // 清理 SDL 和 ImGui (必须在主线程)
     if (sdl_initialized_) {

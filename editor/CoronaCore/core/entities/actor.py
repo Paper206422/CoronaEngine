@@ -43,6 +43,7 @@ class Actor:
         self.model_dependencies = []
         self.script_path = ""
         self.actor_guid = ""
+        self._follow_camera = False
         self._suppress_network_broadcast = bool(
             actor_data and actor_data.get("_suppress_network_broadcast")
         )
@@ -80,6 +81,7 @@ class Actor:
             self.actor_guid = f"actor-{uuid.uuid4().hex}"
 
         self.handle = self.engine_obj.get_handle()
+        self._sync_follow_camera_to_engine()
         _handle_to_actor[self.handle] = self
 
         self._enable_collision_callback = True  # 控制是否启用碰撞回调（Python 层回调开关）
@@ -112,6 +114,7 @@ class Actor:
         # 读取模型路径
         self.model_path = self.file_data['base']['path']
         self.actor_guid = self.file_data['base'].get('actor_guid', '')
+        self._follow_camera = self.file_data['base'].getboolean('follow_camera', fallback=False)
         if not self.actor_guid:
             self.actor_guid = f"actor-{uuid.uuid4().hex}"
         if self.model_path:
@@ -123,6 +126,7 @@ class Actor:
 
     def _load_from_actor_data(self, actor_data: dict, data_path: str):
         """从actor_data字典加载actor数据"""
+        file_follow_camera = False
         if self.actor_type == "actor":
             self.file_data.read(data_path, encoding='utf-8')
             self.model_path = self.file_data['base']['path']
@@ -130,12 +134,18 @@ class Actor:
                 'actor_guid',
                 self.file_data['base'].get('actor_guid', '')
             )
+            file_follow_camera = self.file_data['base'].getboolean('follow_camera', fallback=False)
             self.script_path = self.file_data['scripts']["path"]
             self.final_model_path = os.path.join(CoronaEngine.active_project_path,
                                                  self.model_path) if self.model_path else ""
         else:
             self.final_model_path = data_path
             self.actor_guid = actor_data.get('actor_guid', '')
+
+        self._follow_camera = self._coerce_bool(
+            actor_data.get('follow_camera',
+                           actor_data.get('render_space', 'ui' if file_follow_camera else 'scene') == 'ui')
+        )
 
         if not self.actor_guid:
             self.actor_guid = f"actor-{uuid.uuid4().hex}"
@@ -204,6 +214,20 @@ class Actor:
         if stored is None:
             raise RuntimeError("无法向 Actor 添加默认 Profile（几何/组件不一致）")
         self.engine_obj.set_active_profile(stored)
+
+    @staticmethod
+    def _coerce_bool(value) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on", "ui")
+        return bool(value)
+
+    def _sync_follow_camera_to_engine(self):
+        if hasattr(self.engine_obj, 'set_follow_camera'):
+            try:
+                self.engine_obj.set_follow_camera(self._follow_camera)
+            except Exception as exc:
+                logging.warning("Failed to sync follow_camera for actor %s: %s",
+                                self.name or self.route, exc)
 
     def _broadcast_actor_created(self):
         """通过 NetworkSystem 广播 Actor 创建事件到已连接的 peer。"""
@@ -348,6 +372,7 @@ class Actor:
             self.file_data['base']['name'] = self.name
             self.file_data['base']['path'] = self.model_path
             self.file_data['base']['actor_guid'] = self.actor_guid
+            self.file_data['base']['follow_camera'] = 'true' if self._follow_camera else 'false'
             if self.model_path:
                 position = self.get_position()
                 rotation = self.get_rotation()
@@ -467,6 +492,25 @@ class Actor:
         if not hasattr(self, '_optics'):
             return True
         return self._optics.get_visible()
+
+    @auto_save
+    def set_follow_camera(self, enabled: bool, if_init=False):
+        self._follow_camera = self._coerce_bool(enabled)
+        self._sync_follow_camera_to_engine()
+        if if_init:
+            return False
+        if self._follow_camera and hasattr(self, '_mechanics') and self._mechanics is not None:
+            self._mechanics.set_physics_enabled(False)
+        return True
+
+    def get_follow_camera(self) -> bool:
+        if hasattr(self.engine_obj, 'get_follow_camera'):
+            try:
+                self._follow_camera = bool(self.engine_obj.get_follow_camera())
+            except Exception as exc:
+                logging.warning("Failed to read follow_camera for actor %s: %s",
+                                self.name or self.route, exc)
+        return self._follow_camera
 
     def set_mass(self, mass: float):
         if not hasattr(self, '_mechanics'):
@@ -660,6 +704,7 @@ class Actor:
 
     def to_dict(self) -> Dict[str, Any]:
         _, ext = os.path.splitext(self.route)
+        follow_camera = self.get_follow_camera()
 
         result_dict = {
             "name": self.name,
@@ -673,7 +718,9 @@ class Actor:
             "actor_type": self.actor_type,
             "collision": self.get_collision_enabled(),
             "visible": self.get_visible(),
-            "script": self.script_path
+            "script": self.script_path,
+            "follow_camera": follow_camera,
+            "render_space": "ui" if follow_camera else "scene",
         }
 
         if hasattr(self, '_geometry'):

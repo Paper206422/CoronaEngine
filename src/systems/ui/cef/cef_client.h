@@ -8,8 +8,10 @@
 #include <wrapper/cef_helpers.h>
 #include <wrapper/cef_message_router.h>
 
-#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <iostream>
+#include <mutex>
 
 #include "corona/kernel/core/i_logger.h"
 
@@ -29,15 +31,18 @@ extern CefMessageRouterConfig message_router_config;
 
 class OffscreenRenderHandler : public CefRenderHandler {
    public:
-    std::atomic<BrowserTab*> tab{nullptr};
-
     void GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) override;
     void OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
                  const RectList& dirty_rects, const void* buffer,
                  int width, int height) override;
     bool GetScreenPoint(CefRefPtr<CefBrowser> browser, int viewX, int viewY, int& screenX, int& screenY);
+    void SetTab(BrowserTab* tab);
 
     IMPLEMENT_REFCOUNTING(OffscreenRenderHandler);
+
+   private:
+    std::mutex tab_mutex_;
+    BrowserTab* tab_ = nullptr;
 };
 
 // ============================================================================
@@ -88,7 +93,10 @@ class OffscreenCefClient : public CefClient,
 
     void SetTab(BrowserTab* tab);
     void Resize(int width, int height);
-    CefRefPtr<CefBrowser> GetBrowser() { return browser_; }
+    CefRefPtr<CefBrowser> GetBrowser();
+    void RequestClose();
+    bool WaitForClose(std::chrono::milliseconds timeout);
+    void MarkBrowserCreationFailed();
 
     // CefClient 接口
     CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
@@ -152,7 +160,11 @@ class OffscreenCefClient : public CefClient,
                                 CefRefPtr<CefFrame> frame) override;
 
    private:
+    std::mutex browser_mutex_;
+    std::condition_variable browser_closed_cv_;
     CefRefPtr<CefBrowser> browser_;
+    bool close_requested_ = false;
+    bool browser_closed_ = false;
     CefRefPtr<OffscreenRenderHandler> render_handler_;
     CefRefPtr<CefMessageRouterBrowserSide> browser_side_router_;
     BrowserSideJSHandler* js_handler_;

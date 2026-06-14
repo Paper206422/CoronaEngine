@@ -326,6 +326,13 @@ EventProcessResult SDLEventHandler::process_events(
                 result.should_quit = true;
                 break;
 
+            case SDL_EVENT_WINDOW_FOCUS_GAINED:
+                if (SDL_Window* focused_window = SDL_GetWindowFromID(event.window.windowID);
+                    focused_window && !SDL_TextInputActive(focused_window)) {
+                    SDL_StartTextInput(focused_window);
+                }
+                break;
+
             case SDL_EVENT_WINDOW_RESIZED:
                 if (event.window.windowID == SDL_GetWindowID(window)) {
                     result.window_resized = true;

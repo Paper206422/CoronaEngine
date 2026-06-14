@@ -4,7 +4,6 @@
 #include <corona/shader_include.h>
 
 #include <optional>
-#include <vector>
 
 // Helicon codegen translates GLSL `uint` to C++ `uint` (not `unsigned int`)
 // in SSBO struct members. Provide the missing typedef.
@@ -18,6 +17,8 @@ using uint = uint32_t;
 #include GLSL(../../../assets/shaders/tonemap.comp.glsl)
 #include GLSL(../../../assets/shaders/debug_resolve.comp.glsl)
 #include GLSL(../../../assets/shaders/actor_pick.comp.glsl)
+#include GLSL(../../../assets/shaders/optics_overlay.comp.glsl)
+#include GLSL(../../../assets/shaders/optics_composite.comp.glsl)
 #ifdef CORONA_ENABLE_VISION
 #include GLSL(../../../assets/shaders/vision_resolve.comp.glsl)
 #endif
@@ -27,6 +28,8 @@ struct Hardware {
     // === Visibility Buffer (replaces GBuffer rasterization output) ===
     HardwareImage visibilityImage;  // RGBA32_UINT: R=instanceID, G=primitiveID
     HardwareImage depthImage;       // D32_FLOAT: depth (kept from GBuffer)
+    HardwareImage uiVisibilityImage;  // Pass 2 visibility, isolated from scene pass
+    HardwareImage uiDepthImage;        // Pass 2 depth, isolated from scene pass
 
     // === Final composited output ===
     HardwareImage finalOutputImage;
@@ -35,20 +38,26 @@ struct Hardware {
     // === Uniform buffers ===
     HardwareBuffer uniformBuffer;
     HardwareBuffer vpUniformBuffer;  // renamed: view-projection matrix
+    HardwareBuffer uiVpUniformBuffer;  // Pass 2 orthographic view-projection matrix
 
     // === Instance & Material tables (uploaded per frame) ===
     HardwareBuffer instanceInfoBuffer;
     HardwareBuffer materialTableBuffer;
+    HardwareBuffer uiInstanceInfoBuffer;
+    HardwareBuffer uiMaterialTableBuffer;
     HardwareBuffer actorPickBuffer;
 
     // === Shader pipelines ===
     bool shaderHasInit = false;
     std::optional<RasterizerPipeline<visibility_vert_glsl, visibility_frag_glsl>> visibilityPipeline;
+    std::optional<RasterizerPipeline<visibility_vert_glsl, visibility_frag_glsl>> uiVisibilityPipeline;
     std::optional<ComputePipeline<lighting_comp_glsl>> lightingPipeline;
     std::optional<ComputePipeline<sky_comp_glsl>> skyPipeline;
     std::optional<ComputePipeline<tonemap_comp_glsl>> tonemapPipeline;
     std::optional<ComputePipeline<debug_resolve_comp_glsl>> debugResolvePipeline;
     std::optional<ComputePipeline<actor_pick_comp_glsl>> actorPickPipeline;
+    std::optional<ComputePipeline<optics_overlay_comp_glsl>> opticsOverlayPipeline;
+    std::optional<ComputePipeline<optics_composite_comp_glsl>> opticsCompositePipeline;
 #ifdef CORONA_ENABLE_VISION
     std::optional<ComputePipeline<vision_resolve_comp_glsl>> visionResolvePipeline;
 #endif
@@ -88,8 +97,6 @@ struct Hardware {
         uint32_t materialID;
         uint32_t objectID;
     };
-    std::vector<InstanceInfo> instanceInfoData;
-    std::vector<std::uintptr_t> instanceActorHandles;
 
     // === GPU-side material table (matches GLSL MaterialInfo layout) ===
     // 64 bytes = 16 uints per entry:
@@ -121,7 +128,6 @@ struct Hardware {
         float lightingEnabled;  // 光照开关：1.0=接收光照, 0.0=不受光（始终使用基础颜色）
         ktm::fvec4 materialColor;
     };
-    std::vector<MaterialInfo> materialTableData;
 
     // === Render dimensions ===
     ktm::uvec2 gbufferSize{};

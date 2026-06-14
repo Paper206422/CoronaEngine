@@ -1,5 +1,6 @@
 ﻿#include "browser_manager.h"
 
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -154,8 +155,11 @@ int BrowserManager::create_tab(const std::string& url, const std::string& path,
     browser_settings.local_storage = STATE_ENABLED;
     browser_settings.webgl = STATE_ENABLED;
 
-    CefBrowserHost::CreateBrowser(window_info, CefRefPtr<CefClient>(tab->client),
-                                  full_url, browser_settings, nullptr, nullptr);
+    if (!CefBrowserHost::CreateBrowser(window_info, CefRefPtr<CefClient>(tab->client),
+                                       full_url, browser_settings, nullptr, nullptr)) {
+        tab->client->MarkBrowserCreationFailed();
+        CFW_LOG_ERROR("Failed to create browser tab: ID={}", id);
+    }
 
     tabs_[id] = std::move(tab);
     return id;
@@ -174,9 +178,7 @@ void BrowserManager::remove_tab(int tab_id) {
     // 仍有在途的 OnPaint 回调访问已释放的 tab（use-after-free 崩溃）。
     if (tab->client) {
         tab->client->SetTab(nullptr);
-        if (tab->client->GetBrowser()) {
-            tab->client->GetBrowser()->GetHost()->CloseBrowser(true);
-        }
+        tab->client->RequestClose();
     }
 
     destroy_tab_texture(tab);
@@ -205,13 +207,24 @@ void BrowserManager::update() {
 
 void BrowserManager::close_all_tabs() {
     std::vector<int> ids;
+    std::vector<CefRefPtr<OffscreenCefClient>> clients;
     ids.reserve(tabs_.size());
+    clients.reserve(tabs_.size());
     for (const auto& id : tabs_ | std::views::keys) {
         ids.push_back(id);
     }
 
     for (int id : ids) {
+        if (auto* tab = get_tab(id); tab && tab->client) {
+            clients.emplace_back(tab->client);
+        }
         remove_tab(id);
+    }
+
+    for (const auto& client : clients) {
+        if (!client->WaitForClose(std::chrono::seconds(5))) {
+            CFW_LOG_WARNING("Timed out waiting for a CEF browser to close");
+        }
     }
 }
 

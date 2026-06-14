@@ -14,7 +14,7 @@ from .indexer import ResourceIndex
 
 logger = logging.getLogger(__name__)
 
-_SNAPSHOT_VERSION = 1
+_SNAPSHOT_VERSION = 2
 
 
 def default_cache_dir() -> Path:
@@ -31,7 +31,7 @@ class ResourceIndexService:
         self,
         roots_provider: Callable[[], Iterable[str]],
         cache_dir: Optional[Path] = None,
-        poll_interval: float = 10.0,
+        poll_interval: float = 300.0,
     ):
         self._roots_provider = roots_provider
         self._cache_dir = Path(cache_dir) if cache_dir else default_cache_dir()
@@ -129,11 +129,17 @@ class ResourceIndexService:
             self._force_rebuild = loaded is None
             self._needs_validation = loaded is not None
             self._state = "refreshing" if loaded else "indexing"
-        logger.info(
+        logger.debug(
             "[ResourceSearch] 根切换: roots=%s cache=%s",
             roots,
             "hit" if loaded else "miss",
         )
+        if loaded is not None:
+            logger.info(
+                "[ResourceSearch] 索引就绪: items=%d source=cache roots=%d",
+                loaded.stats()["count"],
+                len(roots),
+            )
 
     @staticmethod
     def _normalize_roots(roots: Iterable[str]) -> list[str]:
@@ -188,7 +194,7 @@ class ResourceIndexService:
                         self._error = ""
                 return
             if not validate:
-                logger.info("[ResourceSearch] 文件指纹变化,后台重建")
+                logger.debug("[ResourceSearch] 文件指纹变化,后台重建")
 
         fresh = ResourceIndex(signature)
         stats = fresh.rebuild()
@@ -200,7 +206,14 @@ class ResourceIndexService:
             self._generation += 1
             self._state = "ready"
             self._error = ""
-        logger.info("[ResourceSearch] 后台索引已发布: %s", stats)
+        logger.info(
+            "[ResourceSearch] 索引就绪: items=%d dirs=%d elapsed=%.3fs "
+            "source=rebuild roots=%d",
+            stats["count"],
+            stats["scanned_dirs"],
+            stats["elapsed_seconds"],
+            len(stats["roots"]),
+        )
 
     def _cache_path(self, roots: Tuple[str, ...]) -> Path:
         encoded = json.dumps(

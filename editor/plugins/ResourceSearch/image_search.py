@@ -160,7 +160,7 @@ class ImageIndex:
                     continue
                 self._items[item["path"]] = (h, item.get("type", ""), item.get("mtime", 0.0))
                 indexed += 1
-        logger.info("以图索引构建完成: indexed=%d, skipped=%d", indexed, skipped)
+        logger.debug("以图索引构建完成: indexed=%d, skipped=%d", indexed, skipped)
         return {"status": "ok", "indexed": indexed, "skipped": skipped}
 
     def _find_preview(self, dir_path: str) -> Optional[str]:

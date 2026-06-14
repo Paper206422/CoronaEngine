@@ -19,6 +19,42 @@ def wait_for(predicate, timeout=5.0):
 
 
 class ResourceIndexSnapshotTests(unittest.TestCase):
+    def test_fingerprint_check_does_not_construct_an_index(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "Asset.fbx").write_bytes(b"mesh")
+
+            with patch.object(
+                ResourceIndex,
+                "__init__",
+                side_effect=AssertionError("unexpected ResourceIndex construction"),
+            ):
+                fingerprint = ResourceIndex.filesystem_fingerprint([str(root)])
+
+            self.assertTrue(fingerprint)
+
+    def test_runtime_editor_and_cache_directories_are_not_indexed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "assets").mkdir()
+            (root / "assets" / "Visible.fbx").write_bytes(b"mesh")
+            (root / "CabbageEditor").mkdir()
+            (root / "CabbageEditor" / "internal.py").write_text(
+                "secret = True",
+                encoding="utf-8",
+            )
+            (root / "cache").mkdir()
+            (root / "cache" / "Generated.obj").write_bytes(b"cache")
+
+            index = ResourceIndex([str(root)])
+            stats = index.rebuild()
+
+            self.assertEqual(1, stats["count"])
+            self.assertEqual(
+                ["Visible"],
+                [item["name"] for item in index.fuzzy("", top_k=10)],
+            )
+
     def test_snapshot_round_trip_preserves_search_data(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
