@@ -729,10 +729,20 @@ class MasterAgent:
             lines.append(f"  • ⚠️ 单次生成上限 {self._scene_max_items} 个，本次先做前 {self._scene_max_items} 个（剩 {truncated} 个可稍后继续）")
         lines.append(f"  • 获取模型：{model_count} 个")
         lines.append(f"  • 导入引擎：{len(imported)} 个")
+        # 15a：shell 外壳建筑独立汇报（它不走家具路径，否则成败不可见）
+        shell_placed = result.get("shell_placed", [])
+        shell_failed = result.get("shell_failed", [])
+        if shell_placed or shell_failed:
+            lines.append(f"  • 外壳建筑：放置 {len(shell_placed)} 个" +
+                         (f"，失败 {len(shell_failed)} 个" if shell_failed else ""))
         if imported:
             lines.append(f"\n✅ 已放入场景：{('、'.join(imported[:10]))}")
+        if shell_placed:
+            lines.append(f"🏛️ 外壳：{('、'.join(shell_placed[:5]))}")
         if failed:
             lines.append(f"⚠️ 未完成：{('、'.join(failed[:8]))}")
+        if shell_failed:
+            lines.append(f"⚠️ 外壳未完成：{('、'.join(shell_failed[:5]))}")
         return "\n".join(lines)
 
     def _gather_compose_text(self, user_text: str, messages: List[str]) -> str:

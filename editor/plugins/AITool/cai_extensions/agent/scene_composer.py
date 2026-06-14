@@ -714,11 +714,22 @@ class SceneComposer:
             logger.info("[SceneComposer] 分离出 %d 个外壳建筑（确定性放置，不进布局LLM）: %s",
                         len(shell_models), [m.get("name") for m in shell_models])
 
+        # 15a：记录哪些 shell 被 decompose 识别出来了（即便模型生成失败也要汇报）。
+        # shell_expected = 应该有的外壳；shell_models = 模型生成成功、待放置的外壳。
+        shell_failed_gen = sorted(shell_names - {(m.get("name") or "").strip()
+                                                 for m in shell_models})
+
         result = self._run_original_workflow(text, furniture, items, do_import,
                                               reviews=reviews)
         result["extracted_count"] = extracted_total
         result["truncated"] = truncated
         result["reviews"] = reviews
+        # shell 汇报：放置成功/失败（_place_shells 写的）+ 模型生成就失败的
+        shell_report = getattr(self, "_shell_report", {"placed": [], "failed": []})
+        result["shell_placed"] = shell_report.get("placed", [])
+        result["shell_failed"] = (shell_report.get("failed", [])
+                                  + [f"{n}: 模型生成失败" for n in shell_failed_gen])
+        result["shell_expected"] = sorted(shell_names)
         return result
 
     def _review_models(self, resolved: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1014,22 +1025,27 @@ class SceneComposer:
         if self._detect_scene_indoor(prompt):
             self._generate_room_box()
 
-    def _place_shells(self, shell_models: List[Dict[str, Any]]) -> None:
+    def _place_shells(self, shell_models: List[Dict[str, Any]]) -> Dict[str, List[str]]:
         """15a：把 shell 建筑模型确定性放置成围合体（不经布局 LLM）。
 
         用生成的建筑模型本身当外壳：居中、落地、按 AABB 缩放到包住对应 shell zone
         的 volume。模型自带入口（如蒙古包门帘），不在它身上 punch 矩形门洞——这正是
         修掉 F5 撕裂的关键（圆壳 + 方盒矩形洞 → 撕裂）。
         几何精度（是否严丝合缝包住、入口朝向）只能 F5 目测，这里给确定性的合理缺省。
+
+        返回 {"placed": [...], "failed": ["名: 原因", ...]}，供 compose 汇报。
+        shell 不进 _run_original_workflow 的家具汇报，必须独立上报，否则成败不可见。
         """
+        report = {"placed": [], "failed": []}
         if not shell_models or self.zone_tree is None:
-            return
+            return report
         import time as _t
         try:
             from CoronaCore.core.managers import scene_manager as _sm
             from CoronaCore.core.entities.actor import Actor
         except ImportError:
-            return
+            report["failed"] = [f"{(m.get('name') or '?')}: 引擎不可用" for m in shell_models]
+            return report
 
         # shell zone 按 asset 名索引（取各自 volume 算缩放）
         shell_zones = {}
@@ -1053,16 +1069,21 @@ class SceneComposer:
             routes = _sm.list_all()
             scene = _sm.get(routes[0]) if routes else None
         if scene is None:
-            return
+            report["failed"] = [f"{(m.get('name') or '?')}: 无可用场景" for m in shell_models]
+            return report
 
         WRAP = 1.25  # 外壳比 volume 略大，内部舒适包住（墙厚占比 + 留白）
         for m in shell_models:
             name = (m.get("name") or "").strip()
             path = m.get("model_path", "")
             if not path:
+                report["failed"].append(f"{name}: 无模型路径")
                 continue
             zone = shell_zones.get(name)
             if zone is None:
+                report["failed"].append(f"{name}: 未匹配到 shell zone（asset 名不一致）")
+                logger.warning("[SceneComposer] 外壳 %s 未匹配 shell zone，shell_zones=%s",
+                               name, list(shell_zones.keys()))
                 continue
             vw, vd, vh = zone.volume.size[0], zone.volume.size[1], zone.volume.size[2]
             scale = [1.0, 1.0, 1.0]
@@ -1086,10 +1107,13 @@ class SceneComposer:
                         pass
                 scene.add_actor(actor)
                 _t.sleep(0.3)
+                report["placed"].append(name)
                 logger.info("[SceneComposer] 外壳(shell)已放置: %s scale=%s",
                             name, [round(s, 2) for s in scale])
             except Exception as e:
+                report["failed"].append(f"{name}: {e}")
                 logger.warning("[SceneComposer] 外壳放置失败 %s: %s", name, e)
+        return report
 
 
     def _run_original_workflow(self, prompt: str, resolved: List[Dict[str, Any]],
@@ -1106,7 +1130,7 @@ class SceneComposer:
         # 15a：shell 建筑确定性放置成围合体（模型路径此时已生成，故在框架之后）。
         shell_models = getattr(self, "_shell_models", None)
         if shell_models:
-            self._place_shells(shell_models)
+            self._shell_report = self._place_shells(shell_models)
 
         extracted = len(all_items)
         model_count = len(resolved)
