@@ -846,10 +846,22 @@ class SceneComposer:
 
         # 15a：shell 建筑（如蒙古包）当围合体不是家具。确保它在生成清单里（缺则补）。
         shell_names = self._collect_shell_assets()
+        # shell 入口引导（通用，不写 if 场景）：让入口与建筑风格一体（毡布门帘/布帘/拱门等
+        # 按建筑类型选），避免生成突兀的独立木门。对蒙古包→门帘、教堂→拱门，由 LLM 按类型判断。
+        # 注：模型生成不可控，prompt 只能引导、不保证每次都听话。
+        _SHELL_ENTRANCE_HINT = ("完整建筑外观，入口与建筑风格一体（蒙古包/帐篷类用毡布门帘或布帘，"
+                                "拱顶建筑用拱门），不要突兀的独立木门")
         for sname in shell_names:
-            if not any((it.get("name") or "").strip() == sname for it in items):
+            matched = [it for it in items if (it.get("name") or "").strip() == sname]
+            if matched:
+                # 已在清单（用户说了"蒙古包"）→ 追加入口引导到现有关键词
+                for it in matched:
+                    kw = (it.get("keywords") or "").strip()
+                    it["keywords"] = (kw + ", " if kw else "") + _SHELL_ENTRANCE_HINT
+            else:
+                # 不在清单 → 补进来
                 items.insert(0, {"name": sname, "quantity": 1,
-                                 "keywords": f"{sname}, building exterior, architectural model"})
+                                 "keywords": f"{sname}, building exterior, {_SHELL_ENTRANCE_HINT}"})
 
         extracted_total = len(items)
         truncated = 0
