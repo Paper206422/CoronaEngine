@@ -1095,13 +1095,16 @@ class SceneComposer:
             from ..data_model.zone_tree import TerrainProfile
             profile = TerrainProfile(type="rolling", amplitude=0.8, frequency=0.35, seed=7)
 
-        # 平台半径：内嵌 shell/box 子 zone 的 footprint × 1.5（无子 zone → 无平台，纯地形）
+        # 平台半径：内嵌 shell/box 子 zone 的 footprint × 2.2（B 方案：宁大勿小，给足余量，
+        # 保证 shell 真实脚印一定装得下；放 shell 时再夹回这个平台）。无子 zone → 无平台。
         platform_radius = 0.0
         for sub in getattr(zone, "sub_zones", []) or []:
             if (getattr(sub, "enclosure", "") or "") in ("shell", "box"):
                 sw = sub.volume.size[0] if sub.volume.size else 4.0
                 sd = sub.volume.size[1] if len(sub.volume.size) > 1 else 4.0
-                platform_radius = max(platform_radius, max(sw, sd) / 2.0 * 1.5)
+                platform_radius = max(platform_radius, max(sw, sd) / 2.0 * 2.2)
+        # 锚定链-2：存平台半径，供 _place_shells 夹回 + _generate_interior_floor 派生用。
+        self._platform_radius = platform_radius
 
         tmp_dir = _os.path.join(_tf.gettempdir(), "corona_room_box")
         _os.makedirs(tmp_dir, exist_ok=True)
@@ -1183,19 +1186,28 @@ class SceneComposer:
 
 
     def _generate_interior_floor(self, zone) -> None:
-        """M2 步骤 15b：为 shell zone 铺一块内皮地面（interior_skin 的 floor 取值）。
+        """M2 步骤 15b / 锚定链-3：为 shell zone 铺内皮地面（interior_skin 的 floor）。
 
         shell 建筑模型（蒙古包）是实心外观团块，没有可用内表面——进去后地面是黑的、
-        物体悬空（F5 截图2）。这里按 volume 程序生成一块地面（地毯），不靠外壳内表面。
-        关键：内嵌（比 volume 略小 INSCRIBE 倍），避免方地面四角戳穿圆壳墙体。
-        墙/顶暂不补（外壳从内侧已挡住大部分视线）；interior_skin 的 wall/ceiling 后续可扩。
+        物体悬空（F5 截图2）。这里程序生成一块地面（地毯），不靠外壳内表面。
+        锚定链：地毯尺寸**从 shell 真实世界足迹派生**（self._shell_aabb，_place_shells 量得），
+        而非抽象 volume——这是修"地毯与蒙古包不贴合、露天空缝"穿模的关键。
+        无真实足迹时（shell 未放/测量失败）兜底回抽象 volume × INSCRIBE。
         """
         import os as _os, tempfile as _tf, time as _t
 
-        size = zone.volume.size
-        width = size[0] if len(size) > 0 else 4.0
-        depth = size[1] if len(size) > 1 else 4.0
-        INSCRIBE = 0.85  # 内嵌：方地面边长取 volume 的 0.85，四角不戳穿圆壳
+        INSCRIBE = 0.85  # 内嵌：地面比足迹略小，四角不戳穿圆壳
+        # 锚定链：优先用 shell 真实足迹（half_x/half_z → full = 2×half）
+        aabb = getattr(self, "_shell_aabb", {}).get(getattr(zone, "zone_id", ""), None)
+        if aabb and aabb.get("half_x", 0) > 1e-6:
+            width = aabb["half_x"] * 2.0
+            depth = aabb["half_z"] * 2.0
+            logger.info("[SceneComposer] 内皮地面从 shell 真实足迹派生: %.2f×%.2f m", width, depth)
+        else:
+            size = zone.volume.size
+            width = size[0] if len(size) > 0 else 4.0
+            depth = size[1] if len(size) > 1 else 4.0
+            logger.info("[SceneComposer] 内皮地面回退抽象 volume（无真实足迹）: %.2f×%.2f m", width, depth)
 
         # interior_skin 参数化材质（默认地毯暖色；zone.interior_skin 可覆盖）
         floor_mat = "carpet"
@@ -1269,11 +1281,8 @@ class SceneComposer:
             if has_box:
                 # _generate_room_box 内部用 _get_room_zone() 取 indoor 盒并读其门洞
                 self._generate_room_box()
-            # shell zone：不建白盒——建筑模型本身当围合，在 _place_shells 里放置。
-            # 但要补内皮地面（15b）：外壳是实心团块没有可用内表面，进去地面是黑的。
-            for z in zones:
-                if (z.enclosure or "") == "shell":
-                    self._generate_interior_floor(z)
+            # shell zone 的内皮地面（15b）改到 _place_shells 之后铺（锚定链-4）：
+            # 地毯尺寸要从 shell 真实足迹派生，而 shell 此刻还没放、_shell_aabb 还空。
             if not has_box and not has_shell and not has_terrain:
                 # 树里既无 box 又无 shell 又无 terrain（异常）→ 兜底单盒
                 self._generate_room_box()
@@ -1294,6 +1303,10 @@ class SceneComposer:
         shell 不进 _run_original_workflow 的家具汇报，必须独立上报，否则成败不可见。
         """
         report = {"placed": [], "failed": []}
+        # 锚定链-1（任务D）：放置后量真实世界 AABB，存为"内部基准"，供地毯/壁挂/家具派生。
+        # key=zone_id → {half_x, half_z, min_y_world(贴地前), top_y_world}。修穿模根因：
+        # 依赖物从真实测量边界派生，不再各自从抽象 volume × 不同系数算。
+        self._shell_aabb = {}
         if not shell_models or self.zone_tree is None:
             return report
         import time as _t
@@ -1380,15 +1393,52 @@ class SceneComposer:
                         local_sy = (float(size[1]) if (size and len(size) >= 2
                                     and float(size[1]) > 1e-6) else 0.0)
                         # AABB 不含 scale 的判据：缩放 >1 且实测跨度远小于"局部尺寸×scale"
-                        if local_sy > 1e-6 and sy > 1.05 and span_y < local_sy * sy * 0.6:
+                        aabb_has_scale = not (local_sy > 1e-6 and sy > 1.05
+                                              and span_y < local_sy * sy * 0.6)
+                        if not aabb_has_scale:
                             min_y *= sy
                             logger.info("[SceneComposer] 外壳 %s AABB 未含 scale，min_y×%.2f", name, sy)
                         if abs(min_y) > 1e-4:
                             actor.set_position([0.0, -min_y, 0.0], True)
                             logger.info("[SceneComposer] 外壳 %s 贴地修正: 世界底=%.3f → 抬高 %.3f",
                                         name, min_y, -min_y)
+                        # 锚定链-1：存真实世界 footprint（half_x/half_z），供地毯/壁挂/家具派生。
+                        # x/z 与 y 同源：AABB 不含 scale 时乘 scale[0]/scale[2]。
+                        sx_fac = 1.0 if aabb_has_scale else float(scale[0])
+                        sz_fac = 1.0 if aabb_has_scale else float(scale[2])
+                        half_x = abs(float(aabb[3]) - float(aabb[0])) / 2.0 * sx_fac
+                        half_z = abs(float(aabb[5]) - float(aabb[2])) / 2.0 * sz_fac
+                        # 锚定链-2（B 方案）：脚印超出给足平台则夹回——按比例缩小整体 scale，
+                        # 让 shell 真实半径落在平台内（平台外是坡，shell 探出去会一边陷土一边悬空）。
+                        plat_r = getattr(self, "_platform_radius", 0.0) or 0.0
+                        shell_r = max(half_x, half_z)
+                        if plat_r > 1e-6 and shell_r > plat_r:
+                            shrink = (plat_r * 0.95) / shell_r   # 留 5% 余量，不贴平台边缘
+                            scale = [s * shrink for s in scale]
+                            actor.set_scale(scale, True)
+                            # 缩放变了 → 重新贴地（最低点抬回 y=0）
+                            try:
+                                aabb2 = geo.get_aabb()
+                                if aabb2 and len(aabb2) >= 6:
+                                    my = float(aabb2[1])
+                                    if not aabb_has_scale:
+                                        my *= float(scale[1])
+                                    if abs(my) > 1e-4:
+                                        actor.set_position([0.0, -my, 0.0], True)
+                            except Exception:
+                                pass
+                            half_x *= shrink
+                            half_z *= shrink
+                            logger.info("[SceneComposer] 外壳 %s 脚印 %.2f 超平台 %.2f → 夹回 ×%.2f",
+                                        name, shell_r, plat_r, shrink)
+                        self._shell_aabb[zone.zone_id] = {
+                            "half_x": half_x, "half_z": half_z,
+                            "asset": name,
+                        }
+                        logger.info("[SceneComposer] 外壳 %s 真实足迹: half_x=%.2f half_z=%.2f",
+                                    name, half_x, half_z)
                 except Exception as e:
-                    logger.warning("[SceneComposer] 外壳 %s 贴地修正失败（忽略）: %s", name, e)
+                    logger.warning("[SceneComposer] 外壳 %s 贴地/足迹测量失败（忽略）: %s", name, e)
                 mech = getattr(actor, "_mechanics", None)
                 if mech is not None:
                     try:
@@ -1421,6 +1471,12 @@ class SceneComposer:
         shell_models = getattr(self, "_shell_models", None)
         if shell_models:
             self._shell_report = self._place_shells(shell_models)
+        # 锚定链-4：shell 放完、_shell_aabb 已填 → 此刻铺内皮地面，地毯尺寸从真实足迹派生
+        # （而非框架阶段从抽象 volume 估）。这是 terrain→shell→interior_floor 的正确时序。
+        if self.zone_tree is not None and self.zone_tree.root is not None:
+            for z in self.zone_tree.list_all_zones():
+                if (getattr(z, "enclosure", "") or "") == "shell":
+                    self._generate_interior_floor(z)
 
         extracted = len(all_items)
         model_count = len(resolved)
@@ -1511,6 +1567,15 @@ class SceneComposer:
                                    for a in actors if a.get("geometry")}
                         w, d, h = self.room_size[0], self.room_size[1], self.room_size[2]
                         hw, hd, margin = w / 2.0, d / 2.0, 0.15
+                        # 锚定链-5：壁挂物的贴墙半径优先用 shell 真实足迹（_shell_aabb），
+                        # 而非抽象 volume 的 hd——修兽头贴抽象方边界、扎进/飘出真实圆壁的穿模。
+                        # 取最小 shell 内壁半径（圆壳用 min(half_x,half_z)），再内缩 0.15 贴内侧。
+                        shell_wall_r = 0.0
+                        _aabbs = getattr(self, "_shell_aabb", {}) or {}
+                        if _aabbs:
+                            shell_wall_r = min(min(a.get("half_x", 0.0), a.get("half_z", 0.0))
+                                               for a in _aabbs.values())
+                            shell_wall_r = max(0.0, shell_wall_r - 0.15)
 
                         # 第一步：回设 LLM 位置 + 钳制 + 整平（物理全程关）
                         mecha, fixed, clamped, leveled = [], 0, 0, 0
@@ -1531,14 +1596,16 @@ class SceneComposer:
                                         wmech.set_physics_enabled(False)
                                     except Exception:
                                         pass
-                                # 贴后墙（z=+hd），定高 0.55h，多个壁挂物沿 x 错开居中
+                                # 锚定链-5：贴真实 shell 内壁半径（shell_wall_r），无则兜底抽象 hd。
+                                # 定高 0.55h，多个壁挂物沿横向错开、夹在内壁半径内（不扎穿/不飘出）。
+                                wall_r = shell_wall_r if shell_wall_r > 1e-6 else (hd - 0.1)
                                 wx = (wall_hung_n - 0.5) * 0.9 if wall_hung_n > 0 else 0.0
-                                wx = max(-hw + margin, min(hw - margin, wx))
-                                actor.set_position([wx, h * 0.55, hd - 0.1])
+                                wx = max(-wall_r + margin, min(wall_r - margin, wx))
+                                actor.set_position([wx, h * 0.55, wall_r])
                                 actor.set_rotation([0.0, 0.0, 0.0])  # 后墙法向 +Z 朝内
                                 wall_hung_n += 1
-                                logger.info("[SceneComposer] 壁挂物贴墙: %s → (%.1f, %.2f, %.1f)",
-                                            actor_name, wx, h * 0.55, hd - 0.1)
+                                logger.info("[SceneComposer] 壁挂物贴墙: %s → (%.1f, %.2f, %.1f) 壁半径=%.2f",
+                                            actor_name, wx, h * 0.55, wall_r, wall_r)
                                 continue
 
                             mech = getattr(actor, "_mechanics", None)
