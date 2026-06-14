@@ -183,6 +183,73 @@ def _build_terrain_mesh_obj(width: float, depth: float, profile,
     return "\n".join(lines) + "\n"
 
 
+def _hash01(n: int) -> float:
+    """确定性伪随机 [0,1)：fract(sin(n)*K)。不用 random（resume 安全 + 可复现）。"""
+    import math
+    s = math.sin(n * 12.9898 + 78.233) * 43758.5453
+    return s - math.floor(s)
+
+
+def _build_grass_obj(width: float, depth: float, profile, platform_radius: float,
+                     count: int = 160, mtl_lib: str = "grass_blade.mtl") -> str:
+    """散布草簇/花 billboard（M2 步骤 15e：草原的"草和花"材质层）。
+
+    纯函数，确定性散布（hash 自 index，不用 random）。每簇 = 交叉双竖直 quad（billboard），
+    落在平台外（草不长在建筑下）、底部贴 _terrain_height（随坡起伏）。少量(~1/6)用花色。
+    与坡度几何分离：geometry 是 15c-ii 的 terrain mesh，这是叠加的散布层。
+    """
+    import math
+    hw, hd = width / 2.0, depth / 2.0
+    lines = [f"mtllib {mtl_lib}",
+             f"# grass scatter count={count} platform_r={platform_radius:.2f}"]
+    vbase = 0          # 已写顶点数（face 索引用）
+    faces = []
+    placed = 0
+    BLADE_H = 0.35     # 草高
+    BLADE_W = 0.18     # 草宽（半宽）
+    attempts = 0
+    idx = 0
+    while placed < count and attempts < count * 4:
+        attempts += 1
+        idx += 1
+        # 散布位置（确定性 hash）
+        x = (_hash01(idx * 2 + 1) - 0.5) * width
+        z = (_hash01(idx * 2 + 2) - 0.5) * depth
+        # 平台内不长草（建筑脚下留空），留 0.3m 缓冲
+        if math.hypot(x, z) <= platform_radius + 0.3:
+            continue
+        y = _terrain_height(x, z, profile, platform_radius)
+        is_flower = (_hash01(idx * 7 + 3) < 0.16)   # ~16% 是花
+        mat = "flower" if is_flower else "blade"
+        # 交叉双 quad（billboard）：两片竖直面互相垂直，从任意角度都看得见
+        # quad1 沿 X，quad2 沿 Z
+        v = [
+            (x - BLADE_W, y, z), (x + BLADE_W, y, z),
+            (x + BLADE_W, y + BLADE_H, z), (x - BLADE_W, y + BLADE_H, z),
+            (x, y, z - BLADE_W), (x, y, z + BLADE_W),
+            (x, y + BLADE_H, z + BLADE_W), (x, y + BLADE_H, z - BLADE_W),
+        ]
+        lines.append(f"usemtl {mat}")
+        for vx, vy, vz in v:
+            lines.append(f"v {vx:.3f} {vy:.3f} {vz:.3f}")
+        b = vbase
+        # 双面（正反都画，billboard 无背面剔除问题）
+        faces.append((mat, [b+1, b+2, b+3, b+4]))
+        faces.append((mat, [b+4, b+3, b+2, b+1]))
+        faces.append((mat, [b+5, b+6, b+7, b+8]))
+        faces.append((mat, [b+8, b+7, b+6, b+5]))
+        vbase += 8
+        placed += 1
+    # face 行（已按 usemtl 分组写在顶点前，这里统一补 f；OBJ 允许 f 在文件后段）
+    cur_mat = None
+    for mat, quad in faces:
+        if mat != cur_mat:
+            lines.append(f"usemtl {mat}")
+            cur_mat = mat
+        lines.append("f " + " ".join(str(i) for i in quad))
+    return "\n".join(lines) + "\n"
+
+
 # M2 步骤 14b-ii：把任意场景描述分解成一棵 Zone 树。开放性在这一步——
 # LLM 读 prompt 成空间结构，代码不枚举场景类型（不写 if 教堂/if 蒙古包）。
 # 退化：纯室内 → 返回单 box（走旧路径，零回归）；只有真·室内外混合才建两层树。
@@ -1082,6 +1149,37 @@ class SceneComposer:
                         width, depth, getattr(profile, "type", "?"), platform_radius)
         except Exception as e:
             logger.warning("[SceneComposer] 地形创建失败: %s", e)
+
+        # 15e：草/花散布层（terrain 之上叠加 billboard 草簇）。flat 地形不长草。
+        # actor 名用 __terrain_ 前缀（非 __room_，否则 _generate_room_box 的 __room_ 守卫
+        # 会在 terrain+box 混合场景误挡盒子）。
+        if getattr(profile, "type", "flat") != "flat" and "__terrain_grass" not in existing:
+            try:
+                grass_mtl_path = _os.path.join(tmp_dir, "grass_blade.mtl")
+                grass_obj_path = _os.path.join(tmp_dir, "grass_blade.obj")
+                with open(grass_mtl_path, "w", encoding="ascii") as f:
+                    # blade 草绿、flower 暖花色，双面不剔除
+                    f.write("newmtl blade\nKa 0.10 0.22 0.06\nKd 0.30 0.52 0.16\n"
+                            "Ks 0.0 0.0 0.0\nNs 1.0\nd 1.0\n"
+                            "newmtl flower\nKa 0.30 0.10 0.20\nKd 0.85 0.35 0.55\n"
+                            "Ks 0.0 0.0 0.0\nNs 1.0\nd 1.0\n")
+                with open(grass_obj_path, "w", encoding="ascii") as f:
+                    f.write(_build_grass_obj(width, depth, profile, platform_radius, count=160))
+                gactor = Actor(name="__terrain_grass", route=grass_obj_path,
+                               actor_type="mesh", parent_scene=scene)
+                gactor.set_position([0.0, 0.0, 0.0], True)
+                gactor.set_scale([1.0, 1.0, 1.0], True)
+                gmech = getattr(gactor, "_mechanics", None)
+                if gmech is not None:
+                    try:
+                        gmech.set_physics_enabled(False)
+                    except Exception:
+                        pass
+                scene.add_actor(gactor)
+                _t.sleep(0.2)
+                logger.info("[SceneComposer] 草/花散布层已铺设: 160 簇（平台外）")
+            except Exception as e:
+                logger.warning("[SceneComposer] 草/花散布失败（忽略）: %s", e)
 
 
     def _generate_interior_floor(self, zone) -> None:
