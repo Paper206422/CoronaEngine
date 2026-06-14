@@ -787,7 +787,12 @@ class MasterAgent:
         actors_lines = []
         for a in sc.get_actors():
             nm = a.name
-            if nm.startswith("__room_") or nm.startswith("__interior_"):
+            # 基础设施 actor（地形/草原/盒子/内皮地面）不进 AI 编辑列表（选项 B）：
+            # 草原由建筑足迹自动派生（terrain=platform_radius×8），手动改它既歧义
+            # （__room_terrain 地形 mesh + __terrain_grass 草簇是两个 actor）又跟派生冲突。
+            # 用户介入只针对放置物（蒙古包/地毯/家具/壁挂）。
+            if (nm.startswith("__room_") or nm.startswith("__interior_")
+                    or nm.startswith("__terrain_")):
                 continue
             try:
                 pos = [round(v, 2) for v in a.get_position()]
