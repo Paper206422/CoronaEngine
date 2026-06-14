@@ -1149,15 +1149,27 @@ class SceneComposer:
                 actor.set_position([0.0, 0.0, 0.0], True)
                 actor.set_scale(scale, True)
                 # bug 修复(b)：模型 pivot 可能在几何中心 → 放 y=0 会半埋地下。
-                # 缩放后读真实世界 AABB，把最低点抬到 y=0（pivot 无关，底部贴地）。
+                # 缩放后读真实 AABB，把最低点抬到 y=0（pivot 无关，底部贴地）。
+                # 关键：get_aabb() 返回的可能是【未缩放的局部 AABB】（min_y≈-0.38），
+                # 蒙古包放大 ~6 倍后真实底部在 -2.3 → 只抬 0.38 仍穿地 ~1.9m。
+                # 自适应判断：若 AABB 的 y 跨度 ≈ 局部 size_y（远小于缩放后），说明不含
+                # scale，世界底部需乘 scale_y。
                 try:
                     geo = getattr(actor, "_geometry", None)
                     aabb = geo.get_aabb() if geo is not None else None
                     if aabb and len(aabb) >= 6:
                         min_y = float(aabb[1])
+                        span_y = float(aabb[4]) - min_y
+                        sy = float(scale[1])
+                        local_sy = (float(size[1]) if (size and len(size) >= 2
+                                    and float(size[1]) > 1e-6) else 0.0)
+                        # AABB 不含 scale 的判据：缩放 >1 且实测跨度远小于"局部尺寸×scale"
+                        if local_sy > 1e-6 and sy > 1.05 and span_y < local_sy * sy * 0.6:
+                            min_y *= sy
+                            logger.info("[SceneComposer] 外壳 %s AABB 未含 scale，min_y×%.2f", name, sy)
                         if abs(min_y) > 1e-4:
                             actor.set_position([0.0, -min_y, 0.0], True)
-                            logger.info("[SceneComposer] 外壳 %s 贴地修正: min_y=%.3f → 抬高 %.3f",
+                            logger.info("[SceneComposer] 外壳 %s 贴地修正: 世界底=%.3f → 抬高 %.3f",
                                         name, min_y, -min_y)
                 except Exception as e:
                     logger.warning("[SceneComposer] 外壳 %s 贴地修正失败（忽略）: %s", name, e)
