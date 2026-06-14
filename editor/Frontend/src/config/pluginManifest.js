@@ -8,7 +8,6 @@ import Pet from '@/views/tools/Pet.vue';
 import LogView from '@/views/sidebar/LogView.vue';
 import FileManager from '@/views/sidebar/FileManager.vue';
 import ProjectSettings from '@/views/sidebar/ProjectSettings.vue';
-import BlocklyWorkspace from '@/blockly/components/BlocklyWorkspace.vue';
 import AITalkBar from '@/views/sidebar/AITalkBar.vue';
 import EditorSettings from '@/views/sidebar/EditorSettings.vue';
 import NetworkPanel from '@/views/sidebar/Network.vue';
@@ -79,17 +78,6 @@ export const PLUGIN_MANIFEST = [
     defaultHeight: 800,
     autoInit: false,
     component: ProjectSettings,
-  },
-  {
-    id: 'ScratchTool',
-    routePath: '/ScratchTool',
-    displayName: '积木插件',
-    pageType: 'plugin',
-    defaultDock: 'center',
-    defaultWidth: 600,
-    defaultHeight: 500,
-    autoInit: false,
-    component: BlocklyWorkspace,
   },
   {
     id: 'AITalkBar',

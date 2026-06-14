@@ -701,8 +701,24 @@
 
             <!-- 单位 - 积木 -->
             <div v-show="ActiveSubTab === 'Blockly'" class="flex flex-col" style="height: 400px;">
+              <!-- 积木工具栏：新建/打开/保存 -->
+              <div v-if="actorData.name" class="flex items-center gap-0.5 px-1 py-1 bg-[#2a2a2a] border-b border-[#444] shrink-0">
+                <button
+                  class="px-2 py-0.5 text-[11px] text-[#ccc] bg-transparent border border-transparent rounded hover:text-white hover:bg-[#3a3a3a] hover:border-[#555] transition-colors"
+                  @click="actorBlocklyRef?.handleNewCanvas()"
+                >新建</button>
+                <button
+                  class="px-2 py-0.5 text-[11px] text-[#ccc] bg-transparent border border-transparent rounded hover:text-white hover:bg-[#3a3a3a] hover:border-[#555] transition-colors"
+                  @click="actorBlocklyRef?.handleOpenWorkspace()"
+                >打开</button>
+                <button
+                  class="px-2 py-0.5 text-[11px] text-[#ccc] bg-transparent border border-transparent rounded hover:text-white hover:bg-[#3a3a3a] hover:border-[#555] transition-colors"
+                  @click="actorBlocklyRef?.handleSaveWorkspace()"
+                >保存</button>
+              </div>
               <BlocklyWorkspace
                 v-if="actorData.name"
+                ref="actorBlocklyRef"
                 :actorName="actorData.name"
                 :sceneName="actorData.parentScene || sceneData.name"
                 embedded
@@ -1214,8 +1230,24 @@
 
             <!-- 模型 - 积木 -->
             <div v-show="ActiveSubTab === 'Blockly'" class="flex flex-col" style="height: 400px;">
+              <!-- 积木工具栏：新建/打开/保存 -->
+              <div v-if="modelData.name" class="flex items-center gap-0.5 px-1 py-1 bg-[#2a2a2a] border-b border-[#444] shrink-0">
+                <button
+                  class="px-2 py-0.5 text-[11px] text-[#ccc] bg-transparent border border-transparent rounded hover:text-white hover:bg-[#3a3a3a] hover:border-[#555] transition-colors"
+                  @click="modelBlocklyRef?.handleNewCanvas()"
+                >新建</button>
+                <button
+                  class="px-2 py-0.5 text-[11px] text-[#ccc] bg-transparent border border-transparent rounded hover:text-white hover:bg-[#3a3a3a] hover:border-[#555] transition-colors"
+                  @click="modelBlocklyRef?.handleOpenWorkspace()"
+                >打开</button>
+                <button
+                  class="px-2 py-0.5 text-[11px] text-[#ccc] bg-transparent border border-transparent rounded hover:text-white hover:bg-[#3a3a3a] hover:border-[#555] transition-colors"
+                  @click="modelBlocklyRef?.handleSaveWorkspace()"
+                >保存</button>
+              </div>
               <BlocklyWorkspace
                 v-if="modelData.name"
+                ref="modelBlocklyRef"
                 :actorName="modelData.name"
                 :sceneName="modelData.targetScene || sceneData.name"
                 embedded
@@ -1281,6 +1313,10 @@ const modelTabs = [
   { id: 'Model', label: '模型' },
   { id: 'Blockly', label: '积木' },
 ];
+
+// ========== Blockly 工作区引用 ==========
+const actorBlocklyRef = ref(null);
+const modelBlocklyRef = ref(null);
 
 // ========== 时间轴状态 ==========
 const timelineRulerRef = ref(null);

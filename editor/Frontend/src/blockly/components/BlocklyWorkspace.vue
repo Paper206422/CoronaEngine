@@ -11,7 +11,7 @@
       @close="handleClose"
     />
 
-    <Navigat v-if="!embedded" @new-canvas="handleNewCanvas" />
+    <!-- 导航栏已迁移至物体属性面板的积木标签页 -->
 
     <!-- 工作区工具栏（始终可见，不遮挡任何内容） -->
     <div
@@ -170,7 +170,6 @@ import { scriptingService } from '@/utils/bridge.js';
 
 const { closePanel: closeDockPanel, isDocked } = useDockPanel();
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
-import Navigat from './Navigat.vue';
 import Search from './Search.vue';
 import Zoom from './Zoom.vue';
 import Trashcan from './Trashcan.vue';
@@ -261,7 +260,7 @@ function setupCefFieldInputFix() {
     }
 
     // 特殊功能键：先聚焦到输入框，让 Blockly 的内部处理器接管
-    if (['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape', 'Enter', 'Tab'].includes(e.key)) {
+    if (['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter', 'Tab'].includes(e.key)) {
       htmlInput.focus();
     }
   };
@@ -1240,6 +1239,94 @@ function handleNewCanvas() {
   saveCurrentWorkspace();
 }
 
+/**
+ * 保存工作区：将当前积木序列化为 .blockly 文件并下载
+ */
+async function handleSaveWorkspace() {
+  if (!workspace || !BlocklyLib) return;
+  const data = BlocklyLib.serialization.workspaces.save(workspace);
+  const jsonStr = JSON.stringify(data, null, 2);
+  const blob = new Blob([jsonStr], { type: 'application/json' });
+
+  const actorLabel = props.embedded
+    ? (props.actorName || 'unknown')
+    : (currentActorName.value || 'unknown');
+  const suggestedName = `blockly_${actorLabel}_${Date.now()}.blockly`;
+
+  if (window.showSaveFilePicker) {
+    try {
+      const opts = {
+        types: [{ description: 'Blockly 项目文件', accept: { 'application/json': ['.blockly'] } }],
+        suggestedName,
+      };
+      const handle = await window.showSaveFilePicker(opts);
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+    } catch (e) {
+      // 用户取消或其他错误，静默
+    }
+  } else {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = suggestedName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    setTimeout(() => URL.revokeObjectURL(url), 150);
+  }
+}
+
+/**
+ * 打开工作区：从 .blockly 文件加载积木到当前工作区
+ */
+function handleOpenWorkspace() {
+  if (!workspace || !BlocklyLib) return;
+  const input = document.createElement('input');
+  input.setAttribute('type', 'file');
+  input.setAttribute('accept', '.blockly');
+  input.addEventListener('change', function () {
+    const file = this.files[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.blockly')) {
+      alert('仅支持 .blockly 格式的文件');
+      return;
+    }
+    const reader = new FileReader();
+    reader.addEventListener('load', function () {
+      let text = this.result;
+      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch (e) {
+        console.error('[Blockly] JSON 解析失败：', e, '文件内容前100字符：', text.slice(0, 100));
+        alert('文件格式不正确，无法解析 JSON：' + (e.message || ''));
+        return;
+      }
+
+      if (!json || typeof json !== 'object') {
+        alert('文件格式不正确：JSON 根节点必须是对象');
+        return;
+      }
+
+      try {
+        BlocklyLib.serialization.workspaces.load(json, workspace);
+      } catch (e) {
+        console.error('[Blockly] 工作区加载失败：', e);
+        alert('工作区加载失败：' + (e.message || '未知错误'));
+      }
+    });
+    reader.addEventListener('error', function () {
+      alert('文件读取失败，请确认文件未损坏');
+    });
+    reader.readAsText(file, 'UTF-8');
+  });
+  input.click();
+}
+
 const handleWindowResize = () => resizeBlockly();
 
 let resizeObserver = null;
@@ -1312,7 +1399,12 @@ onUnmounted(() => {
   generatedCode.value = '';
 });
 
-defineExpose({ resize: resizeBlockly });
+defineExpose({
+  resize: resizeBlockly,
+  handleNewCanvas,
+  handleSaveWorkspace,
+  handleOpenWorkspace,
+});
 </script>
 
 <style scoped>
