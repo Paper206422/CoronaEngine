@@ -748,34 +748,30 @@ class MasterAgent:
 
     # ── 场景指令 ──────────────────────────────────────────────────
 
-    _EDIT_SYSTEM_PROMPT = """你是 3D 场景编辑指令解析器。根据用户的话和【当前场景物体列表】，输出一条结构化编辑指令。
+    _EDIT_EXEC_SYSTEM_PROMPT = """你是 3D 场景编辑执行助手。你拥有直接操作引擎场景的工具（移动/缩放/旋转/删除物体），\
+必须【实际调用工具完成操作】，不要只回复文字。
 
-当前场景物体（actor 真实名字，含坐标）：
+当前场景里可编辑的物体（这些是引擎里的真实 actor 名字，调工具时必须用这些名字）：
 {actors}
 
-输出 JSON：
-{{
-  "target": "从上面列表里选一个 actor 真实名字（用户说'蒙古包'你要选 '__shell_蒙古包'）",
-  "op": "move" | "scale" | "rotate" | "delete",
-  "move_delta": [dx, dy, dz],     // op=move：在【当前位置基础上】的相对位移（米）。"y轴向上移动2"→[0,2,0]，"往左1米"→[-1,0,0]
-  "scale_factor": 倍数,            // op=scale：相对当前缩放的【倍数】。"放大3倍"→3.0，"缩小一半"→0.5，"变小"→0.7，"变大"→1.5
-  "rotate_delta": [rx, ry, rz]    // op=rotate：相对当前旋转的角度增量（度）。"转90度"→[0,90,0]
-}}
-
-规则：
-- 坐标系：X+右 / Y+上 / Z+屏幕内侧。
-- target 必须精确等于列表里某个名字；选不出最接近的一个。
-- 只填与 op 对应的那个字段，其余可省略。
-- "放大/缩小/变大/变小/调大/调小" = scale；"移动/挪/往X" = move；"旋转/转" = rotate；"删除/去掉" = delete。
-只输出 JSON。"""
+执行规则：
+- 用户说的物体名可能是简称：用户说"蒙古包"，实际 actor 名是 "__shell_蒙古包"——调工具时用真实名字。
+- 相对量要基于物体【当前 transform】（上面列出了）计算出绝对目标值再调工具：
+  * "放大3倍"=当前 scale 各分量 ×3；"缩小一半"=×0.5；"变大"≈×1.5；"变小"≈×0.7
+  * "y轴向上移动2"=当前 pos 的 y +2；"往左1米"=x -1（坐标系 X+右/Y+上/Z+屏幕内）
+  * "旋转90度"=当前 rot 的 y +90（度）
+- 设置绝对变换用 set_actor_transform（传 actor 真实名 + position/rotation/scale）；删除用对应删除工具。
+- 完成后用一句中文确认你做了什么（含物体名和新数值）。"""
 
     def _handle_edit(self, user_text: str, messages: List[str]) -> str:
-        """专用编辑路径：读引擎 actor 当前 transform + LLM 解析相对量 → 算绝对目标 → 改引擎。
+        """编辑已有物体（增删改移缩放）→ 委托菜包 agentic 通道执行。
 
-        绕开 _handle_scene/coordinator（那条为 add 新物体设计，move/scale 会崩 + 丢失相对量）。
+        菜包通道（_cai_app.chat → handle_integrated_entrance_stream → stream_agent）是
+        验证过的 agentic 工具循环，引擎工具（set_actor_transform/remove_model 等）已全
+        注册进它的 ToolRegistry。这里只负责：① 给它真实 actor 列表（解决 __shell_ 名字
+        映射）；② 用【执行框架】prompt（而非聊天人设）让它真去调工具，不退化成闲聊。
         """
-        import json as _json
-        # 1. 取场景 + 真实 actor 列表（含 __shell_，排除 __room_ 基础设施）
+        # 1. 取真实 actor 列表（含 __shell_，排除 __room_/__interior_ 基础设施）
         try:
             from CoronaCore.core.managers import scene_manager
             sc = scene_manager.get("")
@@ -788,136 +784,27 @@ class MasterAgent:
         if sc is None:
             return "⚠️ 当前没有可编辑的场景，请先生成一个场景。"
 
-        actors = {}
+        actors_lines = []
         for a in sc.get_actors():
             nm = a.name
             if nm.startswith("__room_") or nm.startswith("__interior_"):
-                continue  # 地面/盒子等基础设施不可编辑
+                continue
             try:
-                actors[nm] = {"pos": list(a.get_position()),
-                              "scale": list(a.get_scale()),
-                              "rot": list(a.get_rotation())}
+                pos = [round(v, 2) for v in a.get_position()]
+                scl = [round(v, 2) for v in a.get_scale()]
+                rot = [round(v, 1) for v in a.get_rotation()]
+                actors_lines.append(f"  - {nm}: pos={pos} scale={scl} rot={rot}")
             except Exception:
-                actors[nm] = {"pos": [0, 0, 0], "scale": [1, 1, 1], "rot": [0, 0, 0]}
-        if not actors:
+                actors_lines.append(f"  - {nm}")
+        if not actors_lines:
             return "⚠️ 场景里没有可编辑的物体。"
 
-        # 2. LLM 解析编辑指令（看真实物体列表，自己映射名字 + 相对量）
-        actors_text = "\n".join(
-            f"  - {nm}: pos={[round(v,2) for v in d['pos']]} scale={[round(v,2) for v in d['scale']]}"
-            for nm, d in actors.items())
-        edit = self._llm_parse_edit(user_text, actors_text)
-        if not edit:
-            return "🤔 没太理解要怎么调整，换个说法试试？比如「把蒙古包放大2倍」「矮桌往左移1米」。"
-
-        target = edit.get("target", "")
-        if target not in actors:
-            # LLM 没给精确名 → 模糊匹配（含子串）
-            cands = [nm for nm in actors if target and (target in nm or nm in target)]
-            if not cands and target:
-                bare = target.replace("__shell_", "")
-                cands = [nm for nm in actors if bare and bare in nm]
-            target = cands[0] if cands else ""
-        if not target:
-            return f"🤔 没在场景里找到要调整的物体。当前有：{('、'.join(n.replace('__shell_','') for n in actors))}"
-
-        op = edit.get("op", "")
-        cur = actors[target]
-        disp = target.replace("__shell_", "")
-
-        # 3. 算绝对目标值（相对量叠加到当前 transform）
-        try:
-            if op == "delete":
-                from ..flows.scene_composition_workflow.helpers import get_tool
-                tool = get_tool("remove_model")
-                if tool:
-                    tool.invoke({"actor_name": target})
-                    return f"[场景设计大师] ✅ 已删除「{disp}」"
-                sc.find_actor(target) and sc.remove_actor(target)
-                return f"[场景设计大师] ✅ 已删除「{disp}」"
-
-            new_pos = new_rot = new_scale = None
-            if op == "move":
-                d = edit.get("move_delta", [0, 0, 0]) or [0, 0, 0]
-                new_pos = [cur["pos"][i] + float(d[i] if i < len(d) else 0) for i in range(3)]
-            elif op == "scale":
-                f = float(edit.get("scale_factor", 1.0) or 1.0)
-                new_scale = [cur["scale"][i] * f for i in range(3)]
-            elif op == "rotate":
-                d = edit.get("rotate_delta", [0, 0, 0]) or [0, 0, 0]
-                new_rot = [cur["rot"][i] + float(d[i] if i < len(d) else 0) for i in range(3)]
-            else:
-                return f"🤔 暂不支持的操作「{op}」。"
-
-            # 4. 应用（set_actor_transform 同步 scene.json；用 actor 真实名）
-            from ..flows.scene_composition_workflow.helpers import get_tool
-            tool = get_tool("set_actor_transform")
-            applied = False
-            if tool:
-                payload = {"actor_name": target}
-                if new_pos is not None:
-                    payload["position"] = new_pos
-                if new_rot is not None:
-                    payload["rotation"] = new_rot
-                if new_scale is not None:
-                    payload["scale"] = new_scale
-                tool.invoke(payload)
-                applied = True
-            if not applied:
-                actor = sc.find_actor(target)
-                if actor is None:
-                    return f"⚠️ 找不到物体「{disp}」。"
-                if new_pos is not None:
-                    actor.set_position(new_pos)
-                if new_rot is not None:
-                    actor.set_rotation(new_rot)
-                if new_scale is not None:
-                    actor.set_scale(new_scale)
-
-            if op == "move":
-                return f"[场景设计大师] ✅ 已移动「{disp}」到 ({new_pos[0]:.1f}, {new_pos[1]:.1f}, {new_pos[2]:.1f})"
-            if op == "scale":
-                return f"[场景设计大师] ✅ 已把「{disp}」缩放为原来的 {edit.get('scale_factor')} 倍（scale={[round(v,2) for v in new_scale]}）"
-            if op == "rotate":
-                return f"[场景设计大师] ✅ 已旋转「{disp}」（rot={[round(v,1) for v in new_rot]}）"
-        except Exception as e:
-            logger.exception("[MasterAgent] edit 执行失败: %s", e)
-            return f"⚠️ 调整「{disp}」时出错：{e}"
-        return f"[场景设计大师] ✅ 已调整「{disp}」"
-
-    def _llm_parse_edit(self, user_text: str, actors_text: str) -> Optional[Dict[str, Any]]:
-        """LLM 把编辑指令解析成 {target, op, move_delta/scale_factor/rotate_delta}。失败返回 None。"""
-        import json as _json
-        try:
-            from concurrent.futures import ThreadPoolExecutor
-            from langchain_core.messages import HumanMessage, SystemMessage
-            from Quasar.ai_models.base_pool.registry import get_chat_model
-
-            sys_prompt = self._EDIT_SYSTEM_PROMPT.format(actors=actors_text)
-
-            def _do():
-                model = get_chat_model(temperature=0, request_timeout=18.0)
-                return model.invoke([SystemMessage(content=sys_prompt),
-                                     HumanMessage(content=user_text.strip()[:300])])
-
-            ex = ThreadPoolExecutor(max_workers=1)
-            try:
-                resp = ex.submit(_do).result(timeout=20.0)
-            finally:
-                ex.shutdown(wait=False)
-            raw = (resp.content if hasattr(resp, "content") else str(resp)).strip()
-            if "```" in raw:
-                s = raw.find("{"); e = raw.rfind("}")
-                if s != -1 and e != -1:
-                    raw = raw[s:e + 1]
-            data = _json.loads(raw)
-            if isinstance(data, dict) and data.get("op"):
-                logger.info("[MasterAgent] edit 解析: %s", data)
-                return data
-            return None
-        except Exception as e:
-            logger.warning("[MasterAgent] edit 解析失败: %s", e)
-            return None
+        # 2. 用执行框架 prompt 委托菜包 agentic 通道（它自主调引擎工具）
+        actors_text = "\n".join(actors_lines)
+        system = self._EDIT_EXEC_SYSTEM_PROMPT.format(actors=actors_text)
+        logger.info("[MasterAgent] edit → 委托菜包 agentic 通道 (%d 个可编辑物体)", len(actors_lines))
+        reply = self._call_caiapp(system, [f"用户: {user_text}"])
+        return reply or "[场景设计大师] ✅ 已处理你的调整请求。"
 
     def _handle_scene(self, user_text: str, persona: str, messages: List[str],
                       force_compose: bool = False) -> str:
