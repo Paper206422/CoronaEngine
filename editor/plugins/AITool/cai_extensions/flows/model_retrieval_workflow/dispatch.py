@@ -113,8 +113,8 @@ def dispatch_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
         for idx_offset, elem in enumerate(failed_elements, start=len(tasks) + 1):
             name = elem.get("item_name", "")
             image_url = recovered.get(name, "")
+            object_id = normalize_object_id(name, idx_offset)
             if image_url:
-                object_id = normalize_object_id(name, idx_offset)
                 tasks.append(
                     {
                         "item_name": name,
@@ -124,7 +124,23 @@ def dispatch_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
                     }
                 )
             else:
-                logger.warning("[Workflow][dispatch] %s 补偿重试仍失败，跳过", name)
+                # 文生图最终失败 → 降级为文字直生 3D（混元支持 text_to_3d，
+                # 文字/图片二选一）。图片只是可选输入适配层，失败不该让整条链断。
+                # image_url 用 __text_to_3d__: 前缀，generate_single_item 据此切文本模式；
+                # retrieve_single_item 见此前缀会跳过图搜、直接转生成。
+                prompt_text = (elem.get("image_prompt", "") or name).strip()
+                tasks.append(
+                    {
+                        "item_name": name,
+                        "object_id": object_id,
+                        "image_url": f"__text_to_3d__:{prompt_text}",
+                        "image_prompt": prompt_text,
+                    }
+                )
+                logger.info(
+                    "[Workflow][dispatch] %s 文生图失败，降级为文字直生 3D（text_to_3d）",
+                    name,
+                )
 
     if not tasks:
         return {"error": "所有物体均无生成图片，无法进行模型检索"}

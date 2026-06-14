@@ -101,6 +101,18 @@ def retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, An
     if image_prompt:
         result["image_prompt"] = image_prompt
 
+    # text_to_3d 任务（文生图失败降级而来）：image_url 是文字标记，不能拿去图搜，
+    # 直接转 pending_generation，让 generate_single_item 用 text_to_3d 模式接住。
+    if isinstance(image_url, str) and image_url.startswith("__text_to_3d__:"):
+        result.update(
+            {
+                "source": "pending_generation",
+                "search_status": "text_to_3d",
+            }
+        )
+        logger.info("[Workflow][retrieve] %s 文字直生任务，跳过图搜直接转生成", name)
+        return result
+
     if not search_tool:
         result.update(
             {
