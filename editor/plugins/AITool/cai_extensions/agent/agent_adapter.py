@@ -150,6 +150,24 @@ def _llm_is_compose_intent(text: str, timeout: float = 20.0) -> Optional[bool]:
         return None
 
 
+# 内部链路 chunk 判据：菜包 agentic stream 会把工具中间结果（如 remove_model 返回的
+# raw JSON）也当文本 chunk 吐出。这些含内部 actor 名（__room_/__shell_/__terrain_/
+# __interior_）或工具状态键（remaining_actors/removed_actor/status_info/imported），
+# 不能给用户看——只留最终自然语言反馈。
+_INTERNAL_CHUNK_MARKERS = (
+    "__room_", "__shell_", "__terrain_", "__interior_",
+    "remaining_actors", "removed_actor", "imported_actor",
+    '"status":', '"status_info"', "session_id", "error_code",
+)
+
+
+def _is_internal_tool_chunk(chunk) -> bool:
+    """判断一个 stream chunk 是否是内部工具结果（不该暴露给用户）。"""
+    if not isinstance(chunk, str):
+        return False
+    return any(m in chunk for m in _INTERNAL_CHUNK_MARKERS)
+
+
 def is_compose_intent(text: str) -> bool:
     """关键词未命中后，判断是否仍是【整场景生成】意图（开放式）。
 
@@ -1083,7 +1101,15 @@ class MasterAgent:
             text = f"{system}\n\n以下是群聊上下文：\n{convo}\n\n请以你的身份回复最新消息。"
             req = ChatRequest.from_text(text=text, metadata={"skip_conversation_store": True})
             chunks = AITool._cai_app.chat(req)
-            return "".join(chunks).strip()
+            # 只给用户结果反馈，不暴露内部链路：菜包 stream 会把【工具中间结果】也当文本
+            # chunk 吐出来（如 remove_model 返回的 raw JSON，含 __room_/__shell_ 内部 actor 名 +
+            # remaining_actors 内部状态）。过滤掉这些，只留最终自然语言反馈。
+            clean = [c for c in chunks if not _is_internal_tool_chunk(c)]
+            reply = "".join(clean).strip()
+            if reply:
+                return reply
+            # 全被过滤掉（只有工具结果、没自然语言）→ 给个通用成功反馈，不回 raw JSON
+            return "✅ 已完成你的调整。"
         except Exception as e:
             logger.warning("[MasterAgent] CAIApp failed: %s, using fallback_chat", e)
             if self._fallback_chat:
