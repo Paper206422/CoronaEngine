@@ -250,6 +250,84 @@ def _build_grass_obj(width: float, depth: float, profile, platform_radius: float
     return "\n".join(lines) + "\n"
 
 
+def _build_fence_obj(platform_radius: float, gap_center_angle: float = 1.5708,
+                     gap_half_angle: float = 0.5, mtl_lib: str = "fence.mtl") -> str:
+    """环形木栏 dressing（任务D：草原营地边界）。
+
+    纯函数、世界坐标、确定性——跟 terrain/草簇同源，Actor scale=[1,1,1]。
+    平台边缘外一圈木桩 + 两道横档，朝 gap_center_angle（默认 +Z=门那侧）留一段口子
+    （配合 camera 走进蒙古包）。通用：换 dressing 几何即可复用环形散布（拴马桩/经幡等）。
+    """
+    import math
+    R = max(2.0, platform_radius + 1.2)   # 栏在平台外一圈
+    N = 28                                # 木桩总数（含 gap 内被跳过的）
+    POST_H = 1.1                          # 桩高
+    POST_T = 0.06                         # 桩半宽（细方柱）
+    RAIL_T = 0.05                         # 横档半厚
+    RAIL_YS = [0.4, 0.85]                 # 两道横档高度
+    step = 2.0 * math.pi / N
+
+    lines = [f"mtllib {mtl_lib}", "usemtl wood",
+             f"# fence ring R={R:.2f} gap_at={gap_center_angle:.2f} half={gap_half_angle:.2f}"]
+    verts, faces = [], []
+
+    def add_box(cx, cy, cz, hx, hy, hz, dirx=1.0, dirz=0.0):
+        """加一个盒子（中心 c，半尺寸 hx/hy/hz）；dir 为横档朝向（仅横档用，桩用默认）。"""
+        # 桩=轴对齐方柱（dir 默认 +X）；横档=沿 dir 的细长盒，perp 为水平垂向
+        px, pz = -dirz * hz, dirx * hz      # 垂直于 dir 的水平向（厚度方向）
+        lx, lz = dirx * hx, dirz * hx       # 沿 dir 的长度向
+        b = len(verts)
+        for sy in (-hy, hy):
+            verts.append((cx + lx + px, cy + sy, cz + lz + pz))
+            verts.append((cx + lx - px, cy + sy, cz + lz - pz))
+            verts.append((cx - lx - px, cy + sy, cz - lz - pz))
+            verts.append((cx - lx + px, cy + sy, cz - lz + pz))
+        # 6 面（底4 顶4 + 四壁），缠绕一致即可，背景物不严格剔除
+        faces.append([b+1, b+2, b+3, b+4])
+        faces.append([b+8, b+7, b+6, b+5])
+        faces.append([b+1, b+5, b+6, b+2])
+        faces.append([b+2, b+6, b+7, b+3])
+        faces.append([b+3, b+7, b+8, b+4])
+        faces.append([b+4, b+8, b+5, b+1])
+
+    def in_gap(theta):
+        d = abs(((theta - gap_center_angle + math.pi) % (2.0 * math.pi)) - math.pi)
+        return d < gap_half_angle
+
+    kept = []
+    for i in range(N):
+        theta = i * step
+        cx, cz = R * math.cos(theta), R * math.sin(theta)
+        if in_gap(theta):
+            kept.append(None)
+            continue
+        kept.append((cx, cz))
+        add_box(cx, POST_H / 2.0, cz, POST_T, POST_H / 2.0, POST_T)  # 竖桩
+
+    # 横档：相邻保留桩之间各加两道（跨 gap 的不连 → 自然留口）
+    for i in range(N):
+        a = kept[i]
+        nb = kept[(i + 1) % N]
+        if a is None or nb is None:
+            continue
+        ax, az = a
+        bx, bz = nb
+        mx, mz = (ax + bx) / 2.0, (az + bz) / 2.0
+        dx, dz = bx - ax, bz - az
+        seg = math.hypot(dx, dz)
+        if seg < 1e-6:
+            continue
+        ux, uz = dx / seg, dz / seg
+        for ry in RAIL_YS:
+            add_box(mx, ry, mz, seg / 2.0, RAIL_T, RAIL_T, dirx=ux, dirz=uz)
+
+    for vx, vy, vz in verts:
+        lines.append(f"v {vx:.3f} {vy:.3f} {vz:.3f}")
+    for quad in faces:
+        lines.append("f " + " ".join(str(i) for i in quad))
+    return "\n".join(lines) + "\n"
+
+
 # M2 步骤 14b-ii：把任意场景描述分解成一棵 Zone 树。开放性在这一步——
 # LLM 读 prompt 成空间结构，代码不枚举场景类型（不写 if 教堂/if 蒙古包）。
 # 退化：纯室内 → 返回单 box（走旧路径，零回归）；只有真·室内外混合才建两层树。
@@ -1220,6 +1298,39 @@ class SceneComposer:
                 logger.info("[SceneComposer] 草/花散布层已铺设: 160 簇（平台外）")
             except Exception as e:
                 logger.warning("[SceneComposer] 草/花散布失败（忽略）: %s", e)
+
+        # 木栏 dressing（任务D）：有平台（=有主建筑）时，平台外围一圈木栏当营地边界，
+        # 朝 +Z（门洞默认朝向）留口配合 camera 走进建筑。无建筑（纯室外广场）不加栏。
+        # __terrain_ 前缀 → 已在 AI 编辑排除列表（选项 B，环境背景不可手调）。
+        import math as _math
+        if platform_radius > 1e-6 and "__terrain_fence" not in existing:
+            try:
+                fence_mtl_path = _os.path.join(tmp_dir, "fence.mtl")
+                fence_obj_path = _os.path.join(tmp_dir, "fence.obj")
+                with open(fence_mtl_path, "w", encoding="ascii") as f:
+                    # 木色（暖棕），不透明
+                    f.write("newmtl wood\nKa 0.18 0.10 0.05\nKd 0.45 0.28 0.14\n"
+                            "Ks 0.02 0.02 0.02\nNs 4.0\nd 1.0\n")
+                with open(fence_obj_path, "w", encoding="ascii") as f:
+                    # gap 朝 +Z（门洞默认朝向）= 角度 pi/2
+                    f.write(_build_fence_obj(platform_radius,
+                                             gap_center_angle=_math.pi / 2.0,
+                                             gap_half_angle=0.5))
+                factor = Actor(name="__terrain_fence", route=fence_obj_path,
+                               actor_type="mesh", parent_scene=scene)
+                factor.set_position([0.0, 0.0, 0.0], True)
+                factor.set_scale([1.0, 1.0, 1.0], True)
+                fmech = getattr(factor, "_mechanics", None)
+                if fmech is not None:
+                    try:
+                        fmech.set_physics_enabled(False)
+                    except Exception:
+                        pass
+                scene.add_actor(factor)
+                _t.sleep(0.2)
+                logger.info("[SceneComposer] 木栏已铺设: 平台外一圈，门那侧留口")
+            except Exception as e:
+                logger.warning("[SceneComposer] 木栏铺设失败（忽略）: %s", e)
 
 
     def _generate_interior_floor(self, zone) -> None:
