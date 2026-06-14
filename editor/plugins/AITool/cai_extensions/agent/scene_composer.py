@@ -1252,9 +1252,21 @@ class SceneComposer:
         try:
             actor = Actor(name="__room_terrain", route=terrain_path, actor_type="mesh",
                           parent_scene=scene)
-            # mesh 已是世界坐标 → 不缩放（缩放会让高度 h 与 x/z 比例错乱）
-            actor.set_position([0.0, 0.0, 0.0], True)
-            actor.set_scale([1.0, 1.0, 1.0], True)
+            # 引擎把 mesh 归一化成单位盒（max_extent→1）→ 世界大小只认 scale，mesh 真实坐标无效。
+            # 均匀 scale = mesh 真实最大边（width，因 width≫height）→ 还原真实尺寸 + 保持坡度比例。
+            s = max(width, depth)
+            actor.set_scale([s, s, s], True)
+            # 缩放后读 local AABB（仍是 ±0.5 归一化）→ 世界最低点 = aabb_min_y × s，抬到 y=0
+            # （平台是高度场最低点 h=0，抬平台到地面，坡在其上）。自动吸收引擎的居中偏移。
+            min_y = 0.0
+            try:
+                geo = getattr(actor, "_geometry", None)
+                aabb = geo.get_aabb() if geo is not None else None
+                if aabb and len(aabb) >= 6:
+                    min_y = float(aabb[1]) * s
+            except Exception:
+                pass
+            actor.set_position([0.0, -min_y, 0.0], True)
             mech = getattr(actor, "_mechanics", None)
             if mech is not None:
                 try:
@@ -1263,8 +1275,8 @@ class SceneComposer:
                     pass
             scene.add_actor(actor)
             _t.sleep(0.3)
-            logger.info("[SceneComposer] 地形(terrain)已创建: %.1f×%.1f m, type=%s, 平台半径=%.1f",
-                        width, depth, getattr(profile, "type", "?"), platform_radius)
+            logger.info("[SceneComposer] 地形(terrain)已创建: %.1f×%.1f m, type=%s, scale=%.1f, 抬高=%.2f",
+                        width, depth, getattr(profile, "type", "?"), s, -min_y)
         except Exception as e:
             logger.warning("[SceneComposer] 地形创建失败: %s", e)
 
@@ -1285,8 +1297,19 @@ class SceneComposer:
                     f.write(_build_grass_obj(width, depth, profile, platform_radius, count=160))
                 gactor = Actor(name="__terrain_grass", route=grass_obj_path,
                                actor_type="mesh", parent_scene=scene)
-                gactor.set_position([0.0, 0.0, 0.0], True)
-                gactor.set_scale([1.0, 1.0, 1.0], True)
+                # 同 terrain：引擎归一化 mesh 成单位盒 → 世界大小只认 scale。
+                # 均匀 scale = max(width,depth) 还原草簇散布的真实范围（否则压成 1m）。
+                gs = max(width, depth)
+                gactor.set_scale([gs, gs, gs], True)
+                gmin_y = 0.0
+                try:
+                    ggeo = getattr(gactor, "_geometry", None)
+                    gaabb = ggeo.get_aabb() if ggeo is not None else None
+                    if gaabb and len(gaabb) >= 6:
+                        gmin_y = float(gaabb[1]) * gs
+                except Exception:
+                    pass
+                gactor.set_position([0.0, -gmin_y, 0.0], True)
                 gmech = getattr(gactor, "_mechanics", None)
                 if gmech is not None:
                     try:
@@ -1299,38 +1322,83 @@ class SceneComposer:
             except Exception as e:
                 logger.warning("[SceneComposer] 草/花散布失败（忽略）: %s", e)
 
-        # 木栏 dressing（任务D）：有平台（=有主建筑）时，平台外围一圈木栏当营地边界，
-        # 朝 +Z（门洞默认朝向）留口配合 camera 走进建筑。无建筑（纯室外广场）不加栏。
-        # __terrain_ 前缀 → 已在 AI 编辑排除列表（选项 B，环境背景不可手调）。
-        import math as _math
-        if platform_radius > 1e-6 and "__terrain_fence" not in existing:
+
+    def _generate_fence(self) -> None:
+        """木栏 dressing（任务D）：围绕 shell 真实脚印一圈（稍大），门那侧（+Z）留口。
+
+        必须在 _place_shells 之后调——ring 半径从 self._shell_aabb 真实世界足迹派生
+        （锚定链：栏跟随主建筑实测脚印，不再靠平台半径估，才能"比蒙古包稍大一圈"）。
+        引擎归一化 mesh 成单位盒 → 世界大小只认 scale；scale=2*ring_r 还原环径 + 抬地。
+        __terrain_ 前缀 → 已在 AI 编辑排除列表（选项 B，背景环境不可手调）。
+        """
+        import os as _os, tempfile as _tf, time as _t, math as _math
+
+        aabbs = getattr(self, "_shell_aabb", {}) or {}
+        if not aabbs:
+            return
+        shell_r = max(
+            max(a.get("half_x", 0.0), a.get("half_z", 0.0)) for a in aabbs.values()
+        )
+        if shell_r < 1e-6:
+            return
+        ring_r = shell_r * 1.15 + 0.5  # 比蒙古包真实脚印稍大一圈
+
+        try:
+            from CoronaCore.core.managers import scene_manager as _sm
+            from CoronaCore.core.entities.actor import Actor
+        except ImportError:
+            return
+        scene = _sm.get("")
+        if scene is None:
+            routes = _sm.list_all()
+            scene = _sm.get(routes[0]) if routes else None
+        if scene is None:
+            return
+        existing = {a.name for a in scene.get_actors()}
+        if "__terrain_fence" in existing:
+            return
+
+        tmp_dir = _os.path.join(_tf.gettempdir(), "corona_room_box")
+        _os.makedirs(tmp_dir, exist_ok=True)
+        fence_mtl_path = _os.path.join(tmp_dir, "fence.mtl")
+        fence_obj_path = _os.path.join(tmp_dir, "fence.obj")
+        try:
+            with open(fence_mtl_path, "w", encoding="ascii") as f:
+                # 木色（暖棕），不透明
+                f.write("newmtl wood\nKa 0.18 0.10 0.05\nKd 0.45 0.28 0.14\n"
+                        "Ks 0.02 0.02 0.02\nNs 4.0\nd 1.0\n")
+            with open(fence_obj_path, "w", encoding="ascii") as f:
+                # gap 朝 +Z（门洞默认朝向）= 角度 pi/2
+                f.write(_build_fence_obj(ring_r,
+                                         gap_center_angle=_math.pi / 2.0,
+                                         gap_half_angle=0.5))
+            factor = Actor(name="__terrain_fence", route=fence_obj_path,
+                           actor_type="mesh", parent_scene=scene)
+            # 归一化后环径=单位盒 max 边=1 → scale=2*ring_r 让世界环半径=ring_r。
+            s = 2.0 * ring_r
+            factor.set_scale([s, s, s], True)
+            # 缩放后读 local AABB（±0.5）→ 世界最低点=aabb_min_y×s，抬到 y=0 贴地。
+            fmin_y = 0.0
             try:
-                fence_mtl_path = _os.path.join(tmp_dir, "fence.mtl")
-                fence_obj_path = _os.path.join(tmp_dir, "fence.obj")
-                with open(fence_mtl_path, "w", encoding="ascii") as f:
-                    # 木色（暖棕），不透明
-                    f.write("newmtl wood\nKa 0.18 0.10 0.05\nKd 0.45 0.28 0.14\n"
-                            "Ks 0.02 0.02 0.02\nNs 4.0\nd 1.0\n")
-                with open(fence_obj_path, "w", encoding="ascii") as f:
-                    # gap 朝 +Z（门洞默认朝向）= 角度 pi/2
-                    f.write(_build_fence_obj(platform_radius,
-                                             gap_center_angle=_math.pi / 2.0,
-                                             gap_half_angle=0.5))
-                factor = Actor(name="__terrain_fence", route=fence_obj_path,
-                               actor_type="mesh", parent_scene=scene)
-                factor.set_position([0.0, 0.0, 0.0], True)
-                factor.set_scale([1.0, 1.0, 1.0], True)
-                fmech = getattr(factor, "_mechanics", None)
-                if fmech is not None:
-                    try:
-                        fmech.set_physics_enabled(False)
-                    except Exception:
-                        pass
-                scene.add_actor(factor)
-                _t.sleep(0.2)
-                logger.info("[SceneComposer] 木栏已铺设: 平台外一圈，门那侧留口")
-            except Exception as e:
-                logger.warning("[SceneComposer] 木栏铺设失败（忽略）: %s", e)
+                fgeo = getattr(factor, "_geometry", None)
+                faabb = fgeo.get_aabb() if fgeo is not None else None
+                if faabb and len(faabb) >= 6:
+                    fmin_y = float(faabb[1]) * s
+            except Exception:
+                pass
+            factor.set_position([0.0, -fmin_y, 0.0], True)
+            fmech = getattr(factor, "_mechanics", None)
+            if fmech is not None:
+                try:
+                    fmech.set_physics_enabled(False)
+                except Exception:
+                    pass
+            scene.add_actor(factor)
+            _t.sleep(0.2)
+            logger.info("[SceneComposer] 木栏已铺设: 围 shell 脚印 ring_r=%.2f, scale=%.1f, 门那侧留口",
+                        ring_r, s)
+        except Exception as e:
+            logger.warning("[SceneComposer] 木栏铺设失败（忽略）: %s", e)
 
 
     def _generate_interior_floor(self, zone) -> None:
@@ -1625,6 +1693,9 @@ class SceneComposer:
             for z in self.zone_tree.list_all_zones():
                 if (getattr(z, "enclosure", "") or "") == "shell":
                     self._generate_interior_floor(z)
+        # 锚定链-5：shell 放完、_shell_aabb 已填 → 围 shell 真实脚印一圈铺木栏
+        # （比平台估更准，"比蒙古包稍大一圈"）。归一化-感知 scale 修过。
+        self._generate_fence()
 
         extracted = len(all_items)
         model_count = len(resolved)
