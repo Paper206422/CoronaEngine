@@ -302,6 +302,8 @@ namespace Corona::Systems {
 struct OpticsSystem::NativeViewResources {
     HardwareImage visibility;
     HardwareImage depth;
+    HardwareImage ui_visibility;
+    HardwareImage ui_depth;
     std::optional<RasterizerPipeline<visibility_vert_glsl, visibility_frag_glsl>>
         visibility_pipeline;
     uint32_t width = 0;
@@ -403,6 +405,10 @@ void OpticsSystem::bind_native_view_resources(std::uintptr_t camera_handle,
                                              ImageUsage::StorageImage);
         resources.depth = HardwareImage(width, height, ImageFormat::D32_FLOAT,
                                         ImageUsage::DepthImage);
+        resources.ui_visibility = HardwareImage(width, height, ImageFormat::RGBA32_UINT,
+                                                ImageUsage::StorageImage);
+        resources.ui_depth = HardwareImage(width, height, ImageFormat::D32_FLOAT,
+                                           ImageUsage::DepthImage);
         resources.visibility_pipeline.emplace();
         resources.visibility_pipeline->visibilityData = resources.visibility;
         resources.visibility_pipeline->setDepthImage(resources.depth);
@@ -415,10 +421,8 @@ void OpticsSystem::bind_native_view_resources(std::uintptr_t camera_handle,
     hardware_->gbufferSize.y = height;
     hardware_->visibilityImage = resources.visibility;
     hardware_->depthImage = resources.depth;
-    hardware_->uiVisibilityImage = HardwareImage(width, height, ImageFormat::RGBA32_UINT,
-                                                 ImageUsage::StorageImage);
-    hardware_->uiDepthImage = HardwareImage(width, height, ImageFormat::D32_FLOAT,
-                                            ImageUsage::DepthImage);
+    hardware_->uiVisibilityImage = resources.ui_visibility;
+    hardware_->uiDepthImage = resources.ui_depth;
 }
 
 void OpticsSystem::evict_idle_native_view_resources(uint64_t frame_index) {
