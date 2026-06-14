@@ -51,7 +51,7 @@ endfunction()
 # ------------------------------------------------------------------------------
 FetchContent_Declare(Horizon
     GIT_REPOSITORY https://github.com/CoronaEngine/Horizon.git
-    GIT_TAG fix
+    GIT_TAG d947b716cc5e4fe6539f4d1881150b9b6edfc263
     EXCLUDE_FROM_ALL
 )
 
@@ -199,6 +199,11 @@ if(WIN32)
     unset(_corona_existing_tbb_ok)
     unset(_corona_horizon_tbb_dir)
     unset(_corona_horizon_source_dir)
+endif()
+
+if(CORONA_BUILD_VISION)
+    set(HORIZON_BUILD_OCARINA ON CACHE BOOL "" FORCE)
+    set(HORIZON_BUILD_VISION_HOTFIX ON CACHE BOOL "" FORCE)
 endif()
 
 FetchContent_MakeAvailable(Horizon)
