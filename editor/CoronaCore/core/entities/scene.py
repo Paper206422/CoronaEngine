@@ -203,6 +203,18 @@ class Scene:
                 self.file_data['actors'][
                     f'{actor_key}.geometry.scale'] = f"{scale[0]: .2f}, {scale[1]: .2f}, {scale[2]: .2f}"
 
+                # 持久化物理开关，使运行时关掉的物理能存进 .scene、F5 冷重载时读回。
+                # 否则 INI 不带此字段 → 重载默认物理开启 → AI 摆放的物体互相穿插被
+                # 求解器推得东歪西斜（甚至死循环）。只写显式取得到的值，取不到则不写
+                # （保持向后兼容：老场景/无 mechanics 的 actor 行为不变）。
+                if hasattr(actor, 'get_physics_enabled'):
+                    try:
+                        self.file_data['actors'][
+                            f'{actor_key}.mechanics.physics_enabled'] = str(
+                                bool(actor.get_physics_enabled())).lower()
+                    except Exception:
+                        pass
+
         # 脚本数据
         self.file_data['scripts']["path"] = self.script_path
 
@@ -592,5 +604,15 @@ class Scene:
         actor_data["geometry"]["position"] = [float(x.strip()) for x in pos_str.split(',')]
         actor_data["geometry"]["rotation"] = [float(x.strip()) for x in rot_str.split(',')]
         actor_data["geometry"]["scale"] = [float(x.strip()) for x in scale_str.split(',')]
+
+        # 解析持久化的物理开关（与 save_data 写入的 {actor}.mechanics.physics_enabled 对称）。
+        # configparser 值是字符串，"false" 直接 bool() 会变 True（非空串恒真）——必须显式
+        # 比较转成真 bool，再放进 actor_data["mechanics"]，供 Actor._create_components_from_actor_data
+        # 应用。字段缺失则不放该键（向后兼容：老场景行为不变，引擎默认物理开启）。
+        phys_str = actors_section.get(f'{actor_name}.mechanics.physics_enabled', None)
+        if phys_str is not None:
+            actor_data["mechanics"] = {
+                "physics_enabled": str(phys_str).strip().lower() == "true"
+            }
 
         return actor_data
