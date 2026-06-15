@@ -15,9 +15,12 @@ export const createViewportPickController = ({
   retryDelayMs = 60,
   getBridge,
   getCameraBinding,
+  getHitRect,
+  getRenderRect,
   getViewportRect,
   getViewportSize,
   getActorIndex,
+  onPickStart,
   emitActorChange,
   setTimeoutFn = globalThis.setTimeout,
   clearTimeoutFn = globalThis.clearTimeout,
@@ -36,6 +39,32 @@ export const createViewportPickController = ({
       retryTimer = null;
     }
   };
+
+  const normalizeRect = (rect) => {
+    if (!rect) return null;
+    const left = Number(rect.left || 0);
+    const top = Number(rect.top || 0);
+    const width = Number(rect.width || 0);
+    const height = Number(rect.height || 0);
+    if (
+      !Number.isFinite(left) ||
+      !Number.isFinite(top) ||
+      !Number.isFinite(width) ||
+      !Number.isFinite(height) ||
+      width <= 0 ||
+      height <= 0
+    ) {
+      return null;
+    }
+    return { left, top, width, height };
+  };
+
+  const containsClientPoint = (rect, clientX, clientY) =>
+    rect &&
+    clientX >= rect.left &&
+    clientY >= rect.top &&
+    clientX < rect.left + rect.width &&
+    clientY < rect.top + rect.height;
 
   const callFastPick = (bridge, cameraHandle, sceneId, requestId, x, y, width, height) => {
     bridge.pickActor(cameraHandle, sceneId, requestId, x, y, width, height);
@@ -65,19 +94,25 @@ export const createViewportPickController = ({
         return false;
       }
 
-      const viewportRect = overrides.viewportRect || getViewportRect?.();
-      const viewport = viewportRect || overrides.viewport || getViewportSize?.() || {};
-      const left = Number(viewport.left || 0);
-      const top = Number(viewport.top || 0);
-      const width = Number(viewport.width || 0);
-      const height = Number(viewport.height || 0);
-      const x = clientX - left;
-      const y = clientY - top;
+      const hitRect = normalizeRect(
+        overrides.hitRect || overrides.viewportRect || getHitRect?.() || getViewportRect?.()
+      );
+      if (!containsClientPoint(hitRect, clientX, clientY)) {
+        return false;
+      }
+
+      const renderRect = normalizeRect(
+        overrides.renderRect || getRenderRect?.() || overrides.viewport || getViewportSize?.() || hitRect
+      );
+      if (!renderRect) {
+        return false;
+      }
+
+      const x = clientX - renderRect.left;
+      const y = clientY - renderRect.top;
+      const width = renderRect.width;
+      const height = renderRect.height;
       if (
-        !Number.isFinite(width) ||
-        !Number.isFinite(height) ||
-        width <= 0 ||
-        height <= 0 ||
         !Number.isFinite(x) ||
         !Number.isFinite(y) ||
         x < 0 ||
@@ -97,6 +132,7 @@ export const createViewportPickController = ({
       } catch (_) {
         return false;
       }
+      onPickStart?.(requestId);
 
       retryTimer = setTimeoutFn(() => {
         retryTimer = null;
@@ -110,26 +146,46 @@ export const createViewportPickController = ({
         }
       }, retryDelayMs);
 
-      return true;
+      return requestId;
     },
 
     handlePickResult(payload) {
       if (!payload || payload.requestId !== latestRequestId) {
-        return false;
+        return { status: 'stale', payload };
+      }
+
+      if (payload.status === 'pending') {
+        return { status: 'pending', payload };
+      }
+
+      if (payload.status === 'miss') {
+        return { status: 'miss', payload };
+      }
+
+      if (payload.status === 'error') {
+        return { status: 'error', payload };
       }
 
       if (payload.status !== 'success') {
-        return false;
+        return { status: 'error', payload };
       }
 
       const actorHandle = Number(payload.actorHandle || 0);
       const actor = getActorIndex?.().get(actorHandle);
       if (!actor?.name) {
-        return false;
+        return { status: 'unknown', payload };
       }
 
       emitActorChange?.(actor.type || 'actor', payload.sceneId, actor.name);
-      return true;
+      return {
+        status: 'selected',
+        payload,
+        actor: {
+          handle: actorHandle,
+          name: actor.name,
+          type: actor.type || 'actor',
+        },
+      };
     },
   };
 };
