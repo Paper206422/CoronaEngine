@@ -419,8 +419,8 @@ const updateLook = (event) => {
   const forward = normalize(camera.value.forward);
   let yaw = Math.atan2(forward[0], forward[2]);
   let pitch = Math.asin(Math.max(-0.999, Math.min(0.999, forward[1])));
-  yaw -= dx * 0.003;
-  pitch = Math.max(-1.4, Math.min(1.4, pitch + dy * 0.003));
+  yaw += dx * 0.003;
+  pitch = Math.max(-1.4, Math.min(1.4, pitch - dy * 0.003));
   camera.value.forward = [
     Math.sin(yaw) * Math.cos(pitch),
     Math.sin(pitch),

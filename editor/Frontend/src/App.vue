@@ -16,8 +16,21 @@ const centerPanels = computed(() => dockStore.panelsByZone('center'));
 
 let gcTimer = null;
 
+function isEscapeKey(event) {
+  const modifierKeys = new Set([
+    'Shift', 'Control', 'Alt', 'Meta',
+    'ShiftLeft', 'ShiftRight',
+    'ControlLeft', 'ControlRight',
+    'AltLeft', 'AltRight',
+    'MetaLeft', 'MetaRight',
+  ]);
+  if (modifierKeys.has(event.key) || modifierKeys.has(event.code)) return false;
+  return event.key === 'Escape' && (event.code === 'Escape' || event.keyCode === 27 || event.which === 27);
+}
+
 function onGlobalKeyDown(event) {
-  if (event.key === 'Escape' || event.code === 'Escape') {
+  if (event.defaultPrevented) return;
+  if (isEscapeKey(event)) {
     dockStore.togglePanel('EditorSettings');
   }
 }

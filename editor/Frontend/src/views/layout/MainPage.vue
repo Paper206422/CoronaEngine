@@ -1207,12 +1207,12 @@ const handleMouseRotate = (dx, dy) => {
   const worldUp = vec3.normalize(up);
 
   // 水平 yaw
-  const yawRad = (-dx * sensitivity * Math.PI) / 180;
+  const yawRad = (dx * sensitivity * Math.PI) / 180;
   let newFwd = rotateVecAroundAxis(fwd, worldUp, yawRad);
 
   // 垂直 pitch
   const right = vec3.normalize(vec3.cross(newFwd, worldUp));
-  const pitchRad = (dy * sensitivity * Math.PI) / 180;
+  const pitchRad = (-dy * sensitivity * Math.PI) / 180;
   const pitched = rotateVecAroundAxis(newFwd, right, pitchRad);
 
   const dotUp = vec3.dot(vec3.normalize(pitched), worldUp);
