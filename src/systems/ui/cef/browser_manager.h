@@ -114,6 +114,7 @@ class BrowserManager {
 
     // 设置主窗口指针
     void set_main_window(SDL_Window* window) { main_window_ = window; }
+    SDL_Window* main_window() const { return main_window_; }
     void set_tab_drag_regions(int tab_id, const std::vector<DragRegion>& regions);
 
    private:

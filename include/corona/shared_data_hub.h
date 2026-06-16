@@ -142,6 +142,7 @@ struct ActorDevice {
     std::vector<std::uintptr_t> profile_handles;
     std::filesystem::path model_path;  //Actor文件路径，同时作为Actor的唯一标识
     bool follow_camera{false};         // true: render in Optics pass 2 using camera-local orthographic space
+    bool editor_temporary{false};      // true: editor-only actor; renderable but excluded from scene bounds/culling
 };
 
 enum class CameraOutputMode : uint8_t {

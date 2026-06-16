@@ -205,6 +205,8 @@ class Actor {
     [[nodiscard]] std::size_t profile_count() const;
     void set_follow_camera(bool enabled);
     [[nodiscard]] bool get_follow_camera() const;
+    void set_editor_temporary(bool enabled);
+    [[nodiscard]] bool get_editor_temporary() const;
 
     [[nodiscard]] std::uintptr_t get_handle() const;
 

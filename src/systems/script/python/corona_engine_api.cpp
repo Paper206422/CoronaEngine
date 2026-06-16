@@ -1587,6 +1587,33 @@ bool Corona::API::Actor::get_follow_camera() const {
     return false;
 }
 
+void Corona::API::Actor::set_editor_temporary(bool enabled) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Actor::set_editor_temporary] Invalid actor handle");
+        return;
+    }
+
+    if (auto accessor = SharedDataHub::instance().actor_storage().acquire_write(handle_)) {
+        accessor->editor_temporary = enabled;
+    } else {
+        CFW_LOG_ERROR("[Actor::set_editor_temporary] Failed to acquire write access to actor storage");
+    }
+}
+
+bool Corona::API::Actor::get_editor_temporary() const {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Actor::get_editor_temporary] Invalid actor handle");
+        return false;
+    }
+
+    if (auto accessor = SharedDataHub::instance().actor_storage().try_acquire_read(handle_)) {
+        return accessor->editor_temporary;
+    }
+
+    CFW_LOG_ERROR("[Actor::get_editor_temporary] Failed to acquire read access to actor storage");
+    return false;
+}
+
 std::uintptr_t Corona::API::Actor::get_handle() const {
     return handle_;
 }

@@ -384,6 +384,64 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
                 return true;
             }
 
+            if (name == "set3DCursorMode") {
+                if (arguments.size() < 6) {
+                    exception = "set3DCursorMode requires 6 legacy args or 10 rect/start args";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                auto cursor_ctx = CefV8Context::GetCurrentContext();
+                if (!cursor_ctx || !cursor_ctx->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                CefRefPtr<CefProcessMessage> cursor_msg = CefProcessMessage::Create("Set3DCursorMode");
+                CefRefPtr<CefListValue> cursor_args = cursor_msg->GetArgumentList();
+                const auto set_numeric_arg = [&](int index) -> bool {
+                    const auto& arg = arguments[index];
+                    if (!arg) return false;
+                    if (arg->IsInt()) {
+                        cursor_args->SetInt(index, arg->GetIntValue());
+                        return true;
+                    }
+                    if (arg->IsDouble()) {
+                        cursor_args->SetDouble(index, arg->GetDoubleValue());
+                        return true;
+                    }
+                    return false;
+                };
+
+                const bool has_rect_args = arguments.size() >= 10;
+                bool numeric_args_valid =
+                    set_numeric_arg(0) &&
+                    set_numeric_arg(2) &&
+                    set_numeric_arg(4) &&
+                    set_numeric_arg(5);
+                if (has_rect_args) {
+                    numeric_args_valid =
+                        numeric_args_valid &&
+                        set_numeric_arg(6) &&
+                        set_numeric_arg(7) &&
+                        set_numeric_arg(8) &&
+                        set_numeric_arg(9);
+                }
+
+                if (!numeric_args_valid ||
+                    !arguments[1] || !arguments[1]->IsString() ||
+                    !arguments[3] || !arguments[3]->IsBool()) {
+                    exception = "set3DCursorMode: expected (number, string, number, bool, number, number[, number, number, number, number])";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+
+                cursor_args->SetString(1, arguments[1]->GetStringValue());
+                cursor_args->SetBool(3, arguments[3]->GetBoolValue());
+                cursor_ctx->GetFrame()->SendProcessMessage(PID_BROWSER, cursor_msg);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
             if (name != "cameraMove") {
                 return false;
             }
@@ -494,6 +552,8 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
         CefRefPtr<CefV8Value> dock_command = CefV8Value::CreateFunction("dockCommand", handler);
         CefRefPtr<CefV8Value> compute_actor_focus_pose =
             CefV8Value::CreateFunction("computeActorFocusPose", handler);
+        CefRefPtr<CefV8Value> set_3d_cursor_mode =
+            CefV8Value::CreateFunction("set3DCursorMode", handler);
         bridge->SetValue("cameraMove", camera_move, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("actorTransform", actor_transform, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("setProperty", set_property, V8_PROPERTY_ATTRIBUTE_NONE);
@@ -503,6 +563,7 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
         bridge->SetValue("injectInput", inject_input, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("dockCommand", dock_command, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("computeActorFocusPose", compute_actor_focus_pose, V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("set3DCursorMode", set_3d_cursor_mode, V8_PROPERTY_ATTRIBUTE_NONE);
         global->SetValue("coronaBridge", bridge, V8_PROPERTY_ATTRIBUTE_NONE);
 
         std::cout << "[Renderer] V8 context created, cefQuery injected" << std::endl;

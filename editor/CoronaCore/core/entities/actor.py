@@ -493,6 +493,16 @@ class Actor:
             raise RuntimeError("当前 Actor 没有 Geometry")
         return self._geometry.get_scale()
 
+    def set_editor_temporary(self, enabled: bool):
+        if hasattr(self.engine_obj, 'set_editor_temporary'):
+            self.engine_obj.set_editor_temporary(bool(enabled))
+        self._editor_temporary = bool(enabled)
+
+    def get_editor_temporary(self) -> bool:
+        if hasattr(self.engine_obj, 'get_editor_temporary'):
+            return bool(self.engine_obj.get_editor_temporary())
+        return bool(getattr(self, '_editor_temporary', False))
+
     def set_visible(self, visible: bool):
         if not hasattr(self, '_optics'):
             raise RuntimeError("当前 Actor 没有 Optics")

@@ -4,6 +4,8 @@
 
 #include <cmath>
 
+#include "cursor_3d_manager.h"
+
 namespace Corona::Systems::UI {
 
 // ============================================================================
@@ -322,6 +324,15 @@ EventProcessResult SDLEventHandler::process_events(
 
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+            Cursor3DManager::instance().handle_window_focus_lost(window, event.window.windowID);
+        }
+
+        if (event.type == SDL_EVENT_MOUSE_MOTION &&
+            Cursor3DManager::instance().handle_mouse_motion(event)) {
+            continue;
+        }
+
         if (is_input_method_switch(event)) {
             ImGui_ImplSDL3_ProcessEvent(&event);
             continue;
@@ -348,6 +359,7 @@ EventProcessResult SDLEventHandler::process_events(
 
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
                 if (event.window.windowID == SDL_GetWindowID(window)) {
+                    Cursor3DManager::instance().force_disable();
                     result.should_quit = true;
                 }
                 break;

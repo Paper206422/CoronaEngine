@@ -21,6 +21,7 @@
 
 #include "browser_manager.h"
 #include "cef_client.h"
+#include "cursor_3d_manager.h"
 
 namespace Corona::Systems::UI {
 
@@ -1456,6 +1457,89 @@ bool handle_actor_gizmo_drag(const CefRefPtr<CefFrame>& frame,
     return true;
 }
 
+bool handle_set_3d_cursor_mode(const CefRefPtr<CefProcessMessage>& message) {
+    auto args = message->GetArgumentList();
+    if (!args || args->GetSize() < 6) {
+        CFW_LOG_WARNING("Set3DCursorMode dropped: expected at least 6 args");
+        return true;
+    }
+
+    const auto read_number = [&](int index, double& out) -> bool {
+        const auto type = args->GetType(index);
+        if (type == VTYPE_INT) {
+            out = static_cast<double>(args->GetInt(index));
+            return true;
+        }
+        if (type == VTYPE_DOUBLE) {
+            out = args->GetDouble(index);
+            return true;
+        }
+        return false;
+    };
+
+    double camera_value = 0.0;
+    double actor_value = 0.0;
+    double viewport_x = 0.0;
+    double viewport_y = 0.0;
+    double viewport_width = 0.0;
+    double viewport_height = 0.0;
+    if (!read_number(0, camera_value) ||
+        args->GetType(1) != VTYPE_STRING ||
+        !read_number(2, actor_value)) {
+        CFW_LOG_WARNING("Set3DCursorMode dropped: invalid argument types");
+        return true;
+    }
+
+    double start_x = 0.0;
+    double start_y = 0.0;
+    if (args->GetSize() >= 10) {
+        if (!read_number(4, viewport_x) ||
+            !read_number(5, viewport_y) ||
+            !read_number(6, viewport_width) ||
+            !read_number(7, viewport_height) ||
+            !read_number(8, start_x) ||
+            !read_number(9, start_y)) {
+            CFW_LOG_WARNING("Set3DCursorMode dropped: invalid viewport rect/start argument types");
+            return true;
+        }
+    } else {
+        if (!read_number(4, viewport_width) ||
+            !read_number(5, viewport_height)) {
+            CFW_LOG_WARNING("Set3DCursorMode dropped: invalid legacy viewport size argument types");
+            return true;
+        }
+        start_x = viewport_width * 0.5;
+        start_y = viewport_height * 0.5;
+    }
+
+    bool enabled = false;
+    const auto enabled_type = args->GetType(3);
+    if (enabled_type == VTYPE_BOOL) {
+        enabled = args->GetBool(3);
+    } else if (enabled_type == VTYPE_INT) {
+        enabled = args->GetInt(3) != 0;
+    } else if (enabled_type == VTYPE_DOUBLE) {
+        enabled = args->GetDouble(3) != 0.0;
+    } else {
+        CFW_LOG_WARNING("Set3DCursorMode dropped: enabled must be bool/number");
+        return true;
+    }
+
+    Cursor3DManager::instance().set_mode(
+        BrowserManager::instance().main_window(),
+        static_cast<std::uintptr_t>(camera_value),
+        args->GetString(1),
+        static_cast<std::uintptr_t>(actor_value),
+        enabled,
+        viewport_x,
+        viewport_y,
+        viewport_width,
+        viewport_height,
+        start_x,
+        start_y);
+    return true;
+}
+
 bool handle_property_fast(const CefRefPtr<CefProcessMessage>& message) {
     auto args = message->GetArgumentList();
     if (!args || args->GetSize() < 3) {
@@ -2256,6 +2340,10 @@ bool handle_realtime_process_message(CefRefPtr<CefBrowser> browser,
 
     if (message->GetName() == "ActorTransformFast") {
         return handle_actor_transform_fast(message);
+    }
+
+    if (message->GetName() == "Set3DCursorMode") {
+        return handle_set_3d_cursor_mode(message);
     }
 
     if (message->GetName() == "PropertyFast") {

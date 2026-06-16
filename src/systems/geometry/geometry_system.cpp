@@ -27,6 +27,33 @@ namespace Corona::Systems {
 
 using namespace GeometryInternal;
 
+namespace {
+
+bool is_editor_temporary_actor(SharedDataHub& hub, std::uintptr_t actor_handle) {
+    if (actor_handle == 0) {
+        return false;
+    }
+    if (auto actor = hub.actor_storage().try_acquire_read(actor_handle)) {
+        return actor->editor_temporary;
+    }
+    return false;
+}
+
+std::vector<std::uintptr_t> filter_spatial_actor_handles(
+    SharedDataHub& hub,
+    const std::vector<std::uintptr_t>& actor_handles) {
+    std::vector<std::uintptr_t> filtered;
+    filtered.reserve(actor_handles.size());
+    for (const auto actor_handle : actor_handles) {
+        if (!is_editor_temporary_actor(hub, actor_handle)) {
+            filtered.push_back(actor_handle);
+        }
+    }
+    return filtered;
+}
+
+}  // namespace
+
 // ============================================================================
 // 生命周期
 // ============================================================================
@@ -91,6 +118,7 @@ void GeometrySystem::update() {
             actor_handles = scene_read->actor_handles;
             camera_handles = scene_read->camera_handles;
         }
+        actor_handles = filter_spatial_actor_handles(hub, actor_handles);
 
         std::vector<typename Spatial::Octree<Impl::Payload>::Entry> octree_entries;
         std::unordered_set<Impl::Payload> added_actors;

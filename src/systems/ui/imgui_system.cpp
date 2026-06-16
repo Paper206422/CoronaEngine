@@ -11,6 +11,7 @@
 
 #include "cef/browser_manager.h"
 #include "cef/cef_client.h"
+#include "cursor_3d_manager.h"
 #include "imgui/imgui_ui.h"
 
 namespace Corona::Systems {
@@ -118,6 +119,7 @@ void ImguiSystem::shutdown() {
     // 清理 SDL 和 ImGui (必须在主线程)
     if (sdl_initialized_) {
         CFW_LOG_INFO("ImGuiSystem: Shutting down SDL and ImGui...");
+        UI::Cursor3DManager::instance().force_disable();
         UI::shutdown_sdl_imgui(window_, io_, vulkan_backend_);
         sdl_initialized_ = false;
     }

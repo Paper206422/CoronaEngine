@@ -1,6 +1,7 @@
 import json
 import math
 import os
+from pathlib import Path
 
 from CoronaCore.core.components import Optics
 from CoronaCore.core.corona_editor import CoronaEditor
@@ -45,6 +46,90 @@ class SceneTools(PluginBase):
         文件传输完成后由 C++ CEF bridge 调用此方法。"""
         return SceneTools._create_actor_impl(scene_name, asset_path, actor_type, actor_data,
                                              notify_frontend=False)
+
+    @staticmethod
+    def ensure_3d_cursor_actor(scene_name: str) -> dict:
+        scene = scene_manager.get(scene_name)
+        if scene is None:
+            try:
+                scene = scene_manager.get_or_create(scene_name)
+            except Exception as exc:
+                logger.error("ensure_3d_cursor_actor: 场景 '%s' 不存在且无法创建: %s", scene_name, exc)
+                return {"status": "error",
+                        "message": f"Scene '{scene_name}' not found",
+                        "code": "scene_not_found"}
+        if scene is None:
+            return {"status": "error",
+                    "message": f"Scene '{scene_name}' not found",
+                    "code": "scene_not_found"}
+
+        existing = getattr(scene, "_editor_3d_cursor_actor", None)
+        if existing is not None:
+            try:
+                if hasattr(existing, "set_editor_temporary"):
+                    existing.set_editor_temporary(True)
+                existing.set_visible(False)
+                existing.set_physics_enabled(False)
+                existing.set_collision_enabled("none")
+            except Exception:
+                logger.exception("ensure_3d_cursor_actor: 重置已有临时光标状态失败")
+            return {
+                "status": "success",
+                "actorHandle": int(getattr(existing, "handle", 0) or 0),
+                "cursor": {
+                    "actorHandle": int(getattr(existing, "handle", 0) or 0),
+                    "name": getattr(existing, "name", "__editor_3d_cursor__"),
+                },
+            }
+
+        cursor_asset = Path(__file__).resolve().parents[3] / "assets" / "editor" / "Ball.obj"
+        actor_data = {
+            "_suppress_network_broadcast": True,
+            "_editor_temporary": True,
+            "actor_guid": f"__editor_3d_cursor__:{scene_name}",
+            "name": "__editor_3d_cursor__",
+            "geometry": {
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale": [0.1, 0.1, 0.1],
+            },
+            "optics": {
+                "visible": False,
+            },
+            "mechanics": {
+                "physics_enabled": False,
+                "collision_type": "none",
+            },
+        }
+
+        actor = Actor(route=str(cursor_asset),
+                      source_index=0,
+                      actor_type="model",
+                      parent_scene=scene,
+                      actor_data=actor_data)
+        actor.name = "__editor_3d_cursor__"
+        if hasattr(actor, "set_editor_temporary"):
+            actor.set_editor_temporary(True)
+        actor.set_visible(False)
+        actor.set_physics_enabled(False)
+        actor.set_collision_enabled("none")
+        actor.set_scale([0.1, 0.1, 0.1], True)
+
+        engine_scene = getattr(scene, "engine_scene", None)
+        engine_actor = getattr(actor, "engine_obj", None)
+        if engine_scene is not None and engine_actor is not None and hasattr(engine_scene, "add_actor"):
+            engine_scene.add_actor(engine_actor)
+        scene._editor_3d_cursor_actor = actor
+
+        handle = int(getattr(actor, "handle", 0) or 0)
+        return {
+            "status": "success",
+            "actorHandle": handle,
+            "cursor": {
+                "actorHandle": handle,
+                "name": actor.name,
+            },
+        }
 
     @staticmethod
     def _create_actor_impl(scene_name: str, asset_path: str, actor_type: str = 'model',

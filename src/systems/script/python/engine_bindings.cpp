@@ -240,6 +240,10 @@ void BindAll(nanobind::module_& m) {
              "Render this actor in camera-local orthographic pass 2")
         .def("get_follow_camera", &Actor::get_follow_camera,
              "Return whether this actor renders in camera-local orthographic pass 2")
+        .def("set_editor_temporary", &Actor::set_editor_temporary, nb::arg("enabled"),
+             "Mark this actor as editor-only and exclude it from scene bounds/culling")
+        .def("get_editor_temporary", &Actor::get_editor_temporary,
+             "Return whether this actor is editor-only")
         .def("get_handle", &Actor::get_handle, "Get the underlying handle of this actor");
 
     // ============================================================================

@@ -16,6 +16,8 @@ file(GLOB IMGUI_SYSTEM_SOURCES
     vulk/browser_manager_vulkan.cpp
     imgui/imgui_ui.cpp
     camera_viewport_manager.cpp
+    cursor_3d_manager.cpp
+    cursor_3d_math.cpp
     cef/browser_manager.cpp
     cef/browser_ui.cpp
     cef/cef_client.cpp
@@ -65,3 +67,15 @@ target_compile_definitions(corona_imgui_system PUBLIC VK_NO_PROTOTYPES)
 helicon_compile_shaders(corona_imgui_system
     OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated_shaders"
 )
+
+if(BUILD_CORONA_TESTING OR BUILD_TESTING)
+    add_executable(corona_cursor_3d_ray_surface_tests
+        tests/test_cursor_3d_ray_surface.cpp
+        cursor_3d_math.cpp
+    )
+    target_include_directories(corona_cursor_3d_ray_surface_tests
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME Cursor3DRaySurfaceTests COMMAND corona_cursor_3d_ray_surface_tests)
+endif()
