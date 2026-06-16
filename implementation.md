@@ -1021,3 +1021,62 @@ external Vision：
 - 任意 matrix transform 的 rotation 尚未可靠分解；当前只保守导入 position/scale。
 - 尚未做真实 CEF 导入后的截图或像素对比，Task 6 需要补可重复测试 scene 与 E2E/半自动验证流程。
 
+## Task 6 实施记录：测试 scene 与可重复验证流程
+
+起点提交：`b646d84e chore: mark start of vision alignment validation task`
+
+代码提交：`46c984ca test: add vision alignment workflow fixture`
+
+### 宏观检查
+
+本任务没有只补 parser happy path，也没有把真实 external Vision 对齐继续停留在口头手动步骤。新增的是固定 fixture 与 workflow 级测试：从 external Vision `scene.json` 导入开始，经过 EngineBuilt 切换、重复导入去重、同名对象处理、材质降级、native 编辑操作、删除与保存快照，形成一条可反复执行的数据流验证。
+
+当前仍没有自动驱动真实 CEF 文件选择器和 viewport 截图对比的 harness，因此 UI E2E 仍明确记录为未自动化风险；但数据同步、identity、持久化和导入覆盖范围已经进入自动测试。
+
+### 实施过程
+
+- 新增 fixture 目录 `editor/plugins/SceneTools/tests/fixtures/vision_alignment/`：
+  - `vision_scene.json`：包含两个同名 `model` shape、一个 `quad`、一个 `cube`、camera、principled material、matrix4x4/TRS transform。
+  - `model_a.obj` / `model_b.obj`：两个可导入 model shape 的最小 OBJ。
+  - `replacement.obj`：用于验证导入后 native `set_model()` 替换模型资源的测试模型。
+- 新增 `test_vision_alignment_workflow.py`：
+  - `test_fixture_covers_alignment_cases` 验证 fixture 能覆盖多模型、同名对象、matrix/TRS transform、材质降级和 unsupported primitive。
+  - `test_external_import_then_native_edits_stay_on_engine_built_source` 验证：
+    - SceneTools import 返回 `engine_built`。
+    - external pipeline 通过 `load_vision_scene("")` 卸载。
+    - 重复导入同一 Vision JSON 不重复堆叠 actor。
+    - 同名 model shape 进入 scene 后按 `AlignedModel` / `AlignedModel_1` 处理。
+    - 导入后执行 native set position/rotation/scale/visible/set_model/remove，再保存快照。
+    - 保存结果仍保持 `vision.import_mode=engine_built` 与 stable `actor_guid`。
+
+### 验证记录
+
+提交 `46c984ca` 前已执行：
+
+- `python -m py_compile editor\plugins\SceneTools\tests\test_vision_alignment_workflow.py`：通过。
+- `python -m unittest editor.plugins.SceneTools.tests.test_vision_alignment_workflow`：通过，2 tests OK。
+- `python -m unittest discover -s editor\plugins\SceneTools\tests -p "test*.py"`：通过，6 tests OK。
+- `python -m unittest discover -s editor\CoronaCore\tests -p "test*.py"`：通过，9 tests OK。
+- `git diff --check`：通过。
+- `cmake --build D:/Documents/GitHub/CoronaEngine/build --config RelWithDebInfo --target corona_engine -- --quiet`，通过 VS DevCmd wrapper 执行：通过。日志 `build\agent-build.log`。
+- `ctest --test-dir D:/Documents/GitHub/CoronaEngine/build -C RelWithDebInfo --output-on-failure`：通过，`NetworkProtocolTests` 与 `VisionMaterialAdapterTests` 均通过。
+- `$env:PATH = "<repo>\third_party\node-v22.19.0-win-x64;$env:PATH"; npm --prefix editor\Frontend run lint`：通过，0 errors，保留既有 66 warnings。
+- `$env:PATH = "<repo>\third_party\node-v22.19.0-win-x64;$env:PATH"; npm --prefix editor\Frontend run build`：通过，仅保留既有 Vite dynamic/static import chunk warnings。
+
+### E2E / 手动验证记录
+
+自动测试当前覆盖的是 Python/SceneTools 数据流、持久化快照和构建边界；真实 CEF UI 和 viewport 视觉对比仍未自动化。需要手动复核：
+
+1. 在 Editor 中打开普通 Corona scene。
+2. 通过 SceneBar Vision 导入按钮选择 `editor/plugins/SceneTools/tests/fixtures/vision_alignment/vision_scene.json`。
+3. 预期 scene tree 中出现 `AlignedModel` 和 `AlignedModel_1` 两个 actor；`quad/cube` 通过返回 payload 或日志显示为 unsupported，而不是静默导入。
+4. 切到 Vision backend，预期使用 EngineBuilt 结果。
+5. 分别执行 position、rotation、scale、visible、set_model(replacement.obj)、删除第二个 actor。
+6. 保存、切换 scene 或重启后，预期只保留编辑后的 actor，`actor_guid` 仍指向 `#scene.shapes[0]`，`vision.import_mode` 仍是 `engine_built`。
+
+剩余风险：
+
+- 真实 CEF 文件选择器、SceneBar payload 展示、viewport 图像一致性尚未自动截图验证。
+- `quad/cube` primitive 仍是显式 unsupported；下一步需要实现 primitive-to-mesh 或 Corona primitive geometry，或者在验证报告中继续标为不可对齐项。
+- `matrix4x4` rotation 分解仍未实现；当前 workflow 测试只锁定 position/scale 的保守导入。
+

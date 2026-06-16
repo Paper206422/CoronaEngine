@@ -337,3 +337,45 @@
 - 不要只验证 native，必须覆盖内置 Vision 和 external Vision 路径。
 - 测试应覆盖“重启/切场景后是否仍一致”，尤其是 gizmo 持久化和 external overlay/export。
 
+执行状态：已实施第一步，起点提交 `b646d84e chore: mark start of vision alignment validation task`，代码提交 `46c984ca test: add vision alignment workflow fixture`。
+
+实施摘要：
+
+- 新增固定 Vision alignment fixture：
+  - 两个同名 `model` shape。
+  - 一个 `quad` 和一个 `cube` unsupported primitive。
+  - principled material。
+  - matrix4x4 与 TRS transform。
+  - replacement OBJ，用于导入后的 native model replacement 验证。
+- 新增 workflow 测试，覆盖：
+  - external Vision JSON import。
+  - EngineBuilt 切换。
+  - 重复导入去重。
+  - 同名 actor 冲突处理。
+  - material 降级字段。
+  - native position/rotation/scale/visible/set_model/remove 编辑。
+  - 保存快照中的 `vision.import_mode` 与 stable `actor_guid`。
+
+宏观检查结果：
+
+- 本次测试资产验证的是“external import -> Corona source-of-truth -> native edits -> saved state”的完整数据流，不是只证明 JSON parser 可以读字段。
+- `quad/cube` 和 matrix rotation 仍作为显式缺口存在，测试不会把它们误判为已完全适配。
+- 真实 viewport 视觉一致性仍需要后续 E2E/半自动截图工具补齐。
+
+验证摘要：
+
+- 通过：workflow 测试 2 个。
+- 通过：SceneTools tests discover，6 tests OK。
+- 通过：CoronaCore 全量 discover，9 tests OK。
+- 通过：py_compile。
+- 通过：C++ `corona_engine` 增量 build。
+- 通过：全量 CTest，`NetworkProtocolTests` 与 `VisionMaterialAdapterTests` 均通过。
+- 通过：前端 lint，0 errors，既有 66 warnings。
+- 通过：前端 build，仅既有 Vite chunk warnings。
+- 通过：`git diff --check`。
+
+下一步宏观提醒：
+
+- 如果继续推进“完全对齐”，不要把 Task 6 的 unsupported primitive 当成测试通过后的可忽略项；应优先补 primitive-to-mesh/Corona primitive geometry，或明确把 primitive 排除在当前对齐承诺外。
+- 还需要真实 CEF/viewport E2E 或半自动截图对比，覆盖 SceneBar 文件选择、payload 可见性、native viewport 与 Vision viewport 的视觉一致性。
+
