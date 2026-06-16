@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from typing import Any, Awaitable, Callable, Optional
 
@@ -146,6 +147,23 @@ def _extract_scene_instructions(batch: list[dict]) -> list[str]:
     return instructions
 
 
+def _classify_gm_request(text: str) -> tuple[str, str | None]:
+    """给 GMArbiter 的轻量意图/目标抽取。"""
+    t = text or ""
+    intent = "chat"
+    if _re_module.search(r"(?:生成|制作|创建|搭建|布置|设计)", t):
+        intent = "compose"
+    if _re_module.search(r"(?:移[动到]?|挪[动到]?|往|向)", t):
+        intent = "move"
+    if _re_module.search(r"(?:放大|缩小|旋转|改成?|调整|修改|换色|改色)", t):
+        intent = "edit"
+    target = None
+    m = _re_module.search(r"(?:把|将|移动|调整|修改|旋转|放大|缩小)\s*([^，。,.!！?？\s@]{1,16})", t)
+    if m:
+        target = m.group(1)
+    return intent, target
+
+
 class ChatServer:
     """房主侧 WebSocket 服务端。"""
 
@@ -172,6 +190,9 @@ class ChatServer:
         self._plan_session = None        # PlanSession（讨论→Plan协商→定稿；懒初始化）
         # 防止同一总结建议在短时间内重复推送
         self._last_summary_suggest_ts: float = 0.0
+        # GM 仲裁器（多人+多agent 语义冲突检测，突击方案 §3.2）
+        self.gm_arbiter = None  # GMArbiter（房主侧持有，懒初始化）
+        self._gm_reported_conflicts: set[str] = set()
 
     # ---- 生命周期 -------------------------------------------------------
     async def start(self) -> None:
@@ -525,6 +546,8 @@ class ChatServer:
 
         增强：消息未显式 @ 但属于场景/生成指令时，自动派发给房间内第一个 agent
         （便于承接前面 AI 生成的物品清单，直接说"生成3d模型"即可）。
+
+        GM 仲裁（突击方案 §3.2）：检测语义冲突 → GM 提案 → 房主确认 → 按顺序派发。
         """
         text = stamped.get("text", "")
         mentions = self.room.resolve_mentions(text)
@@ -536,6 +559,49 @@ class ChatServer:
                 mentions = [first_id]
                 logger.info("[LANChat] 隐式指令派发: text=%r → agent %s", text, first_id)
         logger.info("[LANChat] _dispatch_mentions: text=%r, mentions=%s", text, mentions)
+
+        # GM 冲突检测（懒初始化，房主侧才有）
+        if self.gm_arbiter is None:
+            try:
+                from .gm_arbiter import GMArbiter
+                self.gm_arbiter = GMArbiter()
+                logger.info("[LANChat] GM 仲裁器已初始化")
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[LANChat] GM 仲裁器初始化失败（非必需）: %s", e)
+
+        # 当前请求入队（简化版：直接派发，冲突检测留给后续扩展）
+        if self.gm_arbiter is not None and mentions:
+            try:
+                from .gm_arbiter import UserRequest
+                intent, target_actor = _classify_gm_request(text)
+                for agent_id in mentions:
+                    self.gm_arbiter.enqueue_request(UserRequest(
+                        user_id=str(stamped.get("from", "")),
+                        agent_id=agent_id,
+                        text=text,
+                        intent=intent,
+                        target_actor=target_actor,
+                        timestamp=float(stamped.get("ts") or time.time()),
+                    ))
+                for conflict in self.gm_arbiter.detect_conflicts():
+                    key = "|".join(sorted([
+                        conflict.req_a.user_id, conflict.req_b.user_id,
+                        conflict.req_a.text[:30], conflict.req_b.text[:30],
+                    ]))
+                    if key in self._gm_reported_conflicts:
+                        continue
+                    self._gm_reported_conflicts.add(key)
+                    proposal = self.gm_arbiter.propose_resolution(conflict)
+                    decision = self.gm_arbiter.await_host_confirmation(proposal)
+                    await self._broadcast(protocol.build_message(
+                        "GM",
+                        f"⚖️ {proposal.explanation}\n"
+                        f"执行建议：{'；'.join(proposal.action_plan)}\n"
+                        f"房主确认：{decision}",
+                    ))
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[LANChat] GM 仲裁检查跳过: %s", e)
+
         for agent_id in mentions:
             agent = self.room.get_agent(agent_id)
             if agent is None:
@@ -614,24 +680,36 @@ class ChatServer:
         prev = self.room.history_view()["summary"]
 
         def _job():
+            monitor = getattr(self._summary_service, "monitor", None)
+            if callable(monitor):
+                return asyncio.run(monitor(prev, batch))
             return asyncio.run(self._summary_service.compress(prev, batch))
 
         def _on_done(result):
             if result is None:
                 self.room.append_summary_fallback(batch)
             else:
-                self.room.apply_summary(result)
+                if hasattr(result, "summary"):
+                    summary_text = result.summary
+                    gm_state = result.to_dict() if hasattr(result, "to_dict") else {}
+                else:
+                    summary_text = result
+                    gm_state = {}
+                self.room.apply_summary(summary_text)
                 # 扫描对话中的场景指令
-                instructions = _extract_scene_instructions(batch)
+                instructions = list(gm_state.get("pending_intents") or [])
+                if not instructions:
+                    instructions = _extract_scene_instructions(batch)
+                confirmations = list(gm_state.get("required_confirmations") or [])
                 if instructions:
                     # 有场景指令 → 询问用户是否需要执行
                     self._loop_runner.run_coro_nowait(
-                        self._ask_execute_instructions(instructions)
+                        self._ask_execute_instructions(instructions, confirmations)
                     )
                 else:
                     # 无场景指令 → 把摘要广播到聊天室
                     self._loop_runner.run_coro_nowait(
-                        self._broadcast_summary(result)
+                        self._broadcast_summary(summary_text)
                     )
 
         self._loop_runner.submit_blocking(
@@ -640,15 +718,24 @@ class ChatServer:
             on_exc=lambda e: self.room.append_summary_fallback(batch),
         )
 
-    async def _ask_execute_instructions(self, instructions: list[str]) -> None:
+    async def _ask_execute_instructions(
+        self,
+        instructions: list[str],
+        confirmations: list[str] | None = None,
+    ) -> None:
         """摘要后广播：询问用户是否需要执行历史中的场景指令。"""
         if not instructions:
             return
         items = "\n".join(f"  • {i}" for i in instructions[:5])
+        confirm_text = ""
+        if confirmations:
+            confirm_items = "\n".join(f"  • {i}" for i in confirmations[:3])
+            confirm_text = f"\n\n⚖️ 需要房主确认：\n{confirm_items}"
         tip = (
             f"📋 自动摘要完成！检测到讨论中可能包含以下场景指令：\n"
             f"{items}\n\n"
             f"需要我执行吗？直接 @我 并回复「执行」或指定某一条即可。"
+            f"{confirm_text}"
         )
         stamped = self.room_manager.stamp_and_record(self.room, "系统", tip)
         await self._broadcast(stamped)

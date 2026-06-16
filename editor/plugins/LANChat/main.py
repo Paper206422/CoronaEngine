@@ -473,6 +473,38 @@ class LANChat(PluginBase):
             return {"ok": True, "agents": cls._server.room.agent_roster()}
         return {"ok": True, "agents": []}
 
+    @classmethod
+    def list_role_templates(cls, payload: dict | None = None) -> dict:
+        """列出可选 role agent 模板（长者/小女孩/山贼等）。"""
+        try:
+            from cai_extensions.agent.role_registry import get_role_registry
+            return {"ok": True, "roles": get_role_registry().list_templates()}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[LANChat] list_role_templates 失败")
+            return {"ok": False, "error": str(exc)}
+
+    @classmethod
+    def register_custom_role(cls, payload: dict) -> dict:
+        """注册用户自定义 role persona，返回可用于 add_agent(persona=key) 的 key。"""
+        try:
+            from cai_extensions.agent.role_registry import get_role_registry
+            payload = payload or {}
+            name = str(payload.get("name", "")).strip()
+            persona = str(payload.get("persona", "")).strip()
+            if not name or not persona:
+                return {"ok": False, "error": "NAME_AND_PERSONA_REQUIRED"}
+            key = str(payload.get("key", "")).strip() or name
+            scene_hint = str(payload.get("scene_hint", "")).strip()
+            tpl = get_role_registry().register_custom(key, name, persona, scene_hint)
+            return {"ok": True, "role": {
+                "key": tpl.key,
+                "name": tpl.name,
+                "scene_hint": tpl.scene_hint,
+            }}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[LANChat] register_custom_role 失败")
+            return {"ok": False, "error": str(exc)}
+
     # ---- 工具 -----------------------------------------------------------
     @classmethod
     def get_local_ip(cls, payload: dict | None = None) -> dict:

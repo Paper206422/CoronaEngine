@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Any, Dict, List, Optional
 
@@ -1024,8 +1025,17 @@ class SceneComposer:
         # 仍需兜底围合——box 是那个万能退化围合。无圆模型后方盒单独存在不撕裂。
         degraded = self._degrade_failed_shells_to_box(set(shell_failed_gen)) if shell_failed_gen else []
 
-        result = self._run_original_workflow(text, furniture, items, do_import,
+        # 突击方案接入：渐进式工作流默认开启；如需回退旧清场式路径，
+        # 显式设置 USE_PROGRESSIVE_COMPOSE=0。
+        use_progressive = os.getenv("USE_PROGRESSIVE_COMPOSE", "1") != "0"
+        if use_progressive:
+            from .scene_composer_progressive import run_progressive_workflow
+            result = run_progressive_workflow(self, text, furniture, items, do_import,
                                               reviews=reviews)
+        else:
+            result = self._run_original_workflow(text, furniture, items, do_import,
+                                                  reviews=reviews)
+
         result["extracted_count"] = extracted_total
         result["truncated"] = truncated
         result["reviews"] = reviews

@@ -191,7 +191,18 @@ def generate_single_item(
             )
             # 自动入库（幂等）：下一轮同名物体在 retrieve 顶部命中库 → 跳过混元3D。
             # best-effort，失败仅 warning，绝不影响本次返回。
-            save_model(name, model_info.get("model_path", ""))
+            # 修复 P1 存库竞态：等混元 mesh 异步下载完成后再 resolve + 存库，避免扫到空目录。
+            from .helpers import wait_mesh_then_resolve_model_file
+            parameter = model_info.get("parameter", {})
+            raw_model_path = model_info.get("model_path", "")
+            final_model_path = wait_mesh_then_resolve_model_file(
+                raw_model_path=raw_model_path,
+                wait_object_id=str(parameter.get("object_id", object_id)),
+                has_mesh_pending=bool(parameter.get("has_mesh_pending", False)),
+                retry_times=3,
+                retry_interval_seconds=0.2,
+            )
+            save_model(name, final_model_path or raw_model_path)
             return result
         except Exception as e:
             last_error = str(e)

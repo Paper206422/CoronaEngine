@@ -1073,7 +1073,7 @@ class MasterAgent:
 
     def _handle_chat(self, persona: str, messages: List[str]) -> str:
         specialist = self._router.route(persona)
-        system = self._build_chat_system(specialist)
+        system = self._build_chat_system(specialist, persona)
 
         # 记录到 GroupAgent (用于后续总结)
         for msg in messages:
@@ -1087,11 +1087,20 @@ class MasterAgent:
             return self._fallback_chat(system, messages)
         return self._call_caiapp(system, messages)
 
-    def _build_chat_system(self, specialist: Specialist) -> str:
+    def _build_chat_system(self, specialist: Specialist, persona: str = "") -> str:
         base = "你是场景设计助手。如果用户询问你的能力，引导他们使用场景指令或 /help 查看。回复简洁实用。"
         if specialist.key == "generalist":
-            return base + "\n\n你拥有全风格设计能力。"
-        return specialist.inject_prompt(base)
+            system = base + "\n\n你拥有全风格设计能力。"
+        else:
+            system = specialist.inject_prompt(base)
+        # T-2.4：role 注入说话风格（⟦DECIDE:role-depth⟧=只影响 voice，不进 decompose）。
+        # 未命中任何角色模板时原样返回，不注入人格（退化为通用助手）。
+        try:
+            from .role_registry import inject_persona_voice
+            system = inject_persona_voice(system, persona)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[MasterAgent] role persona 注入跳过: %s", e)
+        return system
 
     def _call_caiapp(self, system: str, messages: List[str]) -> str:
         try:

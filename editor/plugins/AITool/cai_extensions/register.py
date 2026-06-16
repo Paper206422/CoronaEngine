@@ -171,8 +171,22 @@ class CabbageWorkflowSyncPlugin:
         self.context = context
 
     def register(self, runtime) -> dict:
-        from Quasar.ai_workflow import register_workflow_execution_scope_factory
-        from CoronaCore.core import network_sync_policy
+        # 网络同步隔离能力依赖 Quasar 新增的 register_workflow_execution_scope_factory。
+        # 当部署的 Quasar 版本较旧（缺该符号）时，仅降级关闭本能力，绝不能让整个 AITool
+        # 插件 import 失败——否则 main.py:44 的 _install_cai_extensions 会抛异常，AITool 类
+        # 永远定义不出来，LANChat start_room 报 "cannot import name 'AITool'"，AI 助手与
+        # 联机 demo 全部不可用。
+        try:
+            from Quasar.ai_workflow import register_workflow_execution_scope_factory
+            from CoronaCore.core import network_sync_policy
+        except Exception as exc:
+            logger.warning(
+                "[cai_extensions] workflow sync scope unavailable (Quasar 版本缺 "
+                "register_workflow_execution_scope_factory)，已降级跳过: %s",
+                exc,
+            )
+            runtime.metadata.setdefault("cabbage_adapter", {})[self.name] = False
+            return {"name": self.name, "enabled": False}
 
         def create_scope(workflow_context):
             return network_sync_policy.deferred_actor_broadcasts(
