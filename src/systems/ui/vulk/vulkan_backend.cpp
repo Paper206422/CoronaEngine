@@ -495,6 +495,8 @@ void VulkanBackend::present_frame() {
         return;
     }
 
+    sync_default_surface_camera_size(surface_, main_resources_.width, main_resources_.height);
+
     if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
         ++frame_index_;
         event_bus->publish<Events::UIFrameReadyEvent>({surface_,
