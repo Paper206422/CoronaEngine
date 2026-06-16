@@ -113,6 +113,29 @@
 - 不要在 external Vision 适配时继续使用含糊的 `Move` 名称。
 - 统一契约应服务后续所有渲染后端，而不是只修当前 UI。
 
+执行状态：已实施，验证阻塞修复提交 `df472e05 test: unblock validation checks`，代码提交 `11fb5e13 fix: clarify transform operation contract`。
+
+实施摘要：
+- `Actor` 明确区分 absolute setter 与 relative operation：`set_position/set_rotation/set_scale` 为绝对设置，`translate/rotate_delta/scale_delta` 为相对变换。
+- `move/rotate` 保留为 relative alias；`scale(v)` 保持旧 Python API 的 absolute 语义，转发到 `set_scale(v)`，避免破坏已有直接调用。
+- Object 面板数值输入改用 `SetPosition/SetRotation/SetScale`，与 C++ fast channel 的 operation 0/1/2 absolute 语义对齐，同时保留旧 `Move/Rotate/Scale` alias。
+- AITool `transform_model` 统一为 relative tool，支持 `translate/rotate_delta/scale_delta`，旧 `move/rotate/scale` 作为兼容别名；absolute transform 继续由 `set_actor_transform` 承担。
+- AITool transform prompt 已写明相对/绝对边界。
+
+宏观检查结果：
+- 本次没有为 Vision 层增加临时同步分支，也没有扩大双写状态；核心是把 native/API/UI/AI 工具的 transform contract 先统一。
+- 后续 external Vision 适配可按明确契约做 object transform 映射，避免继续依赖含糊的 `Move/Rotate/Scale` 名称。
+
+验证摘要：
+- 通过：Python py_compile、actor transform 目标单测、transform_model 工具契约单测、CoronaCore 全量 discover、AITool 全量 discover、前端 build、前端 lint、C++ `corona_engine` 增量 build、`git diff --check`。
+- 前端 lint 当前为 0 errors，仍有既有 Vue style warnings。
+- AITool discover 当前通过，但测试环境仍打印部分工具注册 warning，原因是本地未安装完整 LangChain/httpx 依赖；目标 transform_model 分派已由新增测试覆盖。
+- 真实 CEF UI E2E 尚无自动 harness，已在 `implementation.md` 记录手动验证步骤与剩余风险。
+
+下一条任务前的宏观提醒：
+- 第 3 条 gizmo drag end 持久化必须避免每帧写盘，也不要把保存逻辑散落在多个 UI 组件里。
+- 开始第 3 条前先确认当前代码与文档记录均已提交，再做起点提交。
+
 ### 3. 给 gizmo drag end 补持久化
 
 目标：让 gizmo 拖拽不仅实时写入 `SharedDataHub`，也能可靠写回 scene/actor 数据，避免切场景或重启后丢失。

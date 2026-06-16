@@ -99,6 +99,68 @@ D:\Documents\GitHub\CoronaExample\test_vision\render_scene\cbox\vision_scene.jso
 
 ---
 
+## Task 2 实施记录：统一 transform 操作契约
+
+代码提交：
+- `df472e05 test: unblock validation checks`
+- `11fb5e13 fix: clarify transform operation contract`
+
+### 宏观检查
+
+本任务没有选择给外部 Vision 或内置 Vision 增加一套临时 transform 特判，而是先统一 native 编辑入口的操作契约。这样后续 external Vision 适配可以明确按 absolute set 或 relative delta 映射到 Vision transform，不再依赖 `Move/Rotate/Scale` 这类含糊名称猜语义。
+
+当前契约：
+- `set_position()` / `set_rotation()` / `set_scale()`：绝对设置。
+- `translate()` / `rotate_delta()` / `scale_delta()`：相对变换。
+- Object 面板数值输入：绝对设置，前端内部改用 `SetPosition` / `SetRotation` / `SetScale`。
+- AITool `set_actor_transform`：绝对设置。
+- AITool `transform_model`：相对操作；旧 `move` / `rotate` / `scale` 作为兼容别名保留，但语义明确为相对平移、相对旋转、倍率缩放。
+
+### 实施过程
+
+- `Actor` 新增 `translate(delta)`、`rotate_delta(delta)`、`scale_delta(factor)`，并保留 `move()` / `rotate()` 作为 relative alias。
+- `Actor.scale(v)` 保持旧 Python API 的 absolute 行为，转发到 `set_scale(v)`，避免把已有直接调用突然改成倍率缩放。
+- Object 面板 actor/model 的 position/rotation/scale 输入从旧 `Move/Rotate/Scale` 改为 `SetPosition/SetRotation/SetScale`，与 C++ fast channel 的 operation 0/1/2 absolute 写入语义对齐。
+- 前端 transform operation map 保留旧 `Move/Rotate/Scale` alias，避免其他旧调用立即失效。
+- AITool MCP `transform_model` 支持并优先暴露 `translate` / `rotate_delta` / `scale_delta`，同时保留旧 `move` / `rotate` / `scale` 作为相对操作别名。
+- 更新 AITool transform prompt，明确 `transform_model` 是相对变换，需要 absolute transform 时使用 `set_actor_transform`。
+- 新增 `test_transform_contract_separates_absolute_and_delta_operations`，验证 actor absolute setter 与 delta operation 的差异。
+- 新增 `test_transform_model_contract.py`，验证 `transform_model` 工具在 package 入口和 `scene_tools.py` 入口都执行 relative contract。
+
+### 遇到的问题与处理
+
+- `Scene.terrain_type` 阻塞 CoronaCore 全量测试：已先修复并提交 `118e1a1c fix: default optional scene metadata on save`，没有继续跳过。
+- 前端 lint 被既有 `EditorSettings.vue` 的未声明全局 `cefQuery` 阻塞：改为 `window.cefQuery` 并提交 `df472e05`。
+- AITool 全量测试在本地缺少 `langchain_core` / `yaml` 时无法进入测试主体：补充测试 stub，并让 fake `CoronaEditor.js_call_func` 同时兼容旧三参与当前两参调用，提交 `df472e05`。
+- bundled npm 初次执行时 `node` 不在 `PATH`：按项目内 `third_party/node-v22.19.0-win-x64` 临时加入 `PATH` 后重跑，build/lint 均完成。
+
+### 验证记录
+
+提交 `11fb5e13` 前已执行：
+
+- `python -m py_compile editor\CoronaCore\core\entities\actor.py editor\CoronaCore\tests\test_actor_network_broadcast.py editor\plugins\AITool\cai_extensions\mcp\tools\__init__.py editor\plugins\AITool\cai_extensions\mcp\tools\scene_tools.py editor\plugins\AITool\cai_extensions\mcp\configs\prompts.py editor\plugins\AITool\cai_extensions\mcp\configs\__init__.py editor\plugins\AITool\tests\test_transform_model_contract.py editor\plugins\AITool\tests\test_ai_rpc.py`：通过。
+- `python -m unittest editor.CoronaCore.tests.test_actor_network_broadcast.ActorNetworkBroadcastTests.test_transform_contract_separates_absolute_and_delta_operations`：通过。
+- `python -m unittest editor.plugins.AITool.tests.test_transform_model_contract`：通过。
+- `python -m unittest discover -s editor\CoronaCore\tests -p "test*.py"`：通过，9 tests OK。
+- `python -m unittest discover -s editor\plugins\AITool\tests -p "test*.py"`：通过，21 tests OK。输出中仍有工具注册 warning，因为测试环境未安装完整 LangChain/httpx 依赖，但测试用例已进入并覆盖目标逻辑。
+- `$env:PATH = "<repo>\third_party\node-v22.19.0-win-x64;$env:PATH"; npm --prefix editor\Frontend run build`：通过。
+- `$env:PATH = "<repo>\third_party\node-v22.19.0-win-x64;$env:PATH"; npm --prefix editor\Frontend run lint`：通过，0 errors，保留既有 66 warnings。
+- `cmake --build D:/Documents/GitHub/CoronaEngine/build --config RelWithDebInfo --target corona_engine -- --quiet`，通过 VS DevCmd wrapper 执行：通过。完整日志：`build\agent-build.log`。
+- `git diff --check`：通过。
+
+### E2E / 手动验证记录
+
+当前 CLI 没有可自动驱动 CEF Editor Object 面板的 E2E harness，因此真实 UI 操作未自动执行。需要在 Editor 中手动复核：
+
+1. 打开含有 actor/model 的 scene。
+2. 在 Object 面板分别编辑 position、rotation、scale 的 x/y/z 数值。
+3. 预期 C++ fast channel 收到 operation 0/1/2，语义为 absolute set，native viewport 立即更新。
+4. 触发 `saveActor` 后切换 scene 或重启，预期 `.scene` 持久化后的 transform 与面板输入一致。
+5. 使用 AITool `transform_model` 执行 `translate` / `rotate_delta` / `scale_delta`，预期基于当前 transform 做增量变化。
+6. 使用 AITool `set_actor_transform` 执行 position/rotation/scale，预期直接写绝对值。
+
+剩余风险：尚未通过真实 CEF UI 自动化验证 Object 面板输入到 native viewport 的完整链路；后续 task 6 应补可重复 E2E scene/harness。
+
 ## Task 1 实施记录：已有 actor 的 set_model() 真正替换 geometry/profile
 
 代码提交：`61a90a46 fix: replace actor model profiles`
