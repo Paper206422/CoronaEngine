@@ -716,46 +716,17 @@ const initBlocklyAndGenerators = async () => {
     ]);
 
     try {
-      defineEngineBlocks({ get value() { return currentActorNameVar; } });
-      defineAppearanceBlocks({ get value() { return currentActorNameVar; } });
-      defineEventBlocks({ get value() { return currentActorNameVar; } }, broadcastList, createNewBroadcast);
-      defineControlBlocks({ get value() { return currentActorNameVar; } });
-      defineDetectBlocks({ get value() { return currentActorNameVar; } });
+      defineEngineBlocks();
+      defineAppearanceBlocks();
+      defineEventBlocks(broadcastList, createNewBroadcast);
+      defineControlBlocks();
+      defineDetectBlocks();
       defineMathBlocks();
       defineVariableBlocks();
-      defineListBlocks({ get value() { return currentActorNameVar; } });
-
-      const [
-        { defineEngineGenerators },
-        { defineAppearanceGenerators },
-        { defineEventGenerators },
-        { defineControlGenerators },
-        { defineDetectGenerators },
-        { defineMathGenerators },
-        { defineVariableGenerators },
-        { defineListGenerators },
-      ] = await Promise.all([
-        import('@/blockly/generators/engine.js'),
-        import('@/blockly/generators/appearance.js'),
-        import('@/blockly/generators/event.js'),
-        import('@/blockly/generators/control.js'),
-        import('@/blockly/generators/detect.js'),
-        import('@/blockly/generators/math.js'),
-        import('@/blockly/generators/variable.js'),
-        import('@/blockly/generators/list.js'),
-      ]);
-
-      defineEngineGenerators();
-      defineAppearanceGenerators();
-      defineEventGenerators();
-      defineControlGenerators();
-      defineDetectGenerators();
-      defineMathGenerators();
-      defineVariableGenerators();
-      defineListGenerators();
+      defineListBlocks();
 
       // 加载自定义 workspaceToCode（hat过滤、handler路由、prelude等）
-      // 必须在所有 forBlock 生成器注册之后加载
+      // 该模块内部已包含所有分类生成器的注册，无需在此重复调用 define*Generators()
       await import('@/blockly/generators/index.js');
 
       blocksRegistered = true;
@@ -1323,7 +1294,12 @@ onMounted(async () => {
   }
 });
 
-onUnmounted(() => {
+onUnmounted(async () => {
+  // 1) 标记组件已卸载（阻止后续 resize/keyboard 回调操作已销毁对象）
+  let disposed = false;
+  const isAlive = () => !disposed && workspace !== null;
+  const safeResize = () => { if (isAlive() && BlocklyLib) { try { BlocklyLib.svgResize(workspace); } catch {} } };
+
   window.removeEventListener('resize', handleWindowResize);
   if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
   // 清理拖拽导入
@@ -1343,9 +1319,18 @@ onUnmounted(() => {
   if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
   // 清理提示定时器
   if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
-  // 销毁前立即保存当前工作区状态
-  flushAutoSave();
+
+  // ★ 关键修复：销毁前等待最后的保存完成，防止数据丢失
   if (workspace) {
+    try { await flushAutoSave(); } catch {}
+    try { await latestBlocklySavePromise; } catch {}
+  }
+
+  disposed = true;
+
+  if (workspace) {
+    // 移除 change listener 防止 dispose 过程中的回调
+    try { workspace.removeChangeListener(onWorkspaceChange); } catch {}
     try { workspace.dispose(); } catch {}
     workspace = null;
   }
@@ -1354,9 +1339,12 @@ onUnmounted(() => {
     sharedStore.workspace.value = null;
     sharedStore.workspaceSvg.value = null;
   }
-  // 重置积木注册标记，确保下次挂载时重新注册积木类型和生成器
-  blocksRegistered = false;
-  pythonGenerator = null;
+  // 所有工作区实例都已卸载时，重置共享的模块级状态
+  // 使用 mountedBlocklyWorkspaces 的大小作为引用计数（此时当前实例已通过 unregister 移除）
+  if (mountedBlocklyWorkspaces.size === 0) {
+    blocksRegistered = false;
+    pythonGenerator = null;
+  }
   generatedCode.value = '';
 });
 
