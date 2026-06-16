@@ -22,6 +22,8 @@ Makefile
 .codegraph/
 codex.md
 AGENTS.md
+implementation.md
+TaskSplitting.md
 
 # Tool caches
 **/.cache/
