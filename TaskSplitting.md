@@ -59,6 +59,28 @@
 - 不要让旧 profile 和新 profile 同时挂在 actor 上造成重复渲染。
 - 不要依赖对象析构时机来“碰巧”释放旧 geometry；需要明确断开 SharedDataHub 引用。
 
+执行状态：已实施，代码提交 `61a90a46 fix: replace actor model profiles`。
+
+实施摘要：
+
+- `Actor.set_model(route)` 已从“只改 `model_path`”改为创建新 `Geometry` 和新 profile/component wrapper。
+- 替换前捕获 transform、optics、mechanics、collision 状态；替换后恢复这些状态。
+- 新 profile 激活后显式调用 engine `remove_profile(old_profile)`，避免旧 profile/geometry 继续挂在 actor 上。
+- `_create_and_add_profile()` 保存 `self._profile`，后续替换可以精确定位旧 profile。
+- 新增 `test_set_model_replaces_profile_and_preserves_edit_state`，验证 profile 替换和关键编辑状态保留。
+
+验证摘要：
+
+- 通过：`python -m py_compile editor\CoronaCore\core\entities\actor.py editor\CoronaCore\tests\test_actor_network_broadcast.py`
+- 通过：`python -m unittest editor.CoronaCore.tests.test_actor_network_broadcast.ActorNetworkBroadcastTests.test_set_model_replaces_profile_and_preserves_edit_state`
+- 通过：`git diff --check`
+- 已知阻塞：`python -m unittest editor.CoronaCore.tests.test_actor_network_broadcast` 仍因既有 `Scene.terrain_type` 缺失失败，失败测试为 `test_scene_actor_follow_camera_persists_in_scene_actor_section`，不属于本任务链路。
+
+下一条任务前的宏观提醒：
+
+- 第 2 条 transform 契约统一应继续服务于统一 source-of-truth，而不是只改 UI 字符串。
+- 开始第 2 条前必须先确认当前代码与文档记录均已提交，然后再做起点提交。
+
 ### 2. 统一 transform 操作契约
 
 目标：消除 `Move/Rotate` 在不同入口中 absolute 和 delta 混用的问题，为 native、内置 Vision、external Vision 统一编辑语义。

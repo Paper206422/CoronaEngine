@@ -99,6 +99,59 @@ D:\Documents\GitHub\CoronaExample\test_vision\render_scene\cbox\vision_scene.jso
 
 ---
 
+## Task 1 实施记录：已有 actor 的 set_model() 真正替换 geometry/profile
+
+代码提交：`61a90a46 fix: replace actor model profiles`
+
+### 宏观检查
+
+本任务没有选择给 Vision 层增加特殊同步补丁，而是先修复 native source-of-truth 本身的模型资源替换语义。这样后续内置 Vision 仍然只需要观察 Corona `SharedDataHub` 的 actor/profile/geometry 变化；不会扩大 native、内置 Vision、外部 Vision 之间的双写状态。
+
+### 实施过程
+
+- 重新阅读 `implementation.md`、`TaskSplitting.md`、`AGENTS.md`。
+- 按用户要求先将当前 `implementation.md` 和 `TaskSplitting.md` 作为被 `.gitignore` 忽略的新增文件强制提交：`60b4e117 docs: add vision implementation task records`。
+- 阅读 `Actor.set_model()`、`_create_and_add_profile()`、C++/fallback `Actor.remove_profile()`、`Geometry`、`Optics`、`Mechanics`、`Acoustics` wrapper 和现有 actor 测试。
+- 确认旧问题：`Actor.set_model(route)` 对已有 `_geometry` 的 actor 只更新 `model_path`，不会替换 engine geometry/profile，因此 native viewport 和内置 Vision signature 都看不到真正的模型资源变化。
+- 拆出 `Actor._create_profile_for_geometry(geometry)`，让 profile 创建可以返回 `stored profile` 以及新的 component wrapper。
+- `_create_and_add_profile()` 现在保存 `self._profile`，使后续替换能精确移除旧 profile。
+- `set_model(route)` 现在：
+  - 更新 `model_path` 和 `final_model_path`。
+  - 捕获旧 transform、optics 状态、mechanics 状态和 collision 类型。
+  - 为新模型创建新的 `Geometry`、`Optics`、`Mechanics`、`Acoustics` 和 engine profile。
+  - 激活新 profile，并把 Python wrapper 指向新 geometry/profile。
+  - 恢复 transform、visible、material-ish optics 参数、mass/restitution/damping/physics/lock/collision 状态。
+  - 调用 engine `remove_profile(old_profile)` 移除旧 profile，避免旧 geometry 继续挂在 actor 上造成重复渲染或 Vision 继续看到旧 mesh。
+  - 重新注册 collision/on_move callback。
+- 扩展 `test_actor_network_broadcast.py` 的 fake engine actor/profile/component，使测试能观察 profile 列表、remove_profile、状态恢复。
+- 新增回归用例 `test_set_model_replaces_profile_and_preserves_edit_state`，覆盖：
+  - 新旧 profile/geometry 不同。
+  - actor engine 只保留新 profile。
+  - `model_path/final_model_path` 更新。
+  - position/rotation/scale、visible、metallic/roughness、mass、physics_enabled、collision 类型保留。
+
+### 验证记录
+
+已通过：
+
+- `python -m py_compile editor\CoronaCore\core\entities\actor.py editor\CoronaCore\tests\test_actor_network_broadcast.py`
+- `python -m unittest editor.CoronaCore.tests.test_actor_network_broadcast.ActorNetworkBroadcastTests.test_set_model_replaces_profile_and_preserves_edit_state`
+- `git diff --check`
+
+已执行但未全量通过：
+
+- `python -m unittest editor.CoronaCore.tests.test_actor_network_broadcast`
+  - 新增模型替换用例通过。
+  - 整个文件仍被既有问题阻塞：`test_scene_actor_follow_camera_persists_in_scene_actor_section` 调用 `scene.save_data()` 时，`editor/CoronaCore/core/entities/scene.py:283` 访问不存在的 `Scene.terrain_type`，抛出 `AttributeError`。
+  - 该失败与本任务的 actor model replacement 链路无关，但说明当前相关测试文件不能作为全绿回归信号。
+
+未完成 / 剩余风险：
+
+- 尚未做真实 editor E2E：在 UI 中对已有 actor 选择新模型文件后，观察 native viewport 新 mesh 出现、旧 mesh 消失，再切换到内置 Vision 验证 signature rebuild。
+- 本任务未改 C++，未跑 C++ build。
+- `Optics.to_dict()` 已暴露的 optics 参数会尽量恢复，但 mesh-level `materialColor` 不在当前 Python `Optics` wrapper 状态中，后续 material adapter 任务需要继续处理。
+- 如果 engine `remove_profile()` 失败，当前实现会记录 warning，但 Python wrapper 已指向新 profile；真实运行时应在 E2E 中确认旧 profile 没有残留渲染。
+
 # 模型编辑操作与 Vision 同步对齐调查
 
 ## 调查目标
