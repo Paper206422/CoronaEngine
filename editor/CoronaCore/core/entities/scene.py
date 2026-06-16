@@ -276,17 +276,19 @@ class Scene:
                     f'{actor_key}.geometry.scale'] = f"{scale[0]: .2f}, {scale[1]: .2f}, {scale[2]: .2f}"
 
         # 脚本数据
-        self.file_data['scripts']["path"] = self.script_path
+        self.file_data['scripts']["path"] = getattr(self, 'script_path', '')
 
         # 地形数据
-        self.file_data['terrain']["path"] = self.terrain_path
-        self.file_data['terrain']["type"] = self.terrain_type
+        self.file_data['terrain']["path"] = getattr(self, 'terrain_path', '')
+        self.file_data['terrain']["type"] = getattr(self, 'terrain_type', '')
 
-        if self.vision_source_path or self.vision_import_mode:
+        vision_source_path = getattr(self, 'vision_source_path', '')
+        vision_import_mode = getattr(self, 'vision_import_mode', '')
+        if vision_source_path or vision_import_mode:
             if 'vision' not in self.file_data:
                 self.file_data['vision'] = {}
-            self.file_data['vision']['source_path'] = self.vision_source_path
-            self.file_data['vision']['import_mode'] = self.vision_import_mode or 'external'
+            self.file_data['vision']['source_path'] = vision_source_path
+            self.file_data['vision']['import_mode'] = vision_import_mode or 'external'
 
         # 相机数据
         self.file_data['camera'] = {}

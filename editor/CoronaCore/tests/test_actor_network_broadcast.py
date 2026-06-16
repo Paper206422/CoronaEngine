@@ -451,6 +451,11 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
             scene.file_data = configparser.ConfigParser()
             scene._environment = None
             scene._cameras = []
+            scene._main_camera = None
+            scene.engine_scene = SimpleNamespace(
+                add_camera=lambda camera: None,
+                set_active_camera=lambda camera: None,
+            )
             scene.script_path = ""
             scene.terrain_path = ""
             scene._actors = [
@@ -471,6 +476,9 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
             saved = configparser.ConfigParser()
             saved.read(scene_path, encoding="utf-8")
             self.assertTrue(saved["actors"].getboolean("hud_quad.follow_camera"))
+            self.assertEqual(saved["terrain"]["path"], "")
+            self.assertEqual(saved["terrain"]["type"], "")
+            self.assertNotIn("vision", saved)
 
             actor_data = scene._build_actor_json(saved["actors"], "hud_quad")
             self.assertTrue(actor_data["follow_camera"])
