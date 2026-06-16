@@ -179,6 +179,29 @@ D:\Documents\GitHub\CoronaExample\test_vision\render_scene\cbox\vision_scene.jso
 - task 2 起不允许在只完成局部单测/语法检查时提交代码。
 - 对跨模块或用户可见链路，必须先执行或明确记录单元、集成、E2E/手动 E2E 三层验证，再提交。
 
+### 2026-06-16 修复 Scene.terrain_type 测试阻塞
+
+代码提交：`118e1a1c fix: default optional scene metadata on save`
+
+原因：
+
+- CoronaCore 全量测试连续被 `Scene.save_data()` 中的 `self.terrain_type` 直接访问阻塞。
+- 正常 `Scene.__init__` 会初始化 `terrain_type/terrain_path/vision_source_path/vision_import_mode`，但现有轻量测试用 `Scene.__new__` 构造保存对象，绕开了初始化。
+- 修复 `terrain_type` 后，同一轻量测试继续暴露缺少 `engine_scene`，因此测试本身也需要补足最小 scene engine stub。
+
+实施：
+
+- `Scene.save_data()` 对 `script_path`、`terrain_path`、`terrain_type`、`vision_source_path`、`vision_import_mode` 使用安全默认值。
+- 测试中的 `Scene.__new__` 对象补 `_main_camera` 和最小 `engine_scene.add_camera/set_active_camera` stub。
+- 测试断言保存出的 `[terrain] path/type` 为空字符串，且缺省 vision 元数据时不写 `[vision]` section。
+
+验证：
+
+- `python -m unittest editor.CoronaCore.tests.test_actor_network_broadcast.ActorNetworkBroadcastTests.test_scene_actor_follow_camera_persists_in_scene_actor_section` 通过。
+- `python -m unittest discover -s editor\CoronaCore\tests -p "test*.py"` 通过，8 tests OK。
+- `python -m py_compile editor\CoronaCore\core\entities\scene.py editor\CoronaCore\tests\test_actor_network_broadcast.py` 通过。
+- `git diff --check` 通过。
+
 # 模型编辑操作与 Vision 同步对齐调查
 
 ## 调查目标

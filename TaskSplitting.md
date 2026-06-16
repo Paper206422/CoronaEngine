@@ -88,6 +88,11 @@
 - 补测结果已写入 `implementation.md`。其中 build 通过，目标单测通过，CoronaCore discover 仍被既有 `Scene.terrain_type` 缺失阻塞。
 - 这次补测是补救，不算满足“提交前足量测试”。从 task 2 开始，提交前必须先完成与风险匹配的验证记录。
 
+阻塞修复：
+
+- `Scene.terrain_type` 缺失阻塞已修复，提交 `118e1a1c fix: default optional scene metadata on save`。
+- `python -m unittest discover -s editor\CoronaCore\tests -p "test*.py"` 当前通过，8 tests OK。
+
 ### 2. 统一 transform 操作契约
 
 目标：消除 `Move/Rotate` 在不同入口中 absolute 和 delta 混用的问题，为 native、内置 Vision、external Vision 统一编辑语义。
