@@ -207,6 +207,48 @@
 - 不要承诺 Vision 无法表达的材质完全一致。
 - 优先建立“支持/降级/不支持”的明确矩阵。
 
+执行状态：已实施，起点提交 `6fb2a98d chore: mark start of vision material task`，代码提交 `4cfbaeb3 fix: map vision principled material fields`。
+
+实施摘要：
+
+- 修复 `create_vision_material()` 实际默认成 diffuse 的问题：现在显式初始化 `type=principled_bsdf` 和空 `param`。
+- `vision_material_adapter.cpp` 映射 Vision 可表达字段：
+  - `subsurface -> subsurface_weight`
+  - `anisotropic -> anisotropic`
+  - `sheen -> sheen_weight`
+  - `sheenTint -> sheen_tint` 灰度近似
+  - `clearcoat -> coat_weight`
+  - `clearcoatGloss -> coat_roughness` 反向近似
+- `compute_vision_scene_signature()` fold 同一组已映射字段，避免 adapter 支持了但变化不触发 rebuild。
+- `vision_material_adapter.h` 更新支持/近似/默认降级说明。
+- 新增 `corona_vision_material_adapter_tests`，验证扩展 Optics 字段会改变 Vision material hash，并覆盖 clamp 路径。
+- 修复 `BUILD_CORONA_TESTING=ON` 但 `BUILD_TESTING=OFF` 时 CTest 不生成测试清单的问题。
+- 给 `VisionMaterialAdapterTests` 设置插件目录作为 working directory，保证 `vision-material-principled_bsdf` 可加载。
+
+宏观检查结果：
+
+- 没有只加 signature 空转；adapter 和 signature 成对更新。
+- 没有把 unsupported 字段伪装成已适配：`bEnableLighting/specular/specularTint/legacy` 仍明确为降级或待定义策略。
+- 测试没有停留在手动运行 exe；修通了 CTest 清单和工作目录，后续可重复执行。
+
+验证摘要：
+
+- 通过：`corona_vision_material_adapter_tests` target build。
+- 通过：`ctest -R VisionMaterialAdapterTests`。
+- 通过：C++ `corona_engine` 增量 build。
+- 通过：`test-material-reset` target build 和 exe 运行，输出 `pass=4 fail=0`。
+- 通过：`corona_network_protocol_tests` target build。
+- 通过：全量项目 CTest，`NetworkProtocolTests` 与 `VisionMaterialAdapterTests` 均通过。
+- 通过：CoronaCore 全量 discover，9 tests OK。
+- 通过：`git diff --check`。
+- 尚未完成 native/内置 Vision 的自动截图或数值渲染对比，手动复核步骤与剩余风险已写入 `implementation.md`。
+
+下一条任务前的宏观提醒：
+
+- 第 5 条是路线选择任务，不能直接开始在 external pipeline 上做名称匹配式同步。
+- 开始第 5 条前必须重新阅读 `implementation.md`、`TaskSplitting.md`、`AGENTS.md`，确认代码和文档均已提交，并先做起点提交。
+- 如果以 native 编辑完全对齐为目标，应优先论证并实施 “Vision JSON -> Corona actors -> EngineBuilt” 的统一 source-of-truth 路线；只有在明确必须保留 external pipeline 时，才进入 object identity/mapping 与增量镜像设计。
+
 ### 5. 选择 external Vision 对齐路线
 
 目标：决定外部 Vision 与 native 编辑完全对齐时的 source-of-truth，避免在两套 scene graph 之间做脆弱双写。

@@ -207,6 +207,76 @@ D:\Documents\GitHub\CoronaExample\test_vision\render_scene\cbox\vision_scene.jso
 
 剩余风险：尚未通过真实 CEF UI 自动化验证 pointerup -> C++ end 回包 -> `saveActor` -> `.scene` 持久化的完整链路；后续 task 6 应补可重复 E2E scene/harness。
 
+## Task 4 实施记录：扩展内置 Vision material adapter 和 signature
+
+起点提交：`6fb2a98d chore: mark start of vision material task`
+
+代码提交：`4cfbaeb3 fix: map vision principled material fields`
+
+### 宏观检查
+
+本任务没有只扩展 `compute_vision_scene_signature()` 触发 rebuild，而是同步修正了 Vision material adapter 的真实 material type 和可表达字段映射。这样 native Optics 字段变化会先被 signature 观察到，再在 rebuild 时实际进入 Vision `principled_bsdf` material，避免“重建了但结果不变”的假同步。
+
+同时没有承诺所有 native material 参数完全等价。当前只映射 Vision `principled_bsdf` 明确支持且可合理近似的字段；`bEnableLighting`、`specular`、`specularTint`、legacy `ambient/diffuse/specular_color/shininess` 仍按降级处理，后续需要单独定义 unlit/specular/legacy 的转换策略。
+
+### 实施过程
+
+- 修复 `create_vision_material()` 的基础问题：旧代码 `MaterialDesc desc("principled_bsdf"); desc.init({})` 实际只设置 name，`MaterialDesc::init()` 会把 type 默认成 `diffuse`。现在显式传入：
+
+```cpp
+{ "type": "principled_bsdf", "param": {} }
+```
+
+- `vision_material_adapter.cpp` 新增可表达字段映射：
+  - `OpticsDevice::subsurface` -> `subsurface_weight`
+  - `OpticsDevice::anisotropic` -> `anisotropic`
+  - `OpticsDevice::sheen` -> `sheen_weight`
+  - `OpticsDevice::sheenTint` -> `sheen_tint` 灰度近似
+  - `OpticsDevice::clearcoat` -> `coat_weight`
+  - `OpticsDevice::clearcoatGloss` -> `coat_roughness = 1 - clearcoatGloss` 的 inverse approximation
+- 对上述字段做合理 clamp，避免超过 Vision slot 范围。
+- `compute_vision_scene_signature()` fold 同一组已映射字段，确保变化会触发 EngineBuilt Vision rebuild。
+- `vision_material_adapter.h` 更新 mapping rules，明确 unsupported fields 使用 Vision defaults。
+- 新增 `corona_vision_material_adapter_tests`：
+  - 构造 base Optics 与 extended Optics。
+  - 调用 `create_vision_material()` 创建 Vision material。
+  - 用 material hash 验证扩展 Optics 字段会改变 Vision material。
+  - 覆盖超范围输入的 clamp 路径。
+- 修复 `BUILD_CORONA_TESTING=ON` 但 `BUILD_TESTING=OFF` 时 CTest 不生成测试清单的问题：根 `CMakeLists.txt` 在该条件下调用 `enable_testing()`。
+- 给 `VisionMaterialAdapterTests` 设置 CTest working directory 为 Vision material 插件所在目录，保证 `vision-material-principled_bsdf` 能被动态加载。
+
+### 遇到的问题与处理
+
+- 新增测试首次运行返回 `-1073741515`：原因是测试 exe 不在运行时 DLL 目录。改用 `build/bin/RelWithDebInfo` 加入 `PATH` 和正确 working directory 后继续定位。
+- 测试随后暴露 adapter 实际加载 `vision-material-diffuse`，并出现 principled 参数 unknown warning。根因是 `MaterialDesc::init({})` 默认 material type 为 `diffuse`；已改为显式 `type=principled_bsdf`。
+- CTest 初次找不到任何测试：根因是项目自有 `BUILD_CORONA_TESTING` 没有启用 CTest；已修复。
+- CTest 全量初次失败于 `NetworkProtocolTests` exe 未构建：先构建 `corona_network_protocol_tests`，再重跑全量 CTest，通过。
+
+### 验证记录
+
+提交 `4cfbaeb3` 前已执行：
+
+- `cmake --build D:/Documents/GitHub/CoronaEngine/build --config RelWithDebInfo --target corona_vision_material_adapter_tests -- --quiet`，通过 VS DevCmd wrapper 执行：通过。日志：`build\agent-vision-material-test-build.log`。
+- `ctest --test-dir D:/Documents/GitHub/CoronaEngine/build -C RelWithDebInfo -R VisionMaterialAdapterTests --output-on-failure -V`，使用 VS 自带 `ctest.exe` 执行：通过。
+- `cmake --build D:/Documents/GitHub/CoronaEngine/build --config RelWithDebInfo --target corona_engine -- --quiet`，通过 VS DevCmd wrapper 执行：通过。日志：`build\agent-build.log`。
+- `cmake --build D:/Documents/GitHub/CoronaEngine/build --config RelWithDebInfo --target test-material-reset -- --quiet`，通过。日志：`build\agent-vision-material-reset-build.log`。
+- `build\bin\RelWithDebInfo\test-material-reset.exe`：通过，输出 `pass=4 fail=0`。
+- `cmake --build D:/Documents/GitHub/CoronaEngine/build --config RelWithDebInfo --target corona_network_protocol_tests -- --quiet`：通过。日志：`build\agent-network-tests-build.log`。
+- `ctest --test-dir D:/Documents/GitHub/CoronaEngine/build -C RelWithDebInfo --output-on-failure -V`：通过，`NetworkProtocolTests` 与 `VisionMaterialAdapterTests` 均通过。
+- `python -m unittest discover -s editor\CoronaCore\tests -p "test*.py"`：通过，9 tests OK。
+- `git diff --check`：通过。
+
+### E2E / 手动验证记录
+
+当前仍缺少 native/内置 Vision 对同一材质编辑的可视化自动对比 harness。需要在 Editor 中手动复核：
+
+1. 打开含有 actor/model 的 EngineBuilt Vision scene。
+2. 修改 actor optics 的 roughness、metallic、subsurface、anisotropic、sheen、sheenTint、clearcoat、clearcoatGloss。
+3. 预期 native material 更新；切到 Vision backend 后，内置 Vision rebuild，且 material 至少按上述 mapping 发生可观察变化。
+4. 修改 `bEnableLighting`、`specular`、`specularTint`、legacy material 字段时，当前不承诺 Vision 等价变化，应按默认/降级策略记录。
+
+剩余风险：尚未做自动截图或数值渲染对比来证明 native 与 Vision 视觉结果接近；后续 task 6 应补材质测试 scene 和可重复对比流程。
+
 ## Task 1 实施记录：已有 actor 的 set_model() 真正替换 geometry/profile
 
 代码提交：`61a90a46 fix: replace actor model profiles`
