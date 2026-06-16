@@ -409,7 +409,7 @@
                 :class="{ 'bg-[#264f78]/60': selectedItem === 'cam:' + cam.name }"
                 @mouseenter="RefreshCameraListOnHover"
                 @click="SelectCamera(cam)"
-                @dblclick="OpenCameraView(cam)"
+                @dblclick="isCameraDeletable(cam) && OpenCameraView(cam)"
               >
                 <span class="w-5 flex-shrink-0">
                   <svg class="w-4 h-4 text-[#90caf9]" fill="currentColor" viewBox="0 0 24 24">
