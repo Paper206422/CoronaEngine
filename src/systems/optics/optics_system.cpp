@@ -1336,6 +1336,12 @@ std::size_t OpticsSystem::compute_vision_scene_signature() const {
                 // Material parameters bridged into the Vision principled BSDF.
                 mix_float(optics->metallic);
                 mix_float(optics->roughness);
+                mix_float(optics->subsurface);
+                mix_float(optics->anisotropic);
+                mix_float(optics->sheen);
+                mix_float(optics->sheenTint);
+                mix_float(optics->clearcoat);
+                mix_float(optics->clearcoatGloss);
 
                 auto geom = geom_storage.try_acquire_read(optics->geometry_handle);
                 if (!geom) continue;

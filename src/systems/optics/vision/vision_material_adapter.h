@@ -22,11 +22,17 @@ struct MeshDevice;
 namespace Corona::Systems::Vision {
 
 // Maps a single CoronaEngine material to a Vision Material (PrincipledBSDF).
-// Mapping rules (first version, flat color only):
-//   MeshDevice::materialColor[0..2] -> baseColor
+// Mapping rules:
+//   MeshDevice::materialColor[0..2] -> color
 //   OpticsDevice::roughness          -> roughness
 //   OpticsDevice::metallic           -> metallic
-//   all other Vision principled params -> Vision defaults
+//   OpticsDevice::subsurface         -> subsurface_weight
+//   OpticsDevice::anisotropic        -> anisotropic
+//   OpticsDevice::sheen              -> sheen_weight
+//   OpticsDevice::sheenTint          -> sheen_tint (grayscale approximation)
+//   OpticsDevice::clearcoat          -> coat_weight
+//   OpticsDevice::clearcoatGloss     -> coat_roughness (inverse approximation)
+//   unsupported Corona fields        -> Vision defaults
 //
 // Returns nullptr on failure.
 std::shared_ptr<::vision::Material> create_vision_material(
