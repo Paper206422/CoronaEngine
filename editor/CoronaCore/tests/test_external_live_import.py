@@ -119,6 +119,26 @@ class FakeActor:
 
 
 class ExternalLiveImportTests(unittest.TestCase):
+    def test_vision_cube_primitive_uses_vision_dimension_fallbacks(self):
+        vertices, faces = scene_tools_module._vision_primitive_vertices({
+            "param": {"x": 2, "y": 0, "z": 0},
+        }, "cube")
+
+        self.assertEqual(len(vertices), 8)
+        self.assertEqual(len(faces), 6)
+        self.assertEqual(max(abs(vertex[1]) for vertex in vertices), 1.0)
+        self.assertEqual(max(abs(vertex[2]) for vertex in vertices), 1.0)
+
+    def test_vision_sphere_primitive_matches_vision_subdivision_counts(self):
+        vertices, faces = scene_tools_module._vision_primitive_vertices({
+            "param": {"radius": 2, "sub_div": 3},
+        }, "sphere")
+
+        self.assertEqual(len(vertices), 14)
+        self.assertEqual(len(faces), 24)
+        self.assertEqual(vertices[0], [0.0, 2.0, 0.0])
+        self.assertEqual(vertices[-1], [0.0, -2.0, 0.0])
+
     def test_import_creates_proxy_actors_and_persists_bindings(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -174,7 +194,22 @@ class ExternalLiveImportTests(unittest.TestCase):
                                 },
                             },
                         },
-                        {"type": "sphere", "name": "NotYetSupported"},
+                        {
+                            "type": "sphere",
+                            "name": "Ball",
+                            "param": {
+                                "radius": 0.5,
+                                "sub_div": 4,
+                                "transform": {
+                                    "type": "trs",
+                                    "param": {
+                                        "t": [0, 0, 2],
+                                        "s": [2, 1, 1],
+                                    },
+                                },
+                            },
+                        },
+                        {"type": "cylinder", "name": "NotYetSupported"},
                     ],
                 },
             }), encoding="utf-8")
@@ -206,9 +241,9 @@ class ExternalLiveImportTests(unittest.TestCase):
             self.assertEqual(scene._camera.position, [4.0, 5.0, -6.0])
             self.assertEqual(scene._camera.forward, [0.0, 0.0, 1.0])
             self.assertAlmostEqual(scene._camera.fov, 57.29577951308232)
-            self.assertEqual(result["proxy_actors_created"], 2)
+            self.assertEqual(result["proxy_actors_created"], 3)
             self.assertEqual(result["proxy_actors_reused"], 0)
-            self.assertEqual(len(scene.get_actors()), 2)
+            self.assertEqual(len(scene.get_actors()), 3)
             self.assertEqual(scene.get_actors()[0].name, "Chair")
             self.assertFalse(scene.get_actors()[0].physics_enabled)
             self.assertEqual(scene.get_actors()[0].position, [1.0, 2.0, -3.0])
@@ -222,13 +257,21 @@ class ExternalLiveImportTests(unittest.TestCase):
             proxy_text = (root / scene.get_actors()[1].route).read_text(encoding="utf-8")
             self.assertIn("v 1 0 2", proxy_text)
             self.assertIn("f 1 2 3", proxy_text)
+            self.assertEqual(scene.get_actors()[2].name, "Ball")
+            self.assertFalse(scene.get_actors()[2].physics_enabled)
+            self.assertEqual(scene.get_actors()[2].position, [0.0, 0.0, -2.0])
+            self.assertEqual(scene.get_actors()[2].scale, [2.0, 2.0, 2.0])
+            sphere_proxy_text = (root / scene.get_actors()[2].route).read_text(encoding="utf-8")
+            self.assertIn("v 0 0.5 2", sphere_proxy_text)
+            self.assertIn("f 1 3 2", sphere_proxy_text)
             self.assertEqual(scene.vision_import_mode, "external_live")
             self.assertEqual(scene.vision_bindings[0]["actor_guid"],
                              scene.get_actors()[0].actor_guid)
             self.assertEqual(scene.vision_bindings[0]["shape_guid"], "shape-chair")
             self.assertEqual(scene.vision_bindings[0]["json_path"], "/scene/shapes/0")
             self.assertEqual(scene.vision_bindings[1]["shape_type"], "quad")
-            self.assertEqual(scene.vision_unsupported_shapes[0]["type"], "sphere")
+            self.assertEqual(scene.vision_bindings[2]["shape_type"], "sphere")
+            self.assertEqual(scene.vision_unsupported_shapes[0]["type"], "cylinder")
             self.assertEqual(scene.vision_unsupported_shapes[0]["reason"],
                              "unsupported_shape_type")
             self.assertEqual(loaded_paths, [str(vision_scene.resolve())])

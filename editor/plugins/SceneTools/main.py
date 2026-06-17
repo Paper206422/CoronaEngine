@@ -16,6 +16,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_SUPPORTED_VISION_PRIMITIVES = {"quad", "cube", "sphere"}
+
 
 def _active_project_path():
     try:
@@ -265,6 +267,29 @@ def _apply_vision_matrix_to_corona(matrix, point):
     return [x, y, -z]
 
 
+def _apply_corona_trs_to_point(transform: dict, point):
+    sx, sy, sz = transform.get("scale", [1.0, 1.0, 1.0])
+    rx, ry, rz = transform.get("rotation", [0.0, 0.0, 0.0])
+    tx, ty, tz = transform.get("position", [0.0, 0.0, 0.0])
+    x = point[0] * sx
+    y = point[1] * sy
+    z = point[2] * sz
+
+    cos_x = math.cos(rx)
+    sin_x = math.sin(rx)
+    y, z = y * cos_x - z * sin_x, y * sin_x + z * cos_x
+
+    cos_y = math.cos(ry)
+    sin_y = math.sin(ry)
+    x, z = x * cos_y + z * sin_y, -x * sin_y + z * cos_y
+
+    cos_z = math.cos(rz)
+    sin_z = math.sin(rz)
+    x, y = x * cos_z - y * sin_z, x * sin_z + y * cos_z
+
+    return [x + tx, y + ty, z + tz]
+
+
 def _extract_vision_primitive_proxy_transform(shape: dict) -> dict:
     shape_type = _vision_shape_type(shape)
     local_vertices, _ = _vision_primitive_vertices(shape, shape_type)
@@ -345,9 +370,14 @@ def _vision_primitive_vertices(shape: dict, shape_type: str):
             [-hw, 0.0, -hh],
         ], [[1, 2, 3], [3, 2, 4]]
     if shape_type == "cube":
-        sx = float(params.get("x", params.get("width", 1.0))) * 0.5
-        sy = float(params.get("y", params.get("height", 1.0))) * 0.5
-        sz = float(params.get("z", params.get("depth", 1.0))) * 0.5
+        x = float(params.get("x", params.get("width", 1.0)))
+        y = float(params.get("y", params.get("height", 1.0)))
+        z = float(params.get("z", params.get("depth", 1.0)))
+        y = x if y == 0.0 else y
+        z = y if z == 0.0 else z
+        sx = x * 0.5
+        sy = y * 0.5
+        sz = z * 0.5
         return [
             [-sx, -sy, -sz], [sx, -sy, -sz], [sx, sy, -sz], [-sx, sy, -sz],
             [-sx, -sy, sz], [sx, -sy, sz], [sx, sy, sz], [-sx, sy, sz],
@@ -359,12 +389,60 @@ def _vision_primitive_vertices(shape: dict, shape_type: str):
             [3, 7, 8, 4],
             [4, 8, 5, 1],
         ]
+    if shape_type == "sphere":
+        radius = float(params.get("radius", 1.0))
+        theta_div = max(3, int(params.get("sub_div", 60)))
+        phi_div = 2 * theta_div
+        vertices = [[0.0, radius, 0.0]]
+        for i in range(1, theta_div):
+            v = float(i) / theta_div
+            theta = math.pi * v
+            y = radius * math.cos(theta)
+            ring_radius = radius * math.sin(theta)
+            for j in range(phi_div):
+                u = float(j) / phi_div
+                phi = u * math.tau
+                vertices.append([
+                    math.cos(phi) * ring_radius,
+                    y,
+                    math.sin(phi) * ring_radius,
+                ])
+        vertices.append([0.0, -radius, 0.0])
+
+        faces = []
+        for i in range(phi_div):
+            faces.append([1, ((i + 1) % phi_div) + 2, i + 2])
+
+        for i in range(theta_div - 2):
+            vert_start = 2 + i * phi_div
+            for j in range(phi_div):
+                current = vert_start + j
+                next_vertex = vert_start + ((j + 1) % phi_div)
+                below = current + phi_div
+                below_next = next_vertex + phi_div
+                faces.append([current, next_vertex, below])
+                faces.append([next_vertex, below_next, below])
+
+        bottom = len(vertices)
+        last_ring = 2 + (theta_div - 2) * phi_div
+        for i in range(phi_div):
+            current = last_ring + i
+            next_vertex = last_ring + ((i + 1) % phi_div)
+            faces.append([bottom, next_vertex, current])
+        return vertices, faces
     return [], []
 
 
 def _vision_primitive_world_vertices(shape: dict, local_vertices):
     matrix = _vision_transform_matrix(shape)
-    return [_apply_vision_matrix_to_corona(matrix, vertex) for vertex in local_vertices]
+    if matrix:
+        return [_apply_vision_matrix_to_corona(matrix, vertex) for vertex in local_vertices]
+
+    transform = _extract_vision_shape_transform(shape)
+    return [
+        _apply_corona_trs_to_point(transform, [vertex[0], vertex[1], -vertex[2]])
+        for vertex in local_vertices
+    ]
 
 
 def _ensure_vision_primitive_proxy(scene, shape: dict, shape_type: str, json_path: str):
@@ -893,7 +971,7 @@ class SceneTools(PluginBase):
                             "model_path": model_path,
                         })
                         continue
-                elif shape_type in ("quad", "cube"):
+                elif shape_type in _SUPPORTED_VISION_PRIMITIVES:
                     actor_route, model_path = _ensure_vision_primitive_proxy(
                         scene, shape, shape_type, json_path)
                     if not actor_route:
@@ -918,7 +996,7 @@ class SceneTools(PluginBase):
                     scene, previous_binding.get("actor_guid", "") if previous_binding else "")
                 transform = (
                     _extract_vision_primitive_proxy_transform(shape)
-                    if shape_type in ("quad", "cube")
+                    if shape_type in _SUPPORTED_VISION_PRIMITIVES
                     else _extract_vision_shape_transform(shape)
                 )
                 if actor is None:
@@ -932,7 +1010,7 @@ class SceneTools(PluginBase):
                     }
                     actor = Actor(
                         name=(_vision_proxy_name(shape, shape_type, shape_index)
-                              if shape_type in ("quad", "cube")
+                              if shape_type in _SUPPORTED_VISION_PRIMITIVES
                               else _vision_shape_name(shape, model_path, shape_index)),
                         route=actor_route,
                         actor_type="model",
