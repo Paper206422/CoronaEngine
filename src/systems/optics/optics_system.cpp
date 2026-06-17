@@ -1525,6 +1525,30 @@ bool OpticsSystem::init_vision_lazy() {
         vision_scene_source_ = VisionSceneSource::ExternalFile;
         return true;
 #else
+        std::optional<std::string> pending_external_scene;
+        {
+            std::lock_guard<std::mutex> lock(vision_scene_load_mutex_);
+            if (pending_vision_scene_load_ && !pending_vision_scene_load_->empty()) {
+                pending_external_scene.swap(pending_vision_scene_load_);
+            }
+        }
+        if (pending_external_scene) {
+            if (!load_external_vision_scene(*pending_external_scene)) {
+                CFW_LOG_ERROR("OpticsSystem: failed to initialize Vision from external scene: {}",
+                              *pending_external_scene);
+                return false;
+            }
+            vision_initialized_ = true;
+            vision_scene_source_ = VisionSceneSource::ExternalFile;
+            vision_applied_signature_ = 0;
+            vision_pending_signature_ = 0;
+            vision_stable_frames_ = 0;
+            vision_rebuild_retries_ = 0;
+            CFW_LOG_INFO("OpticsSystem: initialized Vision from external scene: {}",
+                         *pending_external_scene);
+            return true;
+        }
+
         renderPipeline = create_vision_pipeline();
         if (!renderPipeline) {
             CFW_LOG_ERROR("OpticsSystem: Failed to create Vision pipeline without external scene import");
@@ -1598,8 +1622,6 @@ bool OpticsSystem::init_vision_lazy() {
 }
 
 void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
-    if (!renderPipeline) return;
-
     (void)frame_count;
     apply_pending_vision_scene_load();
     if (!renderPipeline) return;

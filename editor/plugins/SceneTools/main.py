@@ -1,6 +1,8 @@
 import json
 import math
 import os
+import re
+import uuid
 
 from CoronaCore.core.components import Optics
 from CoronaCore.core.corona_editor import CoronaEditor
@@ -44,6 +46,13 @@ def _normalize_vec3(value):
     return [vec[0] / length, vec[1] / length, vec[2] / length]
 
 
+def _vision_vec_to_corona(value):
+    vec = _as_float3(value)
+    if vec is None:
+        return None
+    return [vec[0], vec[1], -vec[2]]
+
+
 def _extract_vision_camera_pose(document: dict):
     scene_data = document.get("scene", document) if isinstance(document, dict) else {}
     camera = None
@@ -62,23 +71,23 @@ def _extract_vision_camera_pose(document: dict):
     )
 
     position = (
-        _as_float3(transform_params.get("position"))
-        or _as_float3(params.get("position"))
-        or _as_float3(camera.get("position"))
+        _vision_vec_to_corona(transform_params.get("position"))
+        or _vision_vec_to_corona(params.get("position"))
+        or _vision_vec_to_corona(camera.get("position"))
     )
     up = (
-        _normalize_vec3(transform_params.get("up"))
-        or _normalize_vec3(params.get("up"))
-        or _normalize_vec3(params.get("world_up"))
+        _normalize_vec3(_vision_vec_to_corona(transform_params.get("up")))
+        or _normalize_vec3(_vision_vec_to_corona(params.get("up")))
+        or _normalize_vec3(_vision_vec_to_corona(params.get("world_up")))
         or [0.0, 1.0, 0.0]
     )
     forward = (
-        _normalize_vec3(transform_params.get("forward"))
-        or _normalize_vec3(transform_params.get("direction"))
-        or _normalize_vec3(params.get("forward"))
-        or _normalize_vec3(params.get("direction"))
+        _normalize_vec3(_vision_vec_to_corona(transform_params.get("forward")))
+        or _normalize_vec3(_vision_vec_to_corona(transform_params.get("direction")))
+        or _normalize_vec3(_vision_vec_to_corona(params.get("forward")))
+        or _normalize_vec3(_vision_vec_to_corona(params.get("direction")))
     )
-    target = _as_float3(transform_params.get("target_pos") or transform_params.get("target"))
+    target = _vision_vec_to_corona(transform_params.get("target_pos") or transform_params.get("target"))
     if forward is None and position is not None and target is not None:
         forward = _normalize_vec3([
             target[0] - position[0],
@@ -110,6 +119,302 @@ def _extract_vision_camera_pose(document: dict):
         "world_up": up,
         "fov": fov,
     }
+
+
+def _vision_scene_data(document: dict) -> dict:
+    return document.get("scene", document) if isinstance(document, dict) else {}
+
+
+def _iter_vision_shapes(document: dict):
+    scene_data = _vision_scene_data(document)
+    shapes = scene_data.get("shapes", [])
+    if isinstance(shapes, list):
+        for index, shape in enumerate(shapes):
+            if isinstance(shape, dict):
+                yield index, f"/scene/shapes/{index}", shape
+    elif isinstance(shapes, dict):
+        for index, (key, shape) in enumerate(shapes.items()):
+            if isinstance(shape, dict):
+                yield index, f"/scene/shapes/{key}", shape
+
+
+def _vision_shape_params(shape: dict) -> dict:
+    params = shape.get("param")
+    return params if isinstance(params, dict) else {}
+
+
+def _vision_shape_type(shape: dict) -> str:
+    return str(shape.get("type") or shape.get("shape_type") or "").strip().lower()
+
+
+def _vision_proxy_name(shape: dict, shape_type: str, shape_index: int) -> str:
+    raw = shape.get("name")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return f"vision_{shape_type or 'shape'}_{shape_index}"
+
+
+def _vision_shape_name(shape: dict, model_path: str, shape_index: int) -> str:
+    raw = shape.get("name")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    stem = os.path.splitext(os.path.basename(model_path))[0]
+    return stem or f"vision_shape_{shape_index}"
+
+
+def _vision_shape_guid(shape: dict, json_path: str) -> str:
+    for key in ("shape_guid", "guid", "id"):
+        value = shape.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return f"vision-shape-{uuid.uuid5(uuid.NAMESPACE_URL, json_path).hex}"
+
+
+def _resolve_vision_model_path(scene_path: str, shape: dict) -> str:
+    params = _vision_shape_params(shape)
+    model_path = params.get("fn") or shape.get("fn") or params.get("path") or shape.get("path")
+    if not isinstance(model_path, str) or not model_path.strip():
+        return ""
+    model_path = model_path.strip()
+    if os.path.isabs(model_path):
+        return os.path.abspath(model_path)
+    return os.path.abspath(os.path.join(os.path.dirname(scene_path), model_path))
+
+
+def _flatten_matrix4x4(value):
+    if isinstance(value, list) and len(value) == 16:
+        try:
+            return [float(item) for item in value]
+        except (TypeError, ValueError):
+            return None
+    if isinstance(value, list) and len(value) == 4 and all(
+            isinstance(row, list) and len(row) == 4 for row in value):
+        try:
+            return [float(item) for row in value for item in row]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _vector_length(vec):
+    return math.sqrt(sum(component * component for component in vec))
+
+
+def _clean_near_zero(value):
+    return 0.0 if abs(value) < 1e-9 else value
+
+
+def _aabb_center_and_max_axis(vertices):
+    if not vertices:
+        return [0.0, 0.0, 0.0], 1.0
+    mins = [min(vertex[i] for vertex in vertices) for i in range(3)]
+    maxs = [max(vertex[i] for vertex in vertices) for i in range(3)]
+    center = [(mins[i] + maxs[i]) * 0.5 for i in range(3)]
+    max_axis = max(maxs[i] - mins[i] for i in range(3))
+    return center, max_axis if max_axis > 1e-8 else 1.0
+
+
+def _matrix4x4_to_corona_trs(matrix):
+    # Vision and Corona use opposite Z handedness. Convert object matrices with
+    # F * M * F, matching the C++ built-in Vision geometry adapter.
+    position = [matrix[12], matrix[13], -matrix[14]]
+    columns = [
+        [matrix[0], matrix[1], -matrix[2]],
+        [matrix[4], matrix[5], -matrix[6]],
+        [-matrix[8], -matrix[9], matrix[10]],
+    ]
+    scale = [_vector_length(column) for column in columns]
+    if any(component <= 1e-8 for component in scale):
+        return {"position": position, "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]}
+
+    r00, r10, r20 = [columns[0][i] / scale[0] for i in range(3)]
+    r01, r11, r21 = [columns[1][i] / scale[1] for i in range(3)]
+    r02, r12, r22 = [columns[2][i] / scale[2] for i in range(3)]
+
+    sin_y = max(-1.0, min(1.0, -r20))
+    y = math.asin(sin_y)
+    cos_y = math.cos(y)
+    if abs(cos_y) > 1e-6:
+        x = math.atan2(r21, r22)
+        z = math.atan2(r10, r00)
+    else:
+        x = math.atan2(-r12, r11)
+        z = 0.0
+
+    return {"position": position, "rotation": [x, y, z], "scale": scale}
+
+
+def _vision_transform_matrix(shape: dict):
+    params = _vision_shape_params(shape)
+    transform = params.get("transform") if isinstance(params.get("transform"), dict) else {}
+    transform_params = transform.get("param") if isinstance(transform.get("param"), dict) else transform
+    transform_type = str(transform.get("type") or "matrix4x4").lower()
+    if transform_type != "matrix4x4":
+        return None
+    return _flatten_matrix4x4(transform_params.get("matrix4x4"))
+
+
+def _apply_vision_matrix_to_corona(matrix, point):
+    if not matrix:
+        x, y, z = point
+    else:
+        px, py, pz = point
+        x = px * matrix[0] + py * matrix[4] + pz * matrix[8] + matrix[12]
+        y = px * matrix[1] + py * matrix[5] + pz * matrix[9] + matrix[13]
+        z = px * matrix[2] + py * matrix[6] + pz * matrix[10] + matrix[14]
+    return [x, y, -z]
+
+
+def _extract_vision_primitive_proxy_transform(shape: dict) -> dict:
+    shape_type = _vision_shape_type(shape)
+    local_vertices, _ = _vision_primitive_vertices(shape, shape_type)
+    world_vertices = _vision_primitive_world_vertices(shape, local_vertices)
+    center, max_axis = _aabb_center_and_max_axis(world_vertices)
+    return {
+        "position": center,
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [max_axis, max_axis, max_axis],
+    }
+
+
+def _extract_vision_shape_transform(shape: dict) -> dict:
+    params = _vision_shape_params(shape)
+    transform = params.get("transform") if isinstance(params.get("transform"), dict) else {}
+    transform_params = transform.get("param") if isinstance(transform.get("param"), dict) else transform
+    transform_type = str(transform.get("type") or "matrix4x4").lower()
+
+    position = [0.0, 0.0, 0.0]
+    rotation = [0.0, 0.0, 0.0]
+    scale = [1.0, 1.0, 1.0]
+
+    if transform_type == "matrix4x4":
+        matrix = _flatten_matrix4x4(transform_params.get("matrix4x4"))
+        if matrix:
+            return _matrix4x4_to_corona_trs(matrix)
+    elif transform_type == "trs":
+        t = _as_float3(transform_params.get("t"))
+        s = _as_float3(transform_params.get("s"))
+        if t:
+            position = [t[0], t[1], -t[2]]
+        if s:
+            scale = s
+    elif transform_type == "euler":
+        t = _as_float3(transform_params.get("position"))
+        if t:
+            position = [t[0], t[1], -t[2]]
+        try:
+            rotation = [
+                float(transform_params.get("pitch", 0.0)),
+                -float(transform_params.get("yaw", 0.0)),
+                -float(transform_params.get("roll", 0.0)),
+            ]
+        except (TypeError, ValueError):
+            rotation = [0.0, 0.0, 0.0]
+
+    return {"position": position, "rotation": rotation, "scale": scale}
+
+
+def _project_root_for_scene(scene):
+    project_root = _active_project_path()
+    if project_root:
+        return os.path.abspath(project_root)
+    scene_route = getattr(scene, "route", "")
+    if os.path.isabs(scene_route):
+        parent = os.path.dirname(os.path.dirname(scene_route))
+        if parent:
+            return os.path.abspath(parent)
+    return ""
+
+
+def _safe_filename_stem(value: str) -> str:
+    stem = re.sub(r"[^0-9A-Za-z_.-]+", "_", value.strip())
+    return stem.strip("._") or "vision_shape"
+
+
+def _vision_primitive_vertices(shape: dict, shape_type: str):
+    params = _vision_shape_params(shape)
+    if shape_type == "quad":
+        width = float(params.get("width", 1.0))
+        height = float(params.get("height", 1.0))
+        hw = width * 0.5
+        hh = height * 0.5
+        return [
+            [hw, 0.0, hh],
+            [hw, 0.0, -hh],
+            [-hw, 0.0, hh],
+            [-hw, 0.0, -hh],
+        ], [[1, 2, 3], [3, 2, 4]]
+    if shape_type == "cube":
+        sx = float(params.get("x", params.get("width", 1.0))) * 0.5
+        sy = float(params.get("y", params.get("height", 1.0))) * 0.5
+        sz = float(params.get("z", params.get("depth", 1.0))) * 0.5
+        return [
+            [-sx, -sy, -sz], [sx, -sy, -sz], [sx, sy, -sz], [-sx, sy, -sz],
+            [-sx, -sy, sz], [sx, -sy, sz], [sx, sy, sz], [-sx, sy, sz],
+        ], [
+            [1, 2, 3, 4],
+            [5, 8, 7, 6],
+            [1, 5, 6, 2],
+            [2, 6, 7, 3],
+            [3, 7, 8, 4],
+            [4, 8, 5, 1],
+        ]
+    return [], []
+
+
+def _vision_primitive_world_vertices(shape: dict, local_vertices):
+    matrix = _vision_transform_matrix(shape)
+    return [_apply_vision_matrix_to_corona(matrix, vertex) for vertex in local_vertices]
+
+
+def _ensure_vision_primitive_proxy(scene, shape: dict, shape_type: str, json_path: str):
+    project_root = _project_root_for_scene(scene)
+    if not project_root:
+        return "", ""
+
+    local_vertices, faces = _vision_primitive_vertices(shape, shape_type)
+    if not local_vertices or not faces:
+        return "", ""
+
+    world_vertices = _vision_primitive_world_vertices(shape, local_vertices)
+    vertices = [
+        [_clean_near_zero(world[0]), _clean_near_zero(world[1]), _clean_near_zero(-world[2])]
+        for world in world_vertices
+    ]
+
+    shape_guid = _vision_shape_guid(shape, json_path)
+    stem = _safe_filename_stem(str(shape.get("name") or shape_type))
+    filename = f"{stem}_{uuid.uuid5(uuid.NAMESPACE_URL, shape_guid).hex[:12]}.obj"
+    proxy_dir = os.path.join(project_root, "Resource", "vision_proxies")
+    os.makedirs(proxy_dir, exist_ok=True)
+    abs_path = os.path.join(proxy_dir, filename)
+    rel_path = os.path.join("Resource", "vision_proxies", filename).replace("\\", "/")
+
+    lines = [f"# Corona external_live proxy for {shape_type} {json_path}"]
+    for x, y, z in vertices:
+        lines.append(f"v {x:.9g} {y:.9g} {z:.9g}")
+    for face in faces:
+        lines.append("f " + " ".join(str(index) for index in face))
+    with open(abs_path, "w", encoding="utf-8") as file:
+        file.write("\n".join(lines) + "\n")
+
+    return rel_path, abs_path
+
+
+def _find_actor_by_guid(scene, actor_guid: str):
+    if not actor_guid:
+        return None
+    for actor in scene.get_actors():
+        if getattr(actor, "actor_guid", "") == actor_guid:
+            return actor
+    return None
+
+
+def _binding_by_json_path(bindings, json_path: str):
+    for binding in bindings or []:
+        if binding.get("json_path") == json_path:
+            return binding
+    return None
 
 
 @PluginBase.register_web("SceneTools")
@@ -558,28 +863,141 @@ class SceneTools(PluginBase):
                 camera_imported = True
 
             active_camera = scene.get_active_camera()
-            if active_camera is not None:
-                active_camera.set_render_backend("vision")
-                if hasattr(scene.engine_scene, "set_active_camera"):
-                    scene.engine_scene.set_active_camera(getattr(active_camera, "engine_obj", active_camera))
 
             if "vision" not in scene.file_data:
                 scene.file_data["vision"] = {}
             scene.vision_source_path = abs_path
-            scene.vision_import_mode = "external"
+            scene.vision_import_mode = "external_live"
             scene.file_data["vision"]["source_path"] = abs_path
-            scene.file_data["vision"]["import_mode"] = "external"
+            scene.file_data["vision"]["import_mode"] = "external_live"
+
+            previous_bindings = list(getattr(scene, "vision_bindings", []))
+            new_bindings = []
+            unsupported_shapes = []
+            created_proxy_count = 0
+            reused_proxy_count = 0
+
+            for shape_index, json_path, shape in _iter_vision_shapes(document):
+                shape_type = _vision_shape_type(shape)
+                model_path = ""
+                actor_route = ""
+                if shape_type == "model":
+                    model_path = _resolve_vision_model_path(abs_path, shape)
+                    actor_route = model_path
+                    if not model_path or not os.path.isfile(model_path):
+                        unsupported_shapes.append({
+                            "shape_index": shape_index,
+                            "json_path": json_path,
+                            "type": shape_type,
+                            "reason": "model_file_not_found",
+                            "model_path": model_path,
+                        })
+                        continue
+                elif shape_type in ("quad", "cube"):
+                    actor_route, model_path = _ensure_vision_primitive_proxy(
+                        scene, shape, shape_type, json_path)
+                    if not actor_route:
+                        unsupported_shapes.append({
+                            "shape_index": shape_index,
+                            "json_path": json_path,
+                            "type": shape_type,
+                            "reason": "primitive_proxy_generation_failed",
+                        })
+                        continue
+                else:
+                    unsupported_shapes.append({
+                        "shape_index": shape_index,
+                        "json_path": json_path,
+                        "type": shape_type or "unknown",
+                        "reason": "unsupported_shape_type",
+                    })
+                    continue
+
+                previous_binding = _binding_by_json_path(previous_bindings, json_path)
+                actor = _find_actor_by_guid(
+                    scene, previous_binding.get("actor_guid", "") if previous_binding else "")
+                transform = (
+                    _extract_vision_primitive_proxy_transform(shape)
+                    if shape_type in ("quad", "cube")
+                    else _extract_vision_shape_transform(shape)
+                )
+                if actor is None:
+                    actor_guid = (
+                        previous_binding.get("actor_guid", "") if previous_binding else ""
+                    ) or f"actor-{uuid.uuid4().hex}"
+                    actor_data = {
+                        "actor_guid": actor_guid,
+                        "_suppress_network_broadcast": True,
+                        "geometry": transform,
+                    }
+                    actor = Actor(
+                        name=(_vision_proxy_name(shape, shape_type, shape_index)
+                              if shape_type in ("quad", "cube")
+                              else _vision_shape_name(shape, model_path, shape_index)),
+                        route=actor_route,
+                        actor_type="model",
+                        parent_scene=scene,
+                        actor_data=actor_data,
+                    )
+                    scene.add_actor(actor)
+                    if hasattr(actor, "set_physics_enabled"):
+                        try:
+                            actor.set_physics_enabled(False)
+                        except Exception as exc:
+                            logger.warning("Failed to disable physics for Vision proxy %s: %s",
+                                           getattr(actor, "name", actor_guid), exc)
+                    created_proxy_count += 1
+                else:
+                    if hasattr(actor, "set_position"):
+                        actor.set_position(transform["position"], True)
+                    if hasattr(actor, "set_rotation"):
+                        actor.set_rotation(transform["rotation"], True)
+                    if hasattr(actor, "set_scale"):
+                        actor.set_scale(transform["scale"], True)
+                    if hasattr(actor, "set_physics_enabled"):
+                        try:
+                            actor.set_physics_enabled(False)
+                        except Exception as exc:
+                            logger.warning("Failed to disable physics for Vision proxy %s: %s",
+                                           getattr(actor, "name", ""), exc)
+                    reused_proxy_count += 1
+
+                new_bindings.append({
+                    "actor_guid": getattr(actor, "actor_guid", ""),
+                    "actor_name": getattr(actor, "name", ""),
+                    "shape_guid": _vision_shape_guid(shape, json_path),
+                    "shape_index": shape_index,
+                    "json_path": json_path,
+                    "shape_type": shape_type,
+                    "model_path": model_path,
+                    "source_path": abs_path,
+                })
+
+            scene.vision_bindings = new_bindings
+            scene.vision_unsupported_shapes = unsupported_shapes
             scene.save_data()
 
             CoronaEditor.CoronaEngine.load_vision_scene(abs_path)
+            if active_camera is not None:
+                active_camera.set_render_backend("vision")
+                if hasattr(scene.engine_scene, "set_active_camera"):
+                    scene.engine_scene.set_active_camera(getattr(active_camera, "engine_obj", active_camera))
+                scene.save_data()
             scene._notify_scene_tree_changed()
-            logger.info("Vision scene imported into current scene %s: %s", scene_name, abs_path)
+            logger.info(
+                "Vision scene imported into current scene %s: %s (created proxies=%d, reused=%d, unsupported=%d)",
+                scene_name, abs_path, created_proxy_count, reused_proxy_count, len(unsupported_shapes))
             return {
                 "status": "success",
                 "scene": scene_name,
                 "path": abs_path,
+                "import_mode": "external_live",
                 "camera_imported": camera_imported,
                 "camera": active_camera.to_dict() if active_camera is not None else None,
+                "proxy_actors_created": created_proxy_count,
+                "proxy_actors_reused": reused_proxy_count,
+                "bindings": new_bindings,
+                "unsupported_shapes": unsupported_shapes,
             }
         except json.JSONDecodeError as exc:
             return {"status": "error", "message": f"Invalid Vision JSON: {exc}"}

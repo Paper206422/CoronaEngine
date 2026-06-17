@@ -311,11 +311,17 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
             scene.file_data = configparser.ConfigParser()
             scene._environment = None
             scene._cameras = []
+            scene._main_camera = None
             scene.script_path = ""
             scene.terrain_path = ""
+            scene.terrain_type = ""
+            scene.vision_source_path = ""
+            scene.vision_import_mode = ""
+            scene.get_active_camera = lambda: None
             scene._actors = [
                 SimpleNamespace(
                     name="hud_quad",
+                    actor_guid="actor-hud",
                     actor_type="model",
                     route="Resource/hud.obj",
                     _geometry=True,
@@ -331,9 +337,84 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
             saved = configparser.ConfigParser()
             saved.read(scene_path, encoding="utf-8")
             self.assertTrue(saved["actors"].getboolean("hud_quad.follow_camera"))
+            self.assertEqual(saved["actors"].get("hud_quad.actor_guid"), "actor-hud")
 
             actor_data = scene._build_actor_json(saved["actors"], "hud_quad")
             self.assertTrue(actor_data["follow_camera"])
+            self.assertEqual(actor_data["actor_guid"], "actor-hud")
+
+    def test_scene_vision_bindings_persist_in_indexed_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene_path = Path(tmp) / "main.scene"
+            scene = scene_module.Scene.__new__(scene_module.Scene)
+            scene.route = str(scene_path)
+            scene.name = "main"
+            scene.file_data = configparser.ConfigParser()
+            scene._environment = None
+            scene._cameras = []
+            scene._main_camera = None
+            scene.script_path = ""
+            scene.terrain_path = ""
+            scene.terrain_type = ""
+            scene.vision_source_path = "D:/vision/scene.json"
+            scene.vision_import_mode = "external_live"
+            scene.vision_bindings = [{
+                "actor_guid": "actor-cube",
+                "actor_name": "Cube",
+                "shape_guid": "vision-shape-cube",
+                "shape_index": 0,
+                "json_path": "/scene/shapes/0",
+                "shape_type": "model",
+                "model_path": "D:/vision/cube.obj",
+                "source_path": "D:/vision/scene.json",
+            }]
+            scene.vision_unsupported_shapes = [{
+                "shape_index": 1,
+                "json_path": "/scene/shapes/1",
+                "type": "quad",
+                "reason": "unsupported_shape_type",
+            }]
+            scene._actors = []
+            scene.get_active_camera = lambda: None
+
+            scene.save_data()
+
+            saved = configparser.ConfigParser()
+            saved.read(scene_path, encoding="utf-8")
+            self.assertEqual(saved["vision"]["import_mode"], "external_live")
+            self.assertEqual(saved["vision_bindings"]["binding0.actor_guid"], "actor-cube")
+            self.assertEqual(saved["vision_bindings"]["binding0.json_path"], "/scene/shapes/0")
+            self.assertEqual(saved["vision_unsupported_shapes"]["shape0.type"], "quad")
+
+            restored = scene_module.Scene.__new__(scene_module.Scene)
+            restored.file_data = saved
+            self.assertEqual(restored._read_indexed_section("vision_bindings")[0]["actor_guid"],
+                             "actor-cube")
+
+            read_scene_path = Path(tmp) / "read.scene"
+            minimal = configparser.ConfigParser()
+            minimal["vision"] = {
+                "source_path": "D:/vision/scene.json",
+                "import_mode": "external_live",
+            }
+            minimal["vision_bindings"] = {
+                "binding0.actor_guid": "actor-cube",
+                "binding0.json_path": "/scene/shapes/0",
+            }
+            with open(read_scene_path, "w", encoding="utf-8") as handle:
+                minimal.write(handle)
+
+            read_scene = scene_module.Scene.__new__(scene_module.Scene)
+            read_scene.route = str(read_scene_path)
+            read_scene.name = "read"
+            read_scene.file_data = configparser.ConfigParser()
+            read_scene._actors = []
+            read_scene.vision_bindings = []
+            read_scene.vision_unsupported_shapes = []
+            read_scene.read_data()
+
+            self.assertEqual(read_scene.vision_import_mode, "external_live")
+            self.assertEqual(read_scene.vision_bindings[0]["actor_guid"], "actor-cube")
 
 
 if __name__ == "__main__":

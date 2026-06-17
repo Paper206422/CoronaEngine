@@ -64,6 +64,8 @@ class Scene:
         self.script_path = ''
         self.vision_source_path = ''
         self.vision_import_mode = ''
+        self.vision_bindings: List[Dict[str, Any]] = []
+        self.vision_unsupported_shapes: List[Dict[str, Any]] = []
 
         self.read_data()
         # 场景创建后补齐默认相机（幂等）
@@ -139,6 +141,8 @@ class Scene:
             if 'vision' in self.file_data:
                 self.vision_source_path = self.file_data['vision'].get('source_path', '')
                 self.vision_import_mode = self.file_data['vision'].get('import_mode', '')
+            self.vision_bindings = self._read_indexed_section('vision_bindings')
+            self.vision_unsupported_shapes = self._read_indexed_section('vision_unsupported_shapes')
 
             self._pending_camera_data = {}
             if 'camera' in self.file_data:
@@ -257,6 +261,9 @@ class Scene:
 
             self.file_data['actors'][f'{actor_key}.actor_type'] = getattr(actor, 'actor_type', 'actor')
             self.file_data['actors'][f'{actor_key}.route'] = getattr(actor, 'route', '')
+            actor_guid = getattr(actor, 'actor_guid', '')
+            if actor_guid:
+                self.file_data['actors'][f'{actor_key}.actor_guid'] = actor_guid
             if hasattr(actor, 'get_follow_camera'):
                 self.file_data['actors'][f'{actor_key}.follow_camera'] = (
                     'true' if actor.get_follow_camera() else 'false'
@@ -287,6 +294,10 @@ class Scene:
                 self.file_data['vision'] = {}
             self.file_data['vision']['source_path'] = self.vision_source_path
             self.file_data['vision']['import_mode'] = self.vision_import_mode or 'external'
+
+        self._write_indexed_section('vision_bindings', getattr(self, 'vision_bindings', []))
+        self._write_indexed_section('vision_unsupported_shapes',
+                                    getattr(self, 'vision_unsupported_shapes', []))
 
         # 相机数据
         self.file_data['camera'] = {}
@@ -652,6 +663,8 @@ class Scene:
             "vision": {
                 "source_path": self.vision_source_path,
                 "import_mode": self.vision_import_mode,
+                "bindings": list(getattr(self, 'vision_bindings', [])),
+                "unsupported_shapes": list(getattr(self, 'vision_unsupported_shapes', [])),
             },
             "script": self.script_path,
             "actors": [actor.to_dict() for actor in self.get_actors()]
@@ -701,6 +714,7 @@ class Scene:
             "name": actor_name,
             "actor_type": actors_section.get(f'{actor_name}.actor_type', 'actor'),
             "route": actors_section.get(f'{actor_name}.route', ''),
+            "actor_guid": actors_section.get(f'{actor_name}.actor_guid', ''),
             "geometry": {}
         }
         follow_camera_key = f'{actor_name}.follow_camera'
@@ -717,3 +731,38 @@ class Scene:
         actor_data["geometry"]["scale"] = [float(x.strip()) for x in scale_str.split(',')]
 
         return actor_data
+
+    def _read_indexed_section(self, section_name: str) -> List[Dict[str, Any]]:
+        if section_name not in self.file_data:
+            return []
+        section = self.file_data[section_name]
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for key, value in section.items():
+            if '.' not in key:
+                continue
+            prefix, field = key.split('.', 1)
+            grouped.setdefault(prefix, {})[field] = value
+        def sort_key(item):
+            prefix = item[0]
+            if prefix.startswith('binding') and prefix[7:].isdigit():
+                return (0, int(prefix[7:]))
+            if prefix.startswith('shape') and prefix[5:].isdigit():
+                return (0, int(prefix[5:]))
+            return (1, prefix)
+        return [fields for _, fields in sorted(grouped.items(), key=sort_key)]
+
+    def _write_indexed_section(self, section_name: str, records: List[Dict[str, Any]]) -> None:
+        if records:
+            self.file_data[section_name] = {}
+            for index, record in enumerate(records):
+                prefix = f'binding{index}' if section_name == 'vision_bindings' else f'shape{index}'
+                for key, value in record.items():
+                    if value is None:
+                        continue
+                    if isinstance(value, (list, tuple)):
+                        serialized = ','.join(str(v) for v in value)
+                    else:
+                        serialized = str(value)
+                    self.file_data[section_name][f'{prefix}.{key}'] = serialized
+        elif section_name in self.file_data:
+            self.file_data.remove_section(section_name)
