@@ -37,7 +37,6 @@ add_subdirectory(render_graph)
 add_subdirectory(importers)
 add_subdirectory(pipelines)
 add_subdirectory(render_core)
-add_subdirectory(hotfix)
 add_subdirectory(sdk)
 
 if (VISION_BUILD_TESTS)
