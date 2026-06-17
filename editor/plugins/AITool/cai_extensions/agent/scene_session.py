@@ -185,6 +185,35 @@ class SceneSession:
             verb = "暂停"
         else:
             verb = "进行中"
+        def _names(values: Any, limit: int = 5) -> str:
+            if not isinstance(values, list):
+                return ""
+            names = [str(item).strip() for item in values if str(item).strip()]
+            if not names:
+                return ""
+            text = "、".join(names[:limit])
+            if len(names) > limit:
+                text += f" 等 {len(names)} 个"
+            return text
+
+        def _note_text(values: Any, limit: int = 3) -> str:
+            if not isinstance(values, list):
+                return ""
+            notes = []
+            for item in values:
+                if isinstance(item, dict):
+                    value = str(item.get("text") or "").strip()
+                else:
+                    value = str(item or "").strip()
+                if value:
+                    notes.append(value)
+            if not notes:
+                return ""
+            text = "；".join(notes[:limit])
+            if len(notes) > limit:
+                text += f"；另有 {len(notes) - limit} 条"
+            return text
+
         suffix = ""
         imported = int(event.get("imported_count", 0) or 0)
         assets = int(event.get("asset_count", 0) or 0)
@@ -193,18 +222,41 @@ class SceneSession:
         batch_index = int(event.get("batch_index", 0) or 0)
         batch_total = int(event.get("batch_total", 0) or 0)
         batch_prefix = f"第 {batch_index}/{batch_total} 批，" if batch_index and batch_total else ""
+        batch_names = _names(event.get("batch_asset_names"))
+        imported_names = _names(event.get("imported_asset_names") or event.get("batch_asset_names"))
+        next_names = _names(event.get("next_batch_asset_names"))
+        absorbed = _note_text(event.get("absorbed_notes"))
+        deferred = _note_text(event.get("deferred_notes"))
         if status == "done" and assets:
-            suffix = f" {batch_prefix}本批已处理 {imported}/{assets} 个物件。"
+            suffix = f" {batch_prefix}本批已放入 {imported}/{assets} 个物件"
+            if imported_names:
+                suffix += f"：{imported_names}"
+            suffix += "。"
             if total_assets:
                 suffix += f"累计已放入 {cumulative}/{total_assets} 个。"
+            if absorbed:
+                suffix += f" 已吸收你的要求：{absorbed}。"
+            if deferred:
+                suffix += f" 已记录待补：{deferred}。"
+            if next_names:
+                suffix += f" 下一批准备：{next_names}。"
         elif status == "start":
-            suffix = f" {batch_prefix}你可以继续提出调整，我会在下一批前吸收。"
+            suffix = f" {batch_prefix}"
+            if batch_names:
+                suffix += f"准备放入：{batch_names}。"
+            else:
+                suffix += "准备推进下一批。"
+            if next_names:
+                suffix += f" 后续还有：{next_names}。"
+            suffix += "你可以继续提出调整，我会在下一批前吸收。"
         elif status == "paused":
             mode = str(event.get("mode") or "")
             if mode == "DISCUSSING":
                 suffix = " 已切到讨论模式，后续批次暂不写入场景。"
             else:
                 suffix = " 已在批次边界暂停，等待 @GM 继续。"
+            if next_names or batch_names:
+                suffix += f" 暂停前剩余：{next_names or batch_names}。"
         return f"生成进度 {percent:>3}% [{bar}] {verb}：{label}。{detail}{suffix}"
 
     def _append_operation(
@@ -355,6 +407,9 @@ class SceneSession:
             if gen is None:
                 continue
             base_phase = phase.split("#", 1)[0]
+            if phase_metadata:
+                total_assets = sum(int(value.get("asset_count", 0) or 0)
+                                   for value in phase_metadata.values())
             meta = dict((phase_metadata or {}).get(phase, {}) or {})
             phase_index = len(phases_run) + 1
             batch_id = f"r{round_id}_{phase.replace('#', '_b')}"
@@ -405,10 +460,31 @@ class SceneSession:
 
             # 1. 生成本 phase 的资产（纯 API/几何，不碰引擎）
             try:
+                before_task_count = len(self.pending_tasks)
                 assets = gen(self, phase) or []
             except Exception as exc:  # noqa: BLE001
                 logger.error("[SceneSession] phase %s 生成失败（跳过）: %s", phase, exc)
                 assets = []
+                before_task_count = len(self.pending_tasks)
+
+            dynamic_meta = dict((phase_metadata or {}).get(phase, {}) or {})
+            if dynamic_meta:
+                meta.update(dynamic_meta)
+            asset_names = [str(item.get("name") or "").strip()
+                           for item in assets if isinstance(item, dict) and str(item.get("name") or "").strip()]
+            if asset_names:
+                meta["batch_asset_names"] = asset_names
+            if phase_metadata:
+                meta["asset_count"] = len(assets)
+                phase_metadata.setdefault(phase, {})["asset_count"] = len(assets)
+                phase_metadata[phase]["batch_asset_names"] = asset_names
+                total_assets = sum(int(value.get("asset_count", 0) or 0)
+                                   for value in phase_metadata.values())
+            recent_tasks = list(self.pending_tasks[before_task_count:])
+            absorbed_tasks = [task for task in recent_tasks
+                              if str(task.get("status") or "").startswith(("applied", "inserted", "already"))]
+            deferred_tasks = [task for task in recent_tasks
+                              if str(task.get("status") or "").startswith(("deferred", "pending"))]
 
             # 2. 导入（只 add 不 clear，经 EngineWriteGate）
             imported_this_phase: List[str] = []
@@ -451,6 +527,9 @@ class SceneSession:
                 "imported_count": len(imported_this_phase),
                 "cumulative_imported": cumulative_imported,
                 "total_assets": total_assets,
+                "imported_asset_names": asset_names[:len(imported_this_phase) or len(asset_names)],
+                "absorbed_notes": absorbed_tasks,
+                "deferred_notes": deferred_tasks,
             })
             self._publish_progress_event(progress_timeline[-1])
 

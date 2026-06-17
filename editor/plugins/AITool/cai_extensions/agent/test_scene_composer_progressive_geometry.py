@@ -24,6 +24,7 @@ from cai_extensions.agent.scene_composer_progressive import (  # noqa: E402
     _infer_primary_zone_ids,
     _vlm_max_targets,
 )
+from cai_extensions.agent.scene_session import SceneSession  # noqa: E402
 from cai_extensions.data_model.zone_tree import Connector, Volume, Zone, ZoneAspect, ZoneTree  # noqa: E402
 
 
@@ -254,12 +255,96 @@ def test_pending_notes_apply_to_next_batch_context():
     statuses = [item["status"] for item in session.pending_tasks]
     assert "applied_to_next_batch_layout" in statuses
     assert "queued_edit_or_waiting_for_actor" in statuses
-    assert "pending_next_generation" in statuses
+    assert "deferred_missing_asset" in statuses
     assert "applied_removed_from_remaining" in statuses
     assert out[0]["pos"] != [0.0, 0.0, 0.0]
     assert out[0]["runtime_generation_context"] == ["add lantern strings and glowing mushrooms later"]
     assert out[0]["runtime_layout_constraints"] == ["keep central activity area clear"]
     print("[OK] pending scene notes can mutate next batch positions and remove forbidden assets")
+
+
+def test_pending_generation_delta_inserts_future_asset():
+    session = SimpleNamespace(pending_tasks=[])
+    current = [
+        {"name": "market stall", "layout_role": "foreground_object"},
+    ]
+    micro_batches = {
+        "OBJECTS#1": current,
+        "DECORATION#1": [
+            {"name": "lantern strings", "layout_role": "decoration"},
+            {"name": "glowing mushrooms", "layout_role": "decoration"},
+        ],
+    }
+    notes = [
+        SimpleNamespace(kind="generation_delta", text="add lantern strings and glowing mushrooms later", source_agent="girl"),
+    ]
+    out = _apply_pending_notes_to_batch(
+        current,
+        notes,
+        session,
+        current_phase="OBJECTS#1",
+        micro_phase_assets=micro_batches,
+        phase_sequence=["OBJECTS#1", "DECORATION#1"],
+        max_batch_size=3,
+    )
+    names = [item["name"] for item in out]
+    assert names == ["market stall", "lantern strings", "glowing mushrooms"]
+    assert micro_batches["DECORATION#1"] == []
+    assert session.pending_tasks[-1]["status"] == "inserted_into_remaining_batch"
+    assert session.pending_tasks[-1]["affected_assets"] == ["lantern strings", "glowing mushrooms"]
+    assert out[1]["source"] == "USER_PENDING_DELTA"
+    print("[OK] positive generation_delta pulls matching future assets into current batch")
+
+
+def test_pending_generation_delta_can_remove_future_asset():
+    session = SimpleNamespace(pending_tasks=[])
+    current = [{"name": "market stall", "layout_role": "foreground_object"}]
+    micro_batches = {
+        "OBJECTS#1": current,
+        "OBJECTS#2": [
+            {"name": "cargo box", "layout_role": "support"},
+            {"name": "sign board", "layout_role": "support"},
+        ],
+    }
+    notes = [
+        SimpleNamespace(kind="generation_delta", text="do not generate cargo box", source_agent="elder"),
+    ]
+    out = _apply_pending_notes_to_batch(
+        current,
+        notes,
+        session,
+        current_phase="OBJECTS#1",
+        micro_phase_assets=micro_batches,
+        phase_sequence=["OBJECTS#1", "OBJECTS#2"],
+    )
+    assert [item["name"] for item in out] == ["market stall"]
+    assert [item["name"] for item in micro_batches["OBJECTS#2"]] == ["sign board"]
+    assert session.pending_tasks[-1]["status"] == "applied_removed_from_remaining"
+    assert "cargo box" in session.pending_tasks[-1]["affected_assets"]
+    print("[OK] negative generation_delta removes matching future assets")
+
+
+def test_progress_message_is_user_facing_with_batch_context():
+    msg = SceneSession.format_progress_message({
+        "phase": "INTERIOR#1",
+        "status": "done",
+        "percent": 50,
+        "asset_count": 2,
+        "imported_count": 2,
+        "cumulative_imported": 3,
+        "total_assets": 6,
+        "batch_asset_names": ["床", "书桌"],
+        "next_batch_asset_names": ["台灯", "书架"],
+        "absorbed_notes": [{"text": "后续家具都靠墙"}],
+        "deferred_notes": [{"text": "后面再加发光蘑菇"}],
+    })
+    assert "本批已放入 2/2 个物件：床、书桌" in msg
+    assert "下一批准备：台灯、书架" in msg
+    assert "已吸收你的要求：后续家具都靠墙" in msg
+    assert "已记录待补：后面再加发光蘑菇" in msg
+    forbidden = ("INTERIOR#1", "batch_id", "EngineWriteGate", "SceneDelta", "runtime_generation_context")
+    assert not any(item in msg for item in forbidden), msg
+    print("[OK] progress message exposes user-facing batch context without internals")
 
 
 def test_progressive_post_shell_framework_generates_floor_and_boundary():
@@ -300,6 +385,9 @@ if __name__ == "__main__":
     test_filter_aabbs_by_zone()
     test_micro_batch_plan_splits_content_phases()
     test_pending_notes_apply_to_next_batch_context()
+    test_pending_generation_delta_inserts_future_asset()
+    test_pending_generation_delta_can_remove_future_asset()
+    test_progress_message_is_user_facing_with_batch_context()
     test_progressive_post_shell_framework_generates_floor_and_boundary()
     test_f5_demo_mode_disables_vlm_by_default()
     print("\n=== progressive mixed geometry ALL PASS ===")

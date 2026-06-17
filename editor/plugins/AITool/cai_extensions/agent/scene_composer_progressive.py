@@ -93,13 +93,25 @@ def run_progressive_workflow(
     # 简化版：这里先把 resolved 按名字分配到各 phase（真实逻辑可按 placement_type 等分类）
     phase_assets = _distribute_assets_to_phases(resolved, all_items, composer)
     phase_sequence, phase_metadata, micro_phase_assets = _build_micro_batch_phase_plan(phase_assets)
+    _refresh_micro_batch_metadata(phase_sequence, phase_metadata, micro_phase_assets)
+    batch_size = max(1, int(os.getenv("CORONA_PROGRESSIVE_BATCH_SIZE", "3") or "3"))
 
     def make_phase_gen(phase: str):
         def gen(sess: SceneSession, ph: str) -> List[Dict[str, Any]]:
             assets = list(micro_phase_assets.get(phase, []) or [])
             notes = _consume_runtime_scene_notes()
             if notes:
-                assets = _apply_pending_notes_to_batch(assets, notes, sess)
+                assets = _apply_pending_notes_to_batch(
+                    assets,
+                    notes,
+                    sess,
+                    current_phase=phase,
+                    micro_phase_assets=micro_phase_assets,
+                    phase_sequence=phase_sequence,
+                    max_batch_size=batch_size + 2,
+                )
+                micro_phase_assets[phase] = assets
+                _refresh_micro_batch_metadata(phase_sequence, phase_metadata, micro_phase_assets)
             logger.info("[ProgressiveWorkflow] phase %s: %d assets", phase, len(assets))
             return assets
         return gen
@@ -269,6 +281,32 @@ def _build_micro_batch_phase_plan(
     return sequence, metadata, out
 
 
+def _asset_names(assets: List[Dict[str, Any]]) -> List[str]:
+    return [str(item.get("name") or "").strip()
+            for item in assets if isinstance(item, dict) and str(item.get("name") or "").strip()]
+
+
+def _refresh_micro_batch_metadata(
+    phase_sequence: List[str],
+    metadata: Dict[str, Dict[str, Any]],
+    micro_phase_assets: Dict[str, List[Dict[str, Any]]],
+) -> None:
+    total_assets = sum(len(micro_phase_assets.get(phase) or []) for phase in phase_sequence)
+    for idx, phase in enumerate(phase_sequence):
+        assets = list(micro_phase_assets.get(phase) or [])
+        meta = metadata.setdefault(phase, {})
+        meta["asset_count"] = len(assets)
+        meta["total_assets"] = total_assets
+        meta["batch_asset_names"] = _asset_names(assets)
+        next_names: List[str] = []
+        for next_phase in phase_sequence[idx + 1:]:
+            next_assets = micro_phase_assets.get(next_phase) or []
+            if next_assets:
+                next_names = _asset_names(next_assets)
+                break
+        meta["next_batch_asset_names"] = next_names
+
+
 def _micro_batch_sort_key(asset: Dict[str, Any]) -> Tuple[int, str]:
     role = str(asset.get("layout_role") or "").lower()
     name = str(asset.get("name") or "")
@@ -303,14 +341,22 @@ def _apply_pending_notes_to_batch(
     assets: List[Dict[str, Any]],
     notes: List[Any],
     session: SceneSession,
+    *,
+    current_phase: str = "",
+    micro_phase_assets: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    phase_sequence: Optional[List[str]] = None,
+    max_batch_size: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Apply safe pending notes to the next batch.
 
-    v1 intentionally does not spawn new model-generation jobs mid-compose. It
-    can remove forbidden future assets, nudge next-batch placement constraints,
-    and records additions that need a follow-up generation round.
+    This path does not spawn new model-generation jobs mid-compose. It can
+    remove forbidden future assets, nudge next-batch placement constraints, and
+    pull already-resolved future assets into the next import window.
     """
     remaining = list(assets)
+    future_batches = micro_phase_assets or {}
+    ordered_phases = phase_sequence or []
+    max_count = max_batch_size or 0
     for note in notes:
         text = str(getattr(note, "text", "") or "")
         kind = str(getattr(note, "kind", "") or "")
@@ -344,7 +390,23 @@ def _apply_pending_notes_to_batch(
                 name = str(asset.get("name") or "")
                 if name and name in text:
                     matched_existing = True
-            task["status"] = "already_in_remaining_plan" if matched_existing else "pending_next_generation"
+            inserted = []
+            if not matched_existing:
+                inserted = _pull_matching_future_assets(
+                    text,
+                    remaining,
+                    future_batches=future_batches,
+                    phase_sequence=ordered_phases,
+                    current_phase=current_phase,
+                    max_batch_size=max_count,
+                )
+            if matched_existing:
+                task["status"] = "already_in_remaining_plan"
+            elif inserted:
+                task["status"] = "inserted_into_remaining_batch"
+                task["affected_assets"] = inserted[:6]
+            else:
+                task["status"] = "deferred_missing_asset"
         elif kind == "generation_delta" and negative:
             filtered: List[Dict[str, Any]] = []
             removed: List[str] = []
@@ -356,6 +418,14 @@ def _apply_pending_notes_to_batch(
                     continue
                 filtered.append(asset)
             remaining = filtered
+            if future_batches:
+                future_removed = _remove_matching_future_assets(
+                    text,
+                    future_batches=future_batches,
+                    phase_sequence=ordered_phases,
+                    current_phase=current_phase,
+                )
+                removed.extend(future_removed)
             task["status"] = "applied_removed_from_remaining" if removed else "recorded_no_matching_asset"
             if removed:
                 task["affected_assets"] = removed[:6]
@@ -363,6 +433,86 @@ def _apply_pending_notes_to_batch(
             task["status"] = "queued_edit_or_waiting_for_actor"
         session.pending_tasks.append(task)
     return remaining
+
+
+def _normalize_asset_text(text: str) -> str:
+    return str(text or "").lower().replace(" ", "").replace("_", "").replace("-", "")
+
+
+def _asset_matches_note(asset: Dict[str, Any], note_text: str) -> bool:
+    note = _normalize_asset_text(note_text)
+    if not note:
+        return False
+    candidates = [
+        str(asset.get("name") or ""),
+        str(asset.get("semantic_type") or ""),
+        str(asset.get("asset_id") or ""),
+    ]
+    for value in candidates:
+        normalized = _normalize_asset_text(value)
+        if len(normalized) >= 2 and (normalized in note or note in normalized):
+            return True
+    return False
+
+
+def _pull_matching_future_assets(
+    note_text: str,
+    current_assets: List[Dict[str, Any]],
+    *,
+    future_batches: Dict[str, List[Dict[str, Any]]],
+    phase_sequence: List[str],
+    current_phase: str,
+    max_batch_size: int,
+) -> List[str]:
+    inserted: List[str] = []
+    if not future_batches or not phase_sequence or not current_phase:
+        return inserted
+    current_index = phase_sequence.index(current_phase) if current_phase in phase_sequence else -1
+    if current_index < 0:
+        return inserted
+    for phase in phase_sequence[current_index + 1:]:
+        future = list(future_batches.get(phase) or [])
+        if not future:
+            continue
+        kept: List[Dict[str, Any]] = []
+        for asset in future:
+            if _asset_matches_note(asset, note_text) and (not max_batch_size or len(current_assets) < max_batch_size):
+                moved = dict(asset)
+                moved["source"] = "USER_PENDING_DELTA"
+                context = moved.setdefault("runtime_generation_context", [])
+                if note_text and note_text not in context:
+                    context.append(note_text)
+                current_assets.append(moved)
+                inserted.append(str(moved.get("name") or ""))
+                continue
+            kept.append(asset)
+        future_batches[phase] = kept
+    return [name for name in inserted if name]
+
+
+def _remove_matching_future_assets(
+    note_text: str,
+    *,
+    future_batches: Dict[str, List[Dict[str, Any]]],
+    phase_sequence: List[str],
+    current_phase: str,
+) -> List[str]:
+    removed: List[str] = []
+    current_index = phase_sequence.index(current_phase) if current_phase in phase_sequence else -1
+    if current_index < 0:
+        return removed
+    for phase in phase_sequence[current_index + 1:]:
+        future = list(future_batches.get(phase) or [])
+        if not future:
+            continue
+        kept: List[Dict[str, Any]] = []
+        for asset in future:
+            if _asset_matches_note(asset, note_text):
+                removed.append(str(asset.get("name") or ""))
+                continue
+            kept.append(asset)
+        future_batches[phase] = kept
+    return [name for name in removed if name]
 
 
 def _apply_runtime_layout_constraint(asset: Dict[str, Any], text: str) -> bool:

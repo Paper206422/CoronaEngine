@@ -246,6 +246,104 @@ def test_role_agent_advice_request_not_hijacked_by_gm():
     print("[OK] @Agent advice request does not create GM proposal")
 
 
+def test_agent_plan_reference_resolves_before_gm_proposal():
+    orch = LanChatAgentOrchestrator(agent_factory=_agent_factory)
+    trigger = _trigger("@商人 就按照你的方案来执行吧", "商人")
+    trigger["agent_id"] = "merchant"
+    trigger["history"] = [
+        {
+            "message_id": "m0",
+            "from": "房主",
+            "sender_id": "host-a",
+            "sender_type": "user",
+            "message_kind": "chat",
+            "text": "@商人 给我一个暗黑集市方案",
+        },
+        {
+            "message_id": "m1",
+            "from": "商人",
+            "sender_id": "merchant",
+            "sender_type": "agent",
+            "message_kind": "agent_reply",
+            "text": "暗黑集市方案：入口留出动线，中央主摊位，两侧货架，黑铁灯笼，贵重交易区靠内侧。",
+        },
+        {
+            "message_id": "m2",
+            "from": "房主",
+            "sender_id": "host-a",
+            "sender_type": "user",
+            "message_kind": "chat",
+            "text": trigger["text"],
+        },
+    ]
+    result = orch.handle_trigger(trigger)
+    assert result.proposal is True
+    assert result.sender_name == "GM"
+    assert result.action_payload["action_type"] == "start_generation"
+    assert result.action_payload["source_agent_id"] == "merchant"
+    assert "暗黑集市方案" in result.action_payload["resolved_intent_text"]
+    assert "暗黑集市方案" in result.text
+    assert "就按照你的方案来执行吧" not in result.action_payload["resolved_intent_text"]
+    print("[OK] @Agent plan reference is resolved before GM proposal")
+
+
+def test_agent_plan_reference_does_not_cross_agents():
+    orch = LanChatAgentOrchestrator(agent_factory=_agent_factory)
+    trigger = _trigger("@长者 就按照你的方案来执行吧", "长者")
+    trigger["agent_id"] = "elder"
+    trigger["history"] = [
+        {
+            "message_id": "m1",
+            "from": "商人",
+            "sender_id": "merchant",
+            "sender_type": "agent",
+            "message_kind": "agent_reply",
+            "text": "暗黑集市方案：中央主摊位，两侧货架，黑铁灯笼。",
+        },
+        {
+            "message_id": "m2",
+            "from": "房主",
+            "sender_id": "host-a",
+            "sender_type": "user",
+            "message_kind": "chat",
+            "text": trigger["text"],
+        },
+    ]
+    result = orch.handle_trigger(trigger)
+    assert result.proposal is False
+    assert "没有找到长者刚才的可执行方案" in result.text
+    assert result.action_payload is None
+    print("[OK] plan reference only resolves against the currently mentioned agent")
+
+
+def test_agent_plan_reference_after_stale_marker_is_rejected():
+    orch = LanChatAgentOrchestrator(agent_factory=_agent_factory)
+    trigger = _trigger("@商人 换方案，不要刚才那个。就按照你的方案来执行吧", "商人")
+    trigger["agent_id"] = "merchant"
+    trigger["history"] = [
+        {
+            "message_id": "m1",
+            "from": "商人",
+            "sender_id": "merchant",
+            "sender_type": "agent",
+            "message_kind": "agent_reply",
+            "text": "暗黑集市方案：中央主摊位，两侧货架，黑铁灯笼。",
+        },
+        {
+            "message_id": "m2",
+            "from": "房主",
+            "sender_id": "host-a",
+            "sender_type": "user",
+            "message_kind": "chat",
+            "text": trigger["text"],
+        },
+    ]
+    result = orch.handle_trigger(trigger)
+    assert result.proposal is False
+    assert "没有找到商人刚才的可执行方案" in result.text
+    print("[OK] stale plan marker prevents executing an old plan reference")
+
+
 def test_gm_pause_and_discussion_controls_do_not_reject_pending_proposal():
     runtime = get_lanchat_scene_runtime()
     runtime.end_compose()
@@ -859,6 +957,9 @@ if __name__ == "__main__":
     test_role_agent_not_hijacked_by_prior_agent_or_gm_messages()
     test_role_agent_theme_discussion_not_hijacked_by_gm()
     test_role_agent_advice_request_not_hijacked_by_gm()
+    test_agent_plan_reference_resolves_before_gm_proposal()
+    test_agent_plan_reference_does_not_cross_agents()
+    test_agent_plan_reference_after_stale_marker_is_rejected()
     test_gm_pause_and_discussion_controls_do_not_reject_pending_proposal()
     test_single_user_major_action_stays_on_role_agent_path()
     test_host_confirmation_consumes_pending_proposal()

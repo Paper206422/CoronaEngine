@@ -40,6 +40,13 @@ class LanChatAgentOrchestrator:
         "讨论", "介绍", "建议", "idea", "想法", "你是谁", "你会干什么",
         "其他人都可以提出", "大家都可以提出",
     )
+    _PLAN_WORDS = ("方案", "建议", "设计", "布局", "清单", "步骤", "动线", "区域", "主题")
+    _PLAN_REFERENCE_WORDS = (
+        "按你的方案", "按照你的方案", "按你说的", "按刚才那个方案",
+        "按上面的方案", "就这样生成", "执行你的方案", "开始执行你的方案",
+        "就按照你的方案", "照你的方案", "按这个方案",
+    )
+    _STALE_PLAN_WORDS = ("换方案", "不要刚才", "不要这个方案", "重新讨论", "重来", "作废")
     _PROPOSAL_ID_PATTERN = re.compile(r"\bgm-\d+\b", re.I)
 
     def __init__(
@@ -59,6 +66,7 @@ class LanChatAgentOrchestrator:
         self._trigger_to_proposal: dict[str, str] = {}
         self._last_confirmed_action: dict[str, Any] | None = None
         self._processed_proposals: dict[str, str] = {}
+        self._latest_agent_plans: dict[str, dict[str, Any]] = {}
         self._session_mode = "DISCUSSING"
         self._logger = logging.getLogger(__name__)
 
@@ -68,8 +76,25 @@ class LanChatAgentOrchestrator:
 
     def handle_trigger(self, trigger: dict[str, Any]) -> AgentOrchestrationResult:
         history = self._history_from_trigger(trigger)
+        self._remember_plans_from_history(history)
         state = self._summary_service.monitor(history)
         text = str(trigger.get("text") or "")
+
+        if self._marks_plan_stale(text):
+            self._mark_agent_plan_stale(trigger)
+
+        plan_resolution = self._resolve_plan_reference(trigger)
+        if plan_resolution is False:
+            return AgentOrchestrationResult(
+                text=self._missing_plan_text(trigger),
+                sender_id=self._system_sender_id,
+                sender_name=self._system_sender_name,
+                discussion_state=state,
+                proposal=False,
+            )
+        if isinstance(plan_resolution, dict):
+            trigger = self._with_resolved_plan(trigger, plan_resolution)
+            text = str(trigger.get("text") or "")
 
         if self._is_gm_trigger(trigger) and self._is_control_without_proposal_id(text):
             control = self._gm_control_response(trigger, state)
@@ -115,8 +140,10 @@ class LanChatAgentOrchestrator:
                 action_payload=dict(self._pending_proposal or {}),
             )
 
+        role_reply = self._run_role_agent(trigger, state)
+        self._record_agent_plan_from_reply(trigger, role_reply)
         return AgentOrchestrationResult(
-            text=self._run_role_agent(trigger, state),
+            text=role_reply,
             sender_id=str(trigger.get("agent_id") or "agent"),
             sender_name=str(trigger.get("agent_name") or "Agent"),
             discussion_state=state,
@@ -124,6 +151,8 @@ class LanChatAgentOrchestrator:
         )
 
     def _needs_gm_proposal(self, trigger: dict[str, Any], state: DiscussionState) -> bool:
+        if isinstance(trigger.get("_resolved_plan"), dict):
+            return True
         text = str(trigger.get("text") or "")
         if not self._is_gm_trigger(trigger) and self._is_discussion_intent(text):
             return False
@@ -207,7 +236,11 @@ class LanChatAgentOrchestrator:
             return self._format_gm_proposal(existing)
 
         proposal_id = f"gm-{int(time.time() * 1000)}"
-        pending = state.pending_intents or [f"{requester}: {text}"]
+        resolved_plan = trigger.get("_resolved_plan")
+        if isinstance(resolved_plan, dict):
+            pending = [str(resolved_plan.get("resolved_intent_text") or text)]
+        else:
+            pending = state.pending_intents or [f"{requester}: {text}"]
         conflicts = state.conflicts or self._infer_pair_conflicts(self._history_from_trigger(trigger))
         if not conflicts:
             conflicts = ["暂无明确对象冲突，但该操作可能影响多人共识或核心布局。"]
@@ -227,6 +260,19 @@ class LanChatAgentOrchestrator:
             "requires_host_confirm": True,
             "execution": "host_single_writer",
         }
+        if isinstance(resolved_plan, dict):
+            resolved_intent_text = str(resolved_plan.get("resolved_intent_text") or text)
+            original_user_text = text
+            text = resolved_intent_text
+            self._pending_proposal.update({
+                "resolved_from_plan_id": resolved_plan.get("plan_id"),
+                "source_agent_id": resolved_plan.get("agent_id"),
+                "source_agent_name": resolved_plan.get("agent_name"),
+                "resolved_intent_text": resolved_intent_text,
+                "original_user_text": original_user_text,
+                "intent_text": resolved_intent_text,
+                "plan_summary": resolved_plan.get("compact_summary"),
+            })
         self._proposals[proposal_id.lower()] = self._pending_proposal
         self._trigger_to_proposal[dedupe_key] = proposal_id.lower()
 
@@ -238,6 +284,15 @@ class LanChatAgentOrchestrator:
         text = str(proposal.get("intent_text") or "")
         pending = proposal.get("pending") or []
         conflicts = proposal.get("conflicts") or []
+        plan_summary = str(proposal.get("plan_summary") or "").strip()
+        if plan_summary:
+            return (
+                f"【GM 提案 {proposal_id}】\n"
+                f"我将按{proposal.get('source_agent_name') or '该助手'}刚才的方案执行：\n"
+                f"{plan_summary}\n"
+                f"潜在冲突：{self._join_lines(conflicts)}\n"
+                f"房主可回复：@GM 确认 {proposal_id} / @GM 拒绝 {proposal_id}。"
+            )
         return (
             f"【GM 提案 {proposal_id}】\n"
             f"我理解当前请求来自 {requester}：{text}\n"
@@ -254,6 +309,8 @@ class LanChatAgentOrchestrator:
         return f"{sender_id}|{message_id}|{text}"
 
     def _infer_action_type(self, trigger: dict[str, Any], state: DiscussionState) -> str:
+        if isinstance(trigger.get("_resolved_plan"), dict):
+            return "start_generation"
         text = str(trigger.get("text") or "")
         if any(word in text for word in self._CONFLICT_WORDS) or state.conflicts:
             return "conflict_resolution"
@@ -398,6 +455,143 @@ class LanChatAgentOrchestrator:
         except Exception as exc:  # noqa: BLE001
             self._logger.warning("LANChat role agent failed", exc_info=True)
             return self._safe_agent_error_text(exc)
+
+    def _remember_plans_from_history(self, history: list[dict[str, Any]]) -> None:
+        for item in history[-24:]:
+            kind = str(item.get("message_kind") or "").strip().lower()
+            sender_type = str(item.get("sender_type") or "").strip().lower()
+            text = str(item.get("text") or "").strip()
+            if kind != "agent_reply" and sender_type != "agent":
+                continue
+            if not self._looks_like_plan(text):
+                continue
+            agent_id = str(item.get("sender_id") or item.get("agent_id") or "").strip()
+            agent_name = str(item.get("from") or item.get("sender_name") or agent_id or "Agent").strip()
+            self._record_agent_plan(
+                agent_id=agent_id,
+                agent_name=agent_name,
+                raw_text=text,
+                source_message_id=str(item.get("message_id") or ""),
+                source_user_id=str(item.get("source_user_id") or ""),
+            )
+
+    def _record_agent_plan_from_reply(self, trigger: dict[str, Any], reply: str) -> None:
+        if not self._looks_like_plan(reply):
+            return
+        self._record_agent_plan(
+            agent_id=str(trigger.get("agent_id") or ""),
+            agent_name=str(trigger.get("agent_name") or "Agent"),
+            raw_text=reply,
+            source_message_id=str(trigger.get("message_id") or ""),
+            source_user_id=str(trigger.get("sender_id") or ""),
+        )
+
+    def _record_agent_plan(
+        self,
+        *,
+        agent_id: str,
+        agent_name: str,
+        raw_text: str,
+        source_message_id: str,
+        source_user_id: str,
+    ) -> None:
+        agent_id = str(agent_id or "").strip()
+        agent_name = str(agent_name or "Agent").strip()
+        raw_text = str(raw_text or "").strip()
+        if not raw_text:
+            return
+        plan = {
+            "plan_id": f"plan-{agent_id or agent_name}-{abs(hash(raw_text)) % 100000000}",
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "source_message_id": source_message_id,
+            "source_user_id": source_user_id,
+            "raw_text": raw_text,
+            "compact_summary": self._compact_plan(raw_text),
+            "status": "active",
+            "created_at": time.time(),
+        }
+        for key in self._agent_plan_keys(agent_id, agent_name):
+            self._latest_agent_plans[key] = plan
+
+    def _resolve_plan_reference(self, trigger: dict[str, Any]) -> dict[str, Any] | bool | None:
+        text = str(trigger.get("text") or "")
+        if self._is_gm_trigger(trigger) or not self._is_plan_reference(text):
+            return None
+        agent_id = str(trigger.get("agent_id") or "")
+        agent_name = str(trigger.get("agent_name") or "")
+        plan = self._find_agent_plan(agent_id, agent_name)
+        if not plan:
+            return False
+        resolved = dict(plan)
+        resolved["resolved_intent_text"] = (
+            f"用户确认执行 @{agent_name or agent_id} 最近方案：\n"
+            f"{plan.get('raw_text') or plan.get('compact_summary') or ''}"
+        )
+        return resolved
+
+    def _with_resolved_plan(self, trigger: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+        updated = dict(trigger)
+        agent_name = str(updated.get("agent_name") or plan.get("agent_name") or "该助手")
+        summary = str(plan.get("compact_summary") or plan.get("raw_text") or "")
+        updated["text"] = f"@GM 开始执行 {agent_name} 刚才的方案：\n{summary}"
+        updated["_resolved_plan"] = plan
+        return updated
+
+    def _find_agent_plan(self, agent_id: str, agent_name: str) -> dict[str, Any] | None:
+        for key in self._agent_plan_keys(agent_id, agent_name):
+            plan = self._latest_agent_plans.get(key)
+            if plan and plan.get("status") == "active":
+                return plan
+        return None
+
+    def _mark_agent_plan_stale(self, trigger: dict[str, Any]) -> None:
+        for key in self._agent_plan_keys(
+            str(trigger.get("agent_id") or ""),
+            str(trigger.get("agent_name") or ""),
+        ):
+            plan = self._latest_agent_plans.get(key)
+            if plan:
+                plan["status"] = "stale"
+
+    @classmethod
+    def _marks_plan_stale(cls, text: str) -> bool:
+        return any(word in str(text or "") for word in cls._STALE_PLAN_WORDS)
+
+    @classmethod
+    def _is_plan_reference(cls, text: str) -> bool:
+        return any(word in str(text or "") for word in cls._PLAN_REFERENCE_WORDS)
+
+    @classmethod
+    def _looks_like_plan(cls, text: str) -> bool:
+        normalized = str(text or "").strip()
+        if len(normalized) < 16:
+            return False
+        return any(word in normalized for word in cls._PLAN_WORDS)
+
+    @staticmethod
+    def _agent_plan_keys(agent_id: str, agent_name: str) -> list[str]:
+        keys = []
+        for value in (agent_id, agent_name):
+            key = str(value or "").strip().lower()
+            if key and key not in keys:
+                keys.append(key)
+        return keys
+
+    @staticmethod
+    def _compact_plan(text: str, limit: int = 260) -> str:
+        lines = [line.strip(" -\t") for line in str(text or "").splitlines() if line.strip()]
+        compact = "\n".join(f"- {line}" for line in lines[:6])
+        if not compact:
+            compact = str(text or "").strip()
+        if len(compact) > limit:
+            compact = compact[:limit].rstrip() + "..."
+        return compact
+
+    @staticmethod
+    def _missing_plan_text(trigger: dict[str, Any]) -> str:
+        agent_name = str(trigger.get("agent_name") or "该助手")
+        return f"【GM】我没有找到{agent_name}刚才的可执行方案。请先让{agent_name}给出明确方案，或重新描述要执行的内容。"
 
     @staticmethod
     def _safe_agent_error_text(exc: Exception) -> str:

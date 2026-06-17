@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import os
 import queue
 import threading
 import time
@@ -21,6 +22,43 @@ from .local_model_library import save_model
 from .test_cases import get_test_case
 
 logger = logging.getLogger(__name__)
+
+
+def _generation_batch_count() -> int:
+    try:
+        return max(1, int(os.getenv("CORONA_HUNYUAN_GENERATION_BATCH_COUNT", "4") or "4"))
+    except Exception:
+        return 4
+
+
+def _generation_batch_size() -> int:
+    raw = os.getenv("CORONA_HUNYUAN_GENERATION_BATCH_SIZE", "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(1, int(raw))
+    except Exception:
+        return 0
+
+
+def _split_generation_batches(tasks: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    items = list(tasks or [])
+    if not items:
+        return []
+    explicit_size = _generation_batch_size()
+    if explicit_size:
+        return [items[i:i + explicit_size] for i in range(0, len(items), explicit_size)]
+    batch_count = min(len(items), _generation_batch_count())
+    base = len(items) // batch_count
+    extra = len(items) % batch_count
+    batches: List[List[Dict[str, Any]]] = []
+    start = 0
+    for idx in range(batch_count):
+        size = base + (1 if idx < extra else 0)
+        end = start + size
+        batches.append(items[start:end])
+        start = end
+    return [batch for batch in batches if batch]
 
 
 def _result_identity_key(item: Dict[str, Any]) -> tuple[str, str]:
@@ -371,48 +409,73 @@ def generate_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
     else:
         _capture_finalizer = lambda: None
 
-    max_workers = min(len(pending_generation), GENERATION_MAX_WORKERS) or 1
+    generation_batches = _split_generation_batches(pending_generation)
+    max_workers = min(
+        max((len(batch) for batch in generation_batches), default=1),
+        GENERATION_MAX_WORKERS,
+    ) or 1
     logger.info(
-        "[Workflow][generate] 3D generation concurrency: pending=%s workers=%s limit=%s",
+        "[Workflow][generate] 3D generation batching: pending=%s batches=%s workers=%s limit=%s",
         len(pending_generation),
+        len(generation_batches),
         max_workers,
         GENERATION_MAX_WORKERS,
     )
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(generate_single_item, task, generate_tool, session_id): task
-            for task in pending_generation
-        }
-        for future in concurrent.futures.as_completed(futures):
-            task = futures[future]
-            try:
-                result = future.result()
-            except Exception as e:
-                logger.error(
-                    "[Workflow][generate] %s 生成任务异常: %s",
-                    task.get("item_name", "?"),
-                    e,
-                )
-                result = {
-                    "item_name": task.get("item_name", "未知"),
-                    "object_id": task.get("object_id", ""),
-                    "task_index": task.get("task_index", 0),
-                    "input_image_url": task.get("input_image_url", ""),
-                    "source": "generation",
-                    "error": str(e),
-                }
+    for batch_index, batch in enumerate(generation_batches, 1):
+        batch_workers = min(len(batch), GENERATION_MAX_WORKERS) or 1
+        batch_names = [str(task.get("item_name") or "?") for task in batch]
+        logger.info(
+            "[Workflow][generate] 3D generation batch %s/%s start: items=%s workers=%s names=%s",
+            batch_index,
+            len(generation_batches),
+            len(batch),
+            batch_workers,
+            "、".join(batch_names[:6]),
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=batch_workers) as pool:
+            futures = {
+                pool.submit(generate_single_item, task, generate_tool, session_id): task
+                for task in batch
+            }
+            for future in concurrent.futures.as_completed(futures):
+                task = futures[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    logger.error(
+                        "[Workflow][generate] %s 生成任务异常: %s",
+                        task.get("item_name", "?"),
+                        e,
+                    )
+                    result = {
+                        "item_name": task.get("item_name", "未知"),
+                        "object_id": task.get("object_id", ""),
+                        "task_index": task.get("task_index", 0),
+                        "input_image_url": task.get("input_image_url", ""),
+                        "source": "generation",
+                        "error": str(e),
+                    }
 
-            generated_results.append(result)
-            completed_count += 1
-            publish_node_progress(
-                state,
-                result,
-                node_name="generate",
-                done_count=completed_count,
-                total_count=len(pending_generation),
-            )
-            # 排入六视图拍摄队列（跳过时为 None，捕获线程不启动）
-            capture_queue.put(result)
+                result.setdefault("generation_batch_index", batch_index)
+                result.setdefault("generation_batch_total", len(generation_batches))
+                generated_results.append(result)
+                completed_count += 1
+                publish_node_progress(
+                    state,
+                    result,
+                    node_name="generate",
+                    done_count=completed_count,
+                    total_count=len(pending_generation),
+                )
+                # 排入六视图拍摄队列（跳过时为 None，捕获线程不启动）
+                capture_queue.put(result)
+        logger.info(
+            "[Workflow][generate] 3D generation batch %s/%s done: completed=%s/%s",
+            batch_index,
+            len(generation_batches),
+            completed_count,
+            len(pending_generation),
+        )
 
     # 通知拍摄线程所有生成已完成
     _capture_finalizer()

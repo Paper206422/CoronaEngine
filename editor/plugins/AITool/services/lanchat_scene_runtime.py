@@ -219,8 +219,11 @@ class LanChatSceneRuntime:
                 if kind == "edit_existing":
                     return "已收到这条编辑请求；如果物体已经出现，我会在下一批前尝试应用，未出现则先挂起。"
                 if kind == "layout_constraint":
-                    return "已记录这个布局要求，会在下一批摆放前吸收。"
-                return "已记录后续生成补充，会在下一批计划里优先考虑。"
+                    return f"已记录布局要求：{value}。后续摆放会在下一批前吸收。"
+                requested = self._extract_requested_items(value)
+                if requested:
+                    return f"已记录后续补充：{'、'.join(requested[:4])}。我会优先尝试加入后续批次；若当前没有可用模型，会在最终报告里标为待补。"
+                return "已记录后续生成补充。我会优先尝试加入后续批次；若当前没有可用模型，会在最终报告里标为待补。"
             if self._agent_key(agent_name) != self._active_agent:
                 return f"{self._active_agent} 正在生成。我先帮你记录这条意见，等下一批前一起吸收。"
         return None
