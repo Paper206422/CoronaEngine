@@ -19,6 +19,8 @@ const roomPanel = read('src/views/sidebar/lanchat/RoomPanel.vue');
 const useDockPanel = read('src/composables/useDockPanel.js');
 const networkSystem = read('../../src/systems/network/network_system.cpp');
 const legacyLanChat = read('../../editor/plugins/LANChat/main.py');
+const actorCore = read('../../editor/CoronaCore/core/entities/actor.py');
+const actorBroadcastTests = read('../../editor/CoronaCore/tests/test_actor_network_broadcast.py');
 
 assertIncludes(
   networkPanel,
@@ -120,6 +122,31 @@ assertIncludes(
   legacyLanChat,
   'not a source of truth for current UI port display',
   'Legacy Python LANChat shim must state that C++/CEF owns current port state'
+);
+assertIncludes(
+  actorCore,
+  '_local_model_library_resource_subdir(rel_path)',
+  'Actor network broadcast must detect project-local model library paths before reuse'
+);
+assertIncludes(
+  actorCore,
+  'prefix = "assets/local_model_library/"',
+  'Actor network broadcast must treat local_model_library as an unstable source path'
+);
+assertIncludes(
+  actorCore,
+  'target_subdir=local_model_subdir',
+  'Actor network broadcast must copy local model library assets to a stable Resource subdir'
+);
+assertIncludes(
+  actorBroadcastTests,
+  'test_local_model_library_path_is_copied_to_stable_resource_before_broadcast',
+  'Actor network broadcast tests must cover local model library path stabilization'
+);
+assertIncludes(
+  actorBroadcastTests,
+  'Resource/local_model_library/models/书桌_6db78152/base.glb',
+  'Actor network broadcast test must assert the stable Resource path for AI local models'
 );
 
 assertIncludes(

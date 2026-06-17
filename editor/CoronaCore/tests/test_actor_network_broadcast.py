@@ -291,6 +291,45 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
             self.assertTrue((project_root / "Resource" / "Ball.mtl").exists())
             self.assertTrue((project_root / "Resource" / "textures" / "Ball.png").exists())
 
+    def test_local_model_library_path_is_copied_to_stable_resource_before_broadcast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+            library_dir = (project_root / "assets" / "local_model_library" /
+                           "models" / "书桌_6db78152")
+            library_dir.mkdir(parents=True)
+            source_model = library_dir / "base.glb"
+            source_model.write_bytes(b"glb-data")
+
+            events = []
+            fake_editor = SimpleNamespace(
+                CoronaEngine=SimpleNamespace(
+                    active_project_path=str(project_root),
+                    Actor=FakeActorEngineObject,
+                    ActorProfile=SimpleNamespace,
+                ),
+                js_call_func=lambda name, args: events.append((name, args)),
+            )
+            parent = SimpleNamespace(route="Scene/main.scene")
+
+            with patch.object(actor_module, "CoronaEditor", fake_editor), \
+                 patch.object(actor_module, "CoronaEngine", fake_editor.CoronaEngine), \
+                 patch.object(actor_module, "Geometry", FakeGeometry), \
+                 patch.object(actor_module, "Optics", FakeOptics), \
+                 patch.object(actor_module, "Mechanics", FakeComponent), \
+                 patch.object(actor_module, "Acoustics", FakeComponent):
+                actor_module.Actor(
+                    route="assets/local_model_library/models/书桌_6db78152/base.glb",
+                    actor_type="model",
+                    parent_scene=parent,
+                )
+
+            actor_data = events[0][1][0]
+            stable_path = "Resource/local_model_library/models/书桌_6db78152/base.glb"
+            self.assertEqual(actor_data["path"], stable_path)
+            self.assertEqual(actor_data["model"], stable_path)
+            self.assertEqual(actor_data["model_dependencies"], [])
+            self.assertEqual((project_root / stable_path).read_bytes(), b"glb-data")
+
     def test_remote_actor_disables_local_physics(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_root = Path(tmp)

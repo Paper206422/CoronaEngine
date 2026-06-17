@@ -414,6 +414,24 @@ class Actor:
         try:
             source_path.relative_to(project_root)
             rel_path = source_path.relative_to(project_root).as_posix()
+            local_model_subdir = self._local_model_library_resource_subdir(rel_path)
+            if local_model_subdir:
+                if not source_path.is_file():
+                    logging.warning("Actor local model library path is missing: %s",
+                                    source_path)
+                    return
+                copied_paths = self._copy_model_asset_bundle_to_project(
+                    source_path,
+                    project_root,
+                    target_subdir=local_model_subdir,
+                )
+                if not copied_paths:
+                    return
+                self.route = copied_paths[0]
+                self.model_path = copied_paths[0]
+                self.final_model_path = str(project_root / copied_paths[0])
+                self.model_dependencies = copied_paths[1:]
+                return
             self.route = rel_path
             self.model_path = rel_path
             self.final_model_path = str(source_path)
@@ -435,17 +453,30 @@ class Actor:
         self.final_model_path = str(project_root / copied_paths[0])
         self.model_dependencies = copied_paths[1:]
 
+    @staticmethod
+    def _local_model_library_resource_subdir(rel_path: str) -> Optional[str]:
+        normalized = rel_path.replace("\\", "/")
+        prefix = "assets/local_model_library/"
+        if not normalized.startswith(prefix):
+            return None
+        local_rel = normalized[len("assets/"):]
+        return Path(local_rel).parent.as_posix()
+
     def _copy_model_asset_bundle_to_project(self, source_path: Path,
-                                            project_root: Path) -> List[str]:
+                                            project_root: Path,
+                                            target_subdir: Optional[str] = None) -> List[str]:
         resource_dir = project_root / "Resource"
         resource_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = resource_dir
+        if target_subdir:
+            target_dir = resource_dir / target_subdir
 
         copied = []
 
         def copy_relative(src: Path, relative_to_source_dir: Path = None):
             rel_under_source = (src.name if relative_to_source_dir is None
                                 else src.relative_to(relative_to_source_dir).as_posix())
-            dst = resource_dir / rel_under_source
+            dst = target_dir / rel_under_source
             dst.parent.mkdir(parents=True, exist_ok=True)
             if src.resolve() != dst.resolve():
                 shutil.copy2(src, dst)
