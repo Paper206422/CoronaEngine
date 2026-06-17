@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import concurrent.futures
 import logging
+import os
+import time
 from typing import Any, Dict, List
 
 from Quasar.ai_tools.context import reset_current_session, set_current_session
@@ -12,6 +15,14 @@ from .helpers import normalize_object_id
 from .test_cases import get_test_case
 
 logger = logging.getLogger(__name__)
+
+
+def _image_retry_max_workers(count: int) -> int:
+    try:
+        configured = int(os.getenv("CORONA_IMAGE_RETRY_MAX_WORKERS", "3") or "3")
+    except ValueError:
+        configured = 3
+    return max(1, min(max(1, count), configured))
 
 
 def _retry_failed_images(
@@ -29,25 +40,47 @@ def _retry_failed_images(
         logger.warning("[Workflow][dispatch] 图片生成工具不可用，无法补偿重试")
         return {}
 
-    recovered: Dict[str, str] = {}
-    for elem in failed_elements:
+    def _retry_one(elem: Dict[str, str]) -> tuple[str, str]:
         name = elem.get("item_name", "")
         prompt = elem.get("image_prompt", "")
         if not prompt:
-            continue
+            return name, ""
         token = set_current_session(session_id)
         try:
             raw_result = image_tool.invoke({"prompt": prompt})
             image_url = extract_image_url(raw_result)
             if image_url:
-                recovered[name] = image_url
                 logger.info("[Workflow][dispatch] %s 补偿图片生成成功", name)
+                return name, image_url
             else:
                 logger.warning("[Workflow][dispatch] %s 补偿图片生成结果为空", name)
         except Exception as e:
             logger.warning("[Workflow][dispatch] %s 补偿图片生成失败: %s", name, e)
         finally:
             reset_current_session(token)
+        return name, ""
+
+    recovered: Dict[str, str] = {}
+    workers = _image_retry_max_workers(len(failed_elements))
+    started_at = time.perf_counter()
+    logger.info(
+        "[Workflow][dispatch] 并发补偿图片: items=%s workers=%s",
+        len(failed_elements),
+        workers,
+    )
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_retry_one, elem) for elem in failed_elements]
+        for future in concurrent.futures.as_completed(futures):
+            name, image_url = future.result()
+            if name and image_url:
+                recovered[name] = image_url
+
+    logger.info(
+        "[Workflow][dispatch] 图片补偿完成: recovered=%s/%s elapsed=%.2fs",
+        len(recovered),
+        len(failed_elements),
+        time.perf_counter() - started_at,
+    )
 
     return recovered
 

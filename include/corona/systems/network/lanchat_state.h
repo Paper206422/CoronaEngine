@@ -26,6 +26,12 @@ struct LanChatMessage {
     std::string text;
     uint64_t seq = 0;
     uint64_t timestamp_ms = 0;
+    std::string sender_type = "user";     // user | agent | gm | system
+    std::string message_kind = "chat";    // chat | agent_reply | progress | gm_proposal | confirmation | action_status | error
+    std::string target_agent_id;
+    std::string source_user_id;
+    std::string correlation_id;
+    std::string metadata_json;
 };
 
 struct LanChatMessageResult {
@@ -54,6 +60,12 @@ struct LanChatAgentTrigger {
     std::string room_id;
     std::string sender_id;
     std::string sender_name;
+    std::string sender_type = "user";
+    std::string message_kind = "chat";
+    std::string target_agent_id;
+    std::string source_user_id;
+    std::string correlation_id;
+    std::string metadata_json;
     std::string agent_id;
     std::string agent_name;
     std::string persona;
@@ -91,6 +103,17 @@ public:
                                         const std::string& sender_name,
                                         const std::string& text,
                                         uint64_t timestamp_ms);
+    LanChatMessageResult record_message_ex(const std::string& message_id,
+                                           const std::string& sender_id,
+                                           const std::string& sender_name,
+                                           const std::string& text,
+                                           uint64_t timestamp_ms,
+                                           const std::string& sender_type,
+                                           const std::string& message_kind,
+                                           const std::string& target_agent_id = {},
+                                           const std::string& source_user_id = {},
+                                           const std::string& correlation_id = {},
+                                           const std::string& metadata_json = {});
     LanChatMessageResult apply_remote_message(const LanChatMessage& message);
     void apply_history_snapshot(const std::vector<LanChatMessage>& history);
     [[nodiscard]] const std::vector<LanChatMessage>& history() const { return history_; }

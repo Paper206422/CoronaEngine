@@ -442,3 +442,91 @@
 - 记录原则：
   - 如果失败属于以上底层项，明天 F5 只记录证据，不在 Python 侧继续绕补。
   - 如果状态链在 `confirmed_gm_action / queued / executing / executed / failed` 之前断掉，才回到 Python worker / orchestrator / executor 修复。
+## 2026-06-17: LANChat message v2 lower-layer boundary
+
+- Completed in Python/Frontend/C++ source wiring:
+  - `gm_proposal`, `confirmation`, `progress`, `action_status` use LANChat message v2 fields.
+  - `correlation_id` is the proposal/action thread id.
+  - Text fallback remains for manual F5 and compatibility.
+- Still lower-layer / not solved here:
+  - C++/Ninja compile and runtime protocol validation.
+  - Trusted `host_user_id / sender_user_id / room_role` identity propagation.
+  - typed SceneDelta and peer actor application:
+    - `ActorAdded`
+    - `ActorMoved`
+    - `ActorDeleted`
+    - `ActorUpdated`
+    - `CommandRejected`
+    - `ConflictDetected`
+  - actor version / expected_version / lock owner / lock expiry.
+- F5 classification:
+  - `action_status` visible but guest actor state unchanged -> typed SceneDelta / actor sync.
+  - guest structured confirmation executes host action -> missing trusted host identity field.
+  - progress/gm_proposal/action_status triggers another agent -> LANChat v2 routing gate regression.
+
+## 2026-06-17: LANChat message v2 compile/test boundary
+
+- User instruction:
+  - Do not run C++ / Ninja / CMake build or protocol tests in this Codex pass.
+  - Keep bottom-layer build verification as a separate专项, not part of the current Python/frontend interaction push.
+- Aborted command:
+  - `cmake --build build --target corona_network_protocol_tests --config Debug`
+  - The command was intentionally interrupted by the user before completion.
+  - Do not infer pass/fail from this aborted run.
+- Current verification status:
+  - Python LANChat orchestrator/worker/host executor tests passed.
+  - Python AST check for LANChat Python services passed.
+  - Frontend LANChat roster script passed.
+  - C++ source wiring and C++ protocol tests were edited, but not compiled or executed in this pass.
+- Bottom-layer专项待验:
+  - `corona_network_protocol_tests` target builds successfully.
+  - Legacy LANChat packets still parse.
+  - LANChat v2 packets roundtrip `sender_type/message_kind/target_agent_id/source_user_id/correlation_id/metadata_json`.
+  - `progress/gm_proposal/action_status/error` do not enqueue agent triggers.
+  - Structured confirmation carries trusted host/user identity once C++/CEF identity fields are available.
+
+## 2026-06-17: VLM screenshot pipeline lower-layer issue
+
+- F5 symptom:
+  - During VLM review the viewport can freeze or turn black for a noticeable period.
+  - Logs may show screenshot write failures while Python still continues the review loop.
+- Current diagnosis:
+  - The VLM screenshot path uses the main camera and the main presented render target.
+  - `_capture_single_model()` repeatedly moves the main camera and requests screenshots.
+  - C++ screenshot processing reads back the render target through the GPU queue.
+  - This can stall the visible viewport and can leave the user seeing a stale/black frame until the queue drains.
+- Python-side mitigation implemented:
+  - Failed/empty screenshot writes are now treated as capture failure.
+  - VLM reports skipped/timeout instead of false "no obvious issue".
+  - F5 can set `PROGRESSIVE_VLM_MAX_TARGETS=0` to disable VLM while testing AABB/layout.
+- Required lower-layer fix:
+  - Add an independent offscreen VLM camera and independent render target.
+  - VLM capture must not move the user's viewport camera.
+  - VLM capture must not read the main presented target.
+  - Add C++/Optics protocol tests after implementation.
+- Not done in this pass:
+  - No C++/Ninja/CMake build or protocol test.
+  - No offscreen render target implementation.
+
+## 2026-06-17: F5 generation-time input lag after async worker
+
+- Latest F5 symptom:
+  - After scene generation starts, the frontend becomes noticeably delayed.
+  - The user can barely type or send intervention commands, so "progressive generation + intervention" is not convincing yet.
+- Current evidence:
+  - `LANChatAgentWorker` is already asynchronous, so the polling loop itself is not the only blocker.
+  - Latest logs show simple edit requests still going through `integrated stream` and taking about 9-48 seconds each.
+  - Latest logs also show `ResourceSearchIndex` rebuilding during the same window, with 10s+ rebuilds.
+  - Earlier VLM freezes are a separate screenshot/render-target issue; latest lag can happen even without clear VLM log lines.
+- Python/frontend mitigation implemented:
+  - Frontend `RoomPanel.onSend()` no longer awaits the CEF send promise before returning control to the input box.
+  - `ResourceIndexService` now supports `CORONA_RESOURCESEARCH_DISABLE_AUTO_REBUILD=1` or `CORONA_F5_DEMO_MODE=1` to stop background index rebuilds during F5.
+  - Common scale/grounding edit requests now have a Python fast path and do not need the full `integrated stream`.
+- Required lower-layer / next engineering work:
+  - CEF send path should not synchronously wait on heavy engine/Python work.
+  - Extend the lightweight direct transform path to side-wall / front-back / delete / color commands.
+  - Engine/CEF should keep input processing responsive while model generation/import and ResourceSearch work are active.
+- F5 classification:
+  - If typing is responsive but AI replies are slow -> Python agent serialization / missing edit fast path.
+  - If typing itself freezes -> CEF/UI/render main-thread blocking.
+  - If lag spikes align with ResourceSearch logs -> run F5 with `CORONA_RESOURCESEARCH_DISABLE_AUTO_REBUILD=1`.

@@ -289,8 +289,8 @@ export const lanChatService = {
   // 离开房间 -> { ok }
   leaveRoom: () => Bridge.callCEF('LANChat', 'leave_room', [{}]).then(_unwrap),
   // 发送消息：{ text } -> { ok } | { ok:false, error }
-  sendMessage: (text) =>
-    Bridge.callCEF('LANChat', 'send_message', [{ text }]).then(_unwrap),
+  sendMessage: (text, options = {}) =>
+    Bridge.callCEF('LANChat', 'send_message', [{ text, ...(options || {}) }]).then(_unwrap),
   // 获取本机局域网 IP -> { ok, ip, port }
   getLocalIp: () => Bridge.callCEF('LANChat', 'get_local_ip', [{}]).then(_unwrap),
   // 添加 AI 助手：{ name, persona } -> { ok, agent_id, name } | { ok:false, error }

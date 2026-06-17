@@ -372,6 +372,12 @@ def generate_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
         _capture_finalizer = lambda: None
 
     max_workers = min(len(pending_generation), GENERATION_MAX_WORKERS) or 1
+    logger.info(
+        "[Workflow][generate] 3D generation concurrency: pending=%s workers=%s limit=%s",
+        len(pending_generation),
+        max_workers,
+        GENERATION_MAX_WORKERS,
+    )
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(generate_single_item, task, generate_tool, session_id): task

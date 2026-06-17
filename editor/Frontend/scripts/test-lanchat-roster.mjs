@@ -33,6 +33,10 @@ assertIncludes(store, 'event.member_details', 'member_update must consume member
 assertIncludes(store, 'function upsertAgent', 'lanchat store must support local agent roster upsert');
 assertIncludes(store, 'upsertAgent(added)', 'addAgent must make new agents immediately mentionable');
 assertIncludes(store, 'removeAgentFromRoster(agentId)', 'removeAgent must clear local mention roster optimistically');
+assertIncludes(store, 'sender_type:', 'lanchat store must preserve LANChat message v2 sender_type');
+assertIncludes(store, 'message_kind:', 'lanchat store must preserve LANChat message v2 message_kind');
+assertIncludes(store, 'correlation_id:', 'lanchat store must preserve LANChat message v2 correlation_id');
+assertIncludes(store, 'metadata: parseMetadata(msg)', 'lanchat store must parse LANChat message v2 metadata');
 
 assertIncludes(roomPanel, 'member.member_id !== s.peerId', 'mention candidates must filter local member_id');
 assertIncludes(roomPanel, 'a.name, isAgent: true', 'mention candidates must include agents');
@@ -42,10 +46,12 @@ assertIncludes(roomPanel, ':disabled="isJoining"', 'RoomPanel must disable join 
 assertIncludes(roomPanel, 'JOIN_TIMEOUT', 'RoomPanel must display join timeout errors');
 assertIncludes(roomPanel, 'HOST_UNREACHABLE', 'RoomPanel must display unreachable host errors');
 assertIncludes(roomPanel, 'function gmProposalId', 'RoomPanel must detect GM proposal ids');
-assertIncludes(roomPanel, "text.includes('GM 提案')", 'RoomPanel must restrict confirmation controls to GM proposals');
+assertIncludes(roomPanel, "message?.message_kind === 'gm_proposal'", 'RoomPanel must prefer LANChat v2 gm_proposal messages');
+assertIncludes(roomPanel, 'String(message.correlation_id)', 'RoomPanel must use correlation_id as GM proposal id');
 assertIncludes(roomPanel, "s.role === 'host'", 'RoomPanel must only show GM confirmation controls to host');
 assertIncludes(roomPanel, 'function sendGmDecision', 'RoomPanel must send structured GM decisions');
-assertIncludes(roomPanel, '`@GM ${verb} ${proposalId}`', 'GM confirmation buttons must include proposal_id');
+assertIncludes(roomPanel, "message_kind: 'confirmation'", 'GM confirmation buttons must send structured confirmation');
+assertIncludes(roomPanel, 'correlation_id: proposalId', 'GM confirmation must preserve proposal correlation_id');
 
 assertIncludes(memberList, 'peerId', 'MemberList must accept peerId prop');
 assertIncludes(memberList, 'a.owner === peerId', 'agent remove visibility must compare owner to peerId');

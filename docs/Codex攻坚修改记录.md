@@ -1167,3 +1167,83 @@ AI 执行铁律：
   - 通过：`python editor/plugins/AITool/cai_extensions/agent/test_terrain_style_profile.py`
   - 通过：`python editor/plugins/AITool/cai_extensions/agent/test_scene_composer_progressive_geometry.py`
   - 通过：`python -B` AST 检查相关 Python 文件。
+## 2026-06-17 add: LANChat message v2 multiplayer alignment
+
+- Goal:
+  - Align multiplayer GM / progress / host confirmation / action status with LANChat message v2.
+  - Keep typed SceneDelta / actor sync as a separate lower-layer protocol.
+- C++ / binding:
+  - `LanChatAgentTrigger` carries `sender_type`, `message_kind`, `target_agent_id`, `source_user_id`, `correlation_id`, `metadata_json`.
+  - `network_pop_lanchat_agent_trigger()` exposes those fields at trigger top level.
+- Python:
+  - `LanChatAgentOrchestrator` consumes structured confirmation first:
+    - `message_kind=confirmation`
+    - `correlation_id=<proposal_id>`
+    - `metadata_json.decision=confirm|reject`
+  - `LANChatAgentWorker` sends `progress`, `gm_proposal`, `agent_reply` through structured message kinds when `_ex` bindings exist.
+  - `LanChatHostActionExecutor` sends `action_status` for queued/executing/executed/failed/accepted_no_delta while preserving legacy intent broadcast.
+- Frontend:
+  - `normalizeMessage()` preserves v2 fields and parses `metadata_json`.
+  - GM host buttons send structured `confirmation` with `correlation_id=<proposal_id>`.
+- Verification:
+  - PASS: `python editor/plugins/AITool/services/test_lanchat_agent_orchestrator.py`
+  - PASS: `node editor/Frontend/scripts/test-lanchat-roster.mjs`
+  - PASS: Python AST check for LANChat Python services.
+- Not done:
+  - C++/Ninja build not run in this pass.
+  - typed SceneDelta / actor version / peer actor apply remain lower-layer items.
+
+## 2026-06-17 add: F5 bug convergence - layout/AABB/VLM/intervention/speed
+
+- Scope:
+  - Python-side F5 convergence only.
+  - No C++/Ninja build or protocol test was run in this pass.
+- Indoor layout:
+  - Replaced the indoor fixed seven-point fallback with a semantic room slot planner in `scene_composer_progressive.py`.
+  - Beds prefer the rear wall; desks/bookcases/wardrobes prefer side walls; chairs follow desks; lamps follow desks or beds.
+  - Rugs/carpets are classified as `surface`, not normal furniture, so they do not compete with large furniture in the first-pass layout.
+  - Outdoor planning (`_outdoor_default_pos/_outdoor_default_scale`) was intentionally left unchanged for grassland/yurt and church/plaza regression safety.
+- AABB hard loop:
+  - `resolve_actor_overlaps()` now reports `remaining_overlap` when it cannot fully clear an actor.
+  - Progressive post-import repair uses a larger iteration budget and logs unresolved overlaps as warnings instead of silently implying success.
+- VLM trust boundary:
+  - `_capture_single_model()` no longer treats failed/empty screenshot writes as successful captures.
+  - VLM user text now reports skipped/timeout targets instead of saying "no obvious issue" when screenshots failed.
+  - VLM remains advisory; hard geometry remains AABB-driven.
+- Intervention responsiveness:
+  - `LANChatAgentWorker` now defaults to async execution so long compose calls do not block trigger polling.
+  - For generate/edit-like messages, the worker sends a fast `progress` ack before entering the serialized agent lock.
+  - This is a Python-side improvement only; if UI input still freezes, classify it as CEF/render/main-thread lower-layer blocking.
+- Generation time:
+  - `_retry_failed_images()` now uses bounded parallel retries. Default `CORONA_IMAGE_RETRY_MAX_WORKERS=3`.
+  - Hunyuan 3D generation concurrency now defaults to 3 via `CORONA_HUNYUAN_MAX_CONCURRENCY` / `CORONA_GENERATION_MAX_WORKERS`, instead of the previous 12-worker default.
+  - Retrieval task order is still preserved by downstream sorting/task indices.
+
+## 2026-06-17 add: F5 interaction lag mitigation - LANChat send / ResourceSearch
+
+- Latest F5 log diagnosis:
+  - LANChat worker is already async, but edit/chat requests still enter the serialized `LANChatAgentTask` path.
+  - Simple edit messages such as moving/scaling actors still route to `integrated stream`, taking roughly 9-48s per request in the latest log.
+  - ResourceSearch background rebuilds also run during the same interaction window, with observed 10s+ rebuilds.
+  - Therefore the lag is not caused by "too many Python threads" alone; it is combined CEF/main-thread wait, serialized AI execution, and background indexing pressure.
+- Frontend mitigation:
+  - `RoomPanel.onSend()` no longer awaits the CEF send promise before returning to the input box.
+  - Send failures are logged asynchronously; message ordering is still server/history driven, no optimistic duplicate bubble is inserted.
+- ResourceSearch mitigation:
+  - Added `CORONA_RESOURCESEARCH_DISABLE_AUTO_REBUILD=1` and `CORONA_F5_DEMO_MODE=1`.
+  - When enabled, `ResourceIndexService.prepare()` / `request_refresh()` use the cached index if available and do not start a background rebuild.
+  - This is intended for F5/demo runs where interaction responsiveness matters more than live resource-index freshness.
+- Edit fast path:
+  - Added a deterministic fast path in `MasterAgent._handle_edit()` for common scale/grounding commands.
+  - Commands such as `放大儿童床`, `喷泉底座穿模了`, `把雕像贴地` can now adjust actor scale, snap bottom to ground, and run AABB overlap repair without entering `integrated stream`.
+  - More complex spatial planning such as `靠左墙`, `重新规划`, `移到窗边` still falls back to the existing agentic tool channel.
+- Verification:
+  - PASS: `node editor/Frontend/scripts/test-lanchat-roster.mjs`
+  - PASS: inline ResourceSearch env check proved disabled prepare/refresh does not call `ResourceIndex.rebuild()`.
+  - PASS: `python editor/plugins/AITool/cai_extensions/agent/test_cai_text_extraction.py`
+  - PASS: `python editor/plugins/AITool/cai_extensions/agent/test_role_registry.py`
+  - PASS: `python editor/plugins/AITool/services/test_lanchat_agent_orchestrator.py`
+  - Full `test_index_service.py` could not run under the sandbox because Python `tempfile` still resolved to the user Local Temp directory and hit `PermissionError`.
+- Remaining:
+  - Need to extend the edit fast path from scale/grounding to common wall/side placement commands.
+  - If input still freezes after the frontend change and ResourceSearch disable flag, classify as CEF/render/main-thread lower-layer blocking.

@@ -87,6 +87,18 @@ function messageSelf(msg, fallback = false) {
   return fallback;
 }
 
+function parseMetadata(msg = {}) {
+  if (msg.metadata && typeof msg.metadata === 'object') return msg.metadata;
+  const raw = msg.metadata_json || '';
+  if (!raw || typeof raw !== 'string') return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (e) {
+    return {};
+  }
+}
+
 function normalizeMessage(msg, self = false) {
   return {
     message_id: msg.message_id || '',
@@ -96,6 +108,13 @@ function normalizeMessage(msg, self = false) {
     from: msg.from || '?',
     text: msg.text || '',
     ts: msg.ts || Math.floor(Date.now() / 1000),
+    sender_type: msg.sender_type || 'user',
+    message_kind: msg.message_kind || 'chat',
+    target_agent_id: msg.target_agent_id || '',
+    source_user_id: msg.source_user_id || '',
+    correlation_id: msg.correlation_id || '',
+    metadata_json: msg.metadata_json || '',
+    metadata: parseMetadata(msg),
     self: messageSelf(msg, self),
   };
 }
@@ -229,14 +248,14 @@ async function leaveRoom() {
 }
 
 /** 发送一条消息。本地不乐观插入，统一由服务器广播回显，保证顺序与去重一致。 */
-async function sendMessage(text) {
+async function sendMessage(text, options = {}) {
   const trimmed = (text || '').trim();
   if (!trimmed || !state.inRoom) return;
   if (!isConnected()) {
     state.error = state.connection === 'syncing' ? 'SYNCING' : 'CONNECTING';
     return { ok: false, error: state.error };
   }
-  const res = await lanChatService.sendMessage(trimmed);
+  const res = await lanChatService.sendMessage(trimmed, options);
   if (res && res.ok === false) {
     state.error = res.error || 'SEND_FAILED';
     if (state.error === 'CONNECTING') {

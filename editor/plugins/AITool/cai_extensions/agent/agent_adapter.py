@@ -915,6 +915,97 @@ class MasterAgent:
 - 设置绝对变换用 set_actor_transform（传 actor 真实名 + position/rotation/scale）；删除用对应删除工具。
 - 完成后用一句中文确认你做了什么（含物体名和新数值）。"""
 
+    def _actor_display_name(self, name: str) -> str:
+        display = str(name or "")
+        for prefix in ("__shell_", "__asset_"):
+            if display.startswith(prefix):
+                return display[len(prefix):]
+        return display
+
+    def _pick_edit_actor(self, user_text: str, actors: List[Any]) -> Any | None:
+        matches: list[tuple[int, Any]] = []
+        for actor in actors:
+            name = str(getattr(actor, "name", "") or "")
+            display = self._actor_display_name(name)
+            if name and name in user_text:
+                matches.append((len(name), actor))
+                continue
+            if display and display in user_text:
+                matches.append((len(display), actor))
+        if not matches:
+            return None
+        matches.sort(key=lambda item: item[0], reverse=True)
+        return matches[0][1]
+
+    def _parse_fast_scale_factor(self, user_text: str) -> float | None:
+        text = user_text.strip()
+        numeric = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*倍", text)
+        if numeric and any(k in text for k in ("放大", "变大", "扩大")):
+            return max(0.05, float(numeric.group(1)))
+        if numeric and any(k in text for k in ("缩小", "变小")):
+            return max(0.05, 1.0 / max(0.05, float(numeric.group(1))))
+        if "一半" in text and any(k in text for k in ("缩小", "变小")):
+            return 0.5
+        if any(k in text for k in ("最大", "大一点", "变大", "放大")):
+            return 1.35
+        if any(k in text for k in ("小一点", "变小", "缩小")):
+            return 0.75
+        return None
+
+    def _try_fast_transform_edit(self, user_text: str, actors: List[Any]) -> str | None:
+        actor = self._pick_edit_actor(user_text, actors)
+        if actor is None:
+            return None
+
+        name = str(getattr(actor, "name", "") or "")
+        display = self._actor_display_name(name)
+        changed_parts: list[str] = []
+        scale_factor = self._parse_fast_scale_factor(user_text)
+        try:
+            if scale_factor is not None:
+                current = [float(v) for v in actor.get_scale()]
+                new_scale = [round(max(0.02, v * scale_factor), 4) for v in current[:3]]
+                actor.set_scale(new_scale)
+                changed_parts.append(f"缩放调整为 {new_scale}")
+
+            needs_grounding = scale_factor is not None or any(
+                k in user_text for k in ("穿模", "贴地", "落地", "抬高", "底座")
+            )
+            if not needs_grounding:
+                return None
+
+            try:
+                from plugins.AITool.cai_extensions.mcp.tools.transform_grounding import (
+                    resolve_actor_overlaps,
+                    snap_actor_to_ground,
+                )
+            except Exception:  # noqa: BLE001
+                from ..mcp.tools.transform_grounding import (  # type: ignore
+                    resolve_actor_overlaps,
+                    snap_actor_to_ground,
+                )
+
+            snapped = snap_actor_to_ground(actor)
+            if snapped is not None:
+                changed_parts.append(
+                    "已自动贴地"
+                )
+            obstacles = [other for other in actors if other is not actor]
+            repair = resolve_actor_overlaps(actor, obstacles, max_iterations=24)
+            if repair.get("changed"):
+                changed_parts.append("已避让重叠")
+            if repair.get("remaining_overlap"):
+                changed_parts.append("仍检测到局部重叠，请确认是否允许进一步移开")
+
+            if not changed_parts:
+                return None
+            pos = [round(float(v), 3) for v in actor.get_position()]
+            scale = [round(float(v), 3) for v in actor.get_scale()]
+            return f"已快速调整 **{display}**：{'；'.join(changed_parts)}。当前位置 {pos}，缩放 {scale}。"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[MasterAgent] fast edit failed for %s: %s", name, exc)
+            return None
+
     def _handle_edit(self, user_text: str, messages: List[str]) -> str:
         """编辑已有物体（增删改移缩放）→ 委托菜包 agentic 通道执行。
 
@@ -936,6 +1027,7 @@ class MasterAgent:
         if sc is None:
             return "⚠️ 当前没有可编辑的场景，请先生成一个场景。"
 
+        editable_actors = []
         actors_lines = []
         for a in sc.get_actors():
             nm = a.name
@@ -946,6 +1038,7 @@ class MasterAgent:
             if (nm.startswith("__room_") or nm.startswith("__interior_")
                     or nm.startswith("__terrain_")):
                 continue
+            editable_actors.append(a)
             try:
                 pos = [round(v, 2) for v in a.get_position()]
                 scl = [round(v, 2) for v in a.get_scale()]
@@ -955,6 +1048,11 @@ class MasterAgent:
                 actors_lines.append(f"  - {nm}")
         if not actors_lines:
             return "⚠️ 场景里没有可编辑的物体。"
+
+        fast_reply = self._try_fast_transform_edit(user_text, editable_actors)
+        if fast_reply:
+            logger.info("[MasterAgent] edit → fast transform path")
+            return fast_reply
 
         # 2. 用执行框架 prompt 委托菜包 agentic 通道（它自主调引擎工具）
         actors_text = "\n".join(actors_lines)

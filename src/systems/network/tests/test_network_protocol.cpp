@@ -185,6 +185,42 @@ void test_lanchat_message_carries_identity_and_sequence() {
     expect_true(reader.read_u64() == 12345, "chat message timestamp payload");
 }
 
+void test_lanchat_v2_message_carries_structured_metadata() {
+    auto packet = Corona::Network::build_chat_message_v2(
+        Corona::Network::MessageType::CHAT_AGENT_REPLY_V2,
+        "msg-2", "agent-a", "room-a", 43, "SceneBot", "working", 12346,
+        "agent", "progress", "agent-a", "user-a", "corr-1", "{\"phase\":\"OBJECTS\"}");
+
+    Corona::Network::BufferReader reader(packet.data(), packet.size());
+    expect_true(static_cast<Corona::Network::MessageType>(reader.read_u8()) ==
+                    Corona::Network::MessageType::CHAT_AGENT_REPLY_V2,
+                "chat v2 message type");
+    expect_true(reader.read_string(reader.read_u16()) == "msg-2",
+                "chat v2 message id payload");
+    expect_true(reader.read_string(reader.read_u16()) == "agent-a",
+                "chat v2 sender id payload");
+    expect_true(reader.read_string(reader.read_u16()) == "room-a",
+                "chat v2 room id payload");
+    expect_true(reader.read_u64() == 43, "chat v2 sequence payload");
+    expect_true(reader.read_string(reader.read_u16()) == "SceneBot",
+                "chat v2 sender name payload");
+    expect_true(reader.read_string(reader.read_u16()) == "working",
+                "chat v2 text payload");
+    expect_true(reader.read_u64() == 12346, "chat v2 timestamp payload");
+    expect_true(reader.read_string(reader.read_u16()) == "agent",
+                "chat v2 sender type payload");
+    expect_true(reader.read_string(reader.read_u16()) == "progress",
+                "chat v2 message kind payload");
+    expect_true(reader.read_string(reader.read_u16()) == "agent-a",
+                "chat v2 target agent payload");
+    expect_true(reader.read_string(reader.read_u16()) == "user-a",
+                "chat v2 source user payload");
+    expect_true(reader.read_string(reader.read_u16()) == "corr-1",
+                "chat v2 correlation payload");
+    expect_true(reader.read_string(reader.read_u16()) == "{\"phase\":\"OBJECTS\"}",
+                "chat v2 metadata payload");
+}
+
 void test_lanchat_member_update_carries_full_snapshot() {
     const std::vector<Corona::Network::LanChatMember> members{
         {"host-peer", "房主", "online", 100},
@@ -243,6 +279,48 @@ void test_lanchat_history_snapshot_carries_full_history() {
     expect_true(reader.read_u64() == 1000, "chat history first timestamp payload");
     expect_true(reader.read_string(reader.read_u16()) == "msg-2",
                 "chat history second message id payload");
+}
+
+void test_lanchat_v2_history_snapshot_preserves_message_kind() {
+    Corona::Network::LanChatMessage progress;
+    progress.message_id = "msg-progress";
+    progress.sender_id = "agent-a";
+    progress.sender_name = "SceneBot";
+    progress.room_id = "room-a";
+    progress.text = "生成进度 50%";
+    progress.seq = 1;
+    progress.timestamp_ms = 1000;
+    progress.sender_type = "agent";
+    progress.message_kind = "progress";
+    progress.target_agent_id = "agent-a";
+    progress.source_user_id = "user-a";
+    progress.correlation_id = "corr-1";
+    progress.metadata_json = "{\"phase\":\"OBJECTS\"}";
+
+    auto packet = Corona::Network::build_chat_history_snapshot_v2("room-a", {progress});
+    Corona::Network::BufferReader reader(packet.data(), packet.size());
+    expect_true(static_cast<Corona::Network::MessageType>(reader.read_u8()) ==
+                    Corona::Network::MessageType::CHAT_HISTORY_SNAPSHOT_V2,
+                "chat v2 history snapshot type");
+    expect_true(reader.read_string(reader.read_u16()) == "room-a",
+                "chat v2 history room id");
+    expect_true(reader.read_u16() == 1, "chat v2 history count");
+    expect_true(reader.read_string(reader.read_u16()) == "msg-progress",
+                "chat v2 history message id");
+    expect_true(reader.read_string(reader.read_u16()) == "agent-a",
+                "chat v2 history sender id");
+    expect_true(reader.read_string(reader.read_u16()) == "room-a",
+                "chat v2 history room id in message");
+    expect_true(reader.read_u64() == 1, "chat v2 history seq");
+    expect_true(reader.read_string(reader.read_u16()) == "SceneBot",
+                "chat v2 history sender name");
+    expect_true(reader.read_string(reader.read_u16()) == "生成进度 50%",
+                "chat v2 history text");
+    expect_true(reader.read_u64() == 1000, "chat v2 history timestamp");
+    expect_true(reader.read_string(reader.read_u16()) == "agent",
+                "chat v2 history sender type");
+    expect_true(reader.read_string(reader.read_u16()) == "progress",
+                "chat v2 history message kind");
 }
 
 void test_lanchat_join_reject_carries_error_code() {
@@ -358,6 +436,8 @@ void test_lanchat_state_enqueues_local_agent_trigger_from_mention() {
     expect_true(trigger->agent_name == "SceneBot", "lanchat trigger carries agent name");
     expect_true(trigger->persona == "scene helper", "lanchat trigger carries persona");
     expect_true(trigger->text == "@SceneBot 111 @RemoteBot", "lanchat trigger carries source text");
+    expect_true(trigger->sender_type == "user", "lanchat trigger carries sender type");
+    expect_true(trigger->message_kind == "chat", "lanchat trigger carries message kind");
     expect_true(trigger->history.size() == 1, "lanchat trigger carries recent history");
     expect_true(!state.pop_agent_trigger().has_value(),
                 "lanchat state does not trigger remote owned agent");
@@ -419,6 +499,21 @@ void test_lanchat_state_does_not_trigger_agent_reply_or_duplicate_names() {
     state.enqueue_agent_triggers_for_message(reply, "local-peer", true);
     expect_true(!state.pop_agent_trigger().has_value(),
                 "lanchat state does not enqueue triggers for agent replies");
+}
+
+void test_lanchat_state_does_not_trigger_structured_progress_messages() {
+    Corona::Network::LanChatState state;
+    state.open_room("room-a", "local-peer", "Host");
+    state.register_agent("agent-1", "SceneBot", "scene helper", "local-peer");
+
+    auto progress = state.record_message_ex(
+        "progress-1", "agent-1", "SceneBot", "@SceneBot working", 1000,
+        "agent", "progress", "agent-1", "user-peer", "corr-1", "{}");
+    expect_true(progress.accepted, "lanchat state accepts structured progress");
+
+    state.enqueue_agent_triggers_for_message(progress.message, "local-peer");
+    expect_true(!state.pop_agent_trigger().has_value(),
+                "structured progress does not trigger agents");
 }
 
 void test_lanchat_state_tracks_locks_and_preview_conflicts() {
@@ -978,8 +1073,10 @@ int main() {
     test_file_chunk_carries_transfer_id_and_offset();
     test_ownership_claim_carries_actor_guid();
     test_lanchat_message_carries_identity_and_sequence();
+    test_lanchat_v2_message_carries_structured_metadata();
     test_lanchat_member_update_carries_full_snapshot();
     test_lanchat_history_snapshot_carries_full_history();
+    test_lanchat_v2_history_snapshot_preserves_message_kind();
     test_lanchat_join_reject_carries_error_code();
     test_lanchat_state_deduplicates_messages_and_tracks_agents();
     test_lanchat_state_updates_authoritative_message_and_history_snapshot();
@@ -988,6 +1085,7 @@ int main() {
     test_lanchat_state_implicit_trigger_only_for_single_local_agent();
     test_lanchat_state_deduplicates_agent_triggers();
     test_lanchat_state_does_not_trigger_agent_reply_or_duplicate_names();
+    test_lanchat_state_does_not_trigger_structured_progress_messages();
     test_lanchat_state_tracks_locks_and_preview_conflicts();
     test_project_relative_path_validation();
     test_network_system_session_role_defaults_to_none();

@@ -114,6 +114,22 @@ LanChatMessageResult LanChatState::record_message(const std::string& message_id,
                                                   const std::string& sender_name,
                                                   const std::string& text,
                                                   uint64_t timestamp_ms) {
+    return record_message_ex(
+        message_id, sender_id, sender_name, text, timestamp_ms,
+        "user", "chat");
+}
+
+LanChatMessageResult LanChatState::record_message_ex(const std::string& message_id,
+                                                     const std::string& sender_id,
+                                                     const std::string& sender_name,
+                                                     const std::string& text,
+                                                     uint64_t timestamp_ms,
+                                                     const std::string& sender_type,
+                                                     const std::string& message_kind,
+                                                     const std::string& target_agent_id,
+                                                     const std::string& source_user_id,
+                                                     const std::string& correlation_id,
+                                                     const std::string& metadata_json) {
     if (message_id.empty()) {
         return {false, {}, "message_id is required"};
     }
@@ -129,6 +145,12 @@ LanChatMessageResult LanChatState::record_message(const std::string& message_id,
     message.text = text;
     message.seq = next_seq_++;
     message.timestamp_ms = timestamp_ms;
+    message.sender_type = sender_type.empty() ? "user" : sender_type;
+    message.message_kind = message_kind.empty() ? "chat" : message_kind;
+    message.target_agent_id = target_agent_id;
+    message.source_user_id = source_user_id;
+    message.correlation_id = correlation_id;
+    message.metadata_json = metadata_json;
 
     history_.push_back(message);
     return {true, message, {}};
@@ -148,7 +170,13 @@ LanChatMessageResult LanChatState::apply_remote_message(const LanChatMessage& me
             existing->room_id == message.room_id &&
             existing->text == message.text &&
             existing->seq == message.seq &&
-            existing->timestamp_ms == message.timestamp_ms;
+            existing->timestamp_ms == message.timestamp_ms &&
+            existing->sender_type == message.sender_type &&
+            existing->message_kind == message.message_kind &&
+            existing->target_agent_id == message.target_agent_id &&
+            existing->source_user_id == message.source_user_id &&
+            existing->correlation_id == message.correlation_id &&
+            existing->metadata_json == message.metadata_json;
         if (same_payload) {
             return {false, *existing, "duplicate message_id"};
         }
@@ -202,6 +230,12 @@ void LanChatState::enqueue_agent_triggers_for_message(const LanChatMessage& mess
     if (is_agent_reply || message.message_id.empty() || local_peer_id.empty()) {
         return;
     }
+    if (!message.message_kind.empty() && message.message_kind != "chat") {
+        return;
+    }
+    if (!message.sender_type.empty() && message.sender_type != "user") {
+        return;
+    }
 
     std::vector<const LanChatAgent*> local_agents;
     local_agents.reserve(agents_.size());
@@ -235,6 +269,12 @@ void LanChatState::enqueue_agent_triggers_for_message(const LanChatMessage& mess
         trigger.room_id = message.room_id;
         trigger.sender_id = message.sender_id;
         trigger.sender_name = message.sender_name;
+        trigger.sender_type = message.sender_type;
+        trigger.message_kind = message.message_kind;
+        trigger.target_agent_id = message.target_agent_id;
+        trigger.source_user_id = message.source_user_id;
+        trigger.correlation_id = message.correlation_id;
+        trigger.metadata_json = message.metadata_json;
         trigger.agent_id = agent.agent_id;
         trigger.agent_name = agent.name;
         trigger.persona = agent.persona;

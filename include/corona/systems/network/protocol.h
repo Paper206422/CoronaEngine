@@ -68,6 +68,9 @@ enum class MessageType : uint8_t {
     CHAT_AGENT_REPLY = 0x27, // LANChat agent invocation reply
     CHAT_HISTORY_SNAPSHOT = 0x28, // LANChat full message history snapshot
     CHAT_JOIN_REJECT = 0x29, // LANChat join rejected by host
+    CHAT_MESSAGE_V2 = 0x2A, // LANChat structured user/system message
+    CHAT_AGENT_REPLY_V2 = 0x2B, // LANChat structured agent/system reply
+    CHAT_HISTORY_SNAPSHOT_V2 = 0x2C, // LANChat structured history snapshot
 };
 
 // ============================================================================
@@ -414,6 +417,46 @@ inline std::vector<uint8_t> build_chat_message(
     return buf;
 }
 
+inline std::vector<uint8_t> build_chat_message_v2(
+    MessageType type,
+    const std::string& message_id,
+    const std::string& sender_id,
+    const std::string& room_id,
+    uint64_t seq,
+    const std::string& sender_name,
+    const std::string& text,
+    uint64_t timestamp_ms,
+    const std::string& sender_type = "user",
+    const std::string& message_kind = "chat",
+    const std::string& target_agent_id = {},
+    const std::string& source_user_id = {},
+    const std::string& correlation_id = {},
+    const std::string& metadata_json = {})
+{
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + message_id.size() + 2 + sender_id.size() +
+                2 + room_id.size() + 8 + 2 + sender_name.size() +
+                2 + text.size() + 8 + 2 + sender_type.size() +
+                2 + message_kind.size() + 2 + target_agent_id.size() +
+                2 + source_user_id.size() + 2 + correlation_id.size() +
+                2 + metadata_json.size());
+    write_u8(buf, static_cast<uint8_t>(type));
+    write_string(buf, message_id);
+    write_string(buf, sender_id);
+    write_string(buf, room_id);
+    write_u64(buf, seq);
+    write_string(buf, sender_name);
+    write_string(buf, text);
+    write_u64(buf, timestamp_ms);
+    write_string(buf, sender_type);
+    write_string(buf, message_kind);
+    write_string(buf, target_agent_id);
+    write_string(buf, source_user_id);
+    write_string(buf, correlation_id);
+    write_string(buf, metadata_json);
+    return buf;
+}
+
 inline std::vector<uint8_t> build_chat_join(
     const std::string& room_id,
     const std::string& member_id,
@@ -494,6 +537,50 @@ inline std::vector<uint8_t> build_chat_history_snapshot(
         write_string(buf, message.sender_name);
         write_string(buf, message.text);
         write_u64(buf, message.timestamp_ms);
+    }
+    return buf;
+}
+
+inline std::vector<uint8_t> build_chat_history_snapshot_v2(
+    const std::string& room_id,
+    const std::vector<LanChatMessage>& history)
+{
+    size_t payload_size = 1 + 2 + room_id.size() + 2;
+    for (const auto& message : history) {
+        payload_size += 2 + message.message_id.size();
+        payload_size += 2 + message.sender_id.size();
+        payload_size += 2 + message.room_id.size();
+        payload_size += 8;
+        payload_size += 2 + message.sender_name.size();
+        payload_size += 2 + message.text.size();
+        payload_size += 8;
+        payload_size += 2 + message.sender_type.size();
+        payload_size += 2 + message.message_kind.size();
+        payload_size += 2 + message.target_agent_id.size();
+        payload_size += 2 + message.source_user_id.size();
+        payload_size += 2 + message.correlation_id.size();
+        payload_size += 2 + message.metadata_json.size();
+    }
+
+    std::vector<uint8_t> buf;
+    buf.reserve(payload_size);
+    write_u8(buf, static_cast<uint8_t>(MessageType::CHAT_HISTORY_SNAPSHOT_V2));
+    write_string(buf, room_id);
+    write_u16(buf, static_cast<uint16_t>(history.size()));
+    for (const auto& message : history) {
+        write_string(buf, message.message_id);
+        write_string(buf, message.sender_id);
+        write_string(buf, message.room_id);
+        write_u64(buf, message.seq);
+        write_string(buf, message.sender_name);
+        write_string(buf, message.text);
+        write_u64(buf, message.timestamp_ms);
+        write_string(buf, message.sender_type);
+        write_string(buf, message.message_kind);
+        write_string(buf, message.target_agent_id);
+        write_string(buf, message.source_user_id);
+        write_string(buf, message.correlation_id);
+        write_string(buf, message.metadata_json);
     }
     return buf;
 }

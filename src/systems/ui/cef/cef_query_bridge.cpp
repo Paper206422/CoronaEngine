@@ -137,6 +137,12 @@ nlohmann::json build_lanchat_history(
             {"from", message.sender_name},
             {"text", message.text},
             {"ts", message.timestamp_ms / 1000},
+            {"sender_type", message.sender_type},
+            {"message_kind", message.message_kind},
+            {"target_agent_id", message.target_agent_id},
+            {"source_user_id", message.source_user_id},
+            {"correlation_id", message.correlation_id},
+            {"metadata_json", message.metadata_json},
         });
     }
     return result;
@@ -624,7 +630,19 @@ bool BrowserSideJSHandler::OnQuery(CefRefPtr<CefBrowser> browser,
 
                 if (func == "send_message") {
                     const std::string text = payload_arg.value("text", "");
-                    auto result = sys->lanchat_send_message(text);
+                    const std::string message_kind = payload_arg.value("message_kind", "chat");
+                    const std::string target_agent_id = payload_arg.value("target_agent_id", "");
+                    const std::string source_user_id = payload_arg.value("source_user_id", "");
+                    const std::string correlation_id = payload_arg.value("correlation_id", "");
+                    std::string metadata_json;
+                    if (payload_arg.contains("metadata_json")) {
+                        metadata_json = payload_arg.value("metadata_json", "");
+                    } else if (payload_arg.contains("metadata")) {
+                        metadata_json = payload_arg["metadata"].dump();
+                    }
+                    auto result = sys->lanchat_send_message_ex(
+                        text, message_kind, target_agent_id, source_user_id,
+                        correlation_id, metadata_json);
                     nlohmann::json data;
                     data["ok"] = result.accepted;
                     if (result.accepted) {

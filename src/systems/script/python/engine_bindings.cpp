@@ -463,6 +463,23 @@ void BindAll(nanobind::module_& m) {
     }, nb::arg("agent_id"), nb::arg("agent_name"), nb::arg("text"),
        "Send an AI agent reply through the C++ reliable collaboration channel.");
 
+    m.def("network_send_agent_reply_ex", [](const std::string& agent_id,
+                                             const std::string& agent_name,
+                                             const std::string& text,
+                                             const std::string& message_kind,
+                                             const std::string& target_agent_id,
+                                             const std::string& correlation_id,
+                                             const std::string& metadata_json) -> bool {
+        auto sys = get_network_system();
+        return sys && sys->lanchat_send_agent_reply_ex(
+            agent_id, agent_name, text, "agent",
+            message_kind.empty() ? "agent_reply" : message_kind,
+            target_agent_id, "", correlation_id, metadata_json).accepted;
+    }, nb::arg("agent_id"), nb::arg("agent_name"), nb::arg("text"),
+       nb::arg("message_kind") = "agent_reply", nb::arg("target_agent_id") = "",
+       nb::arg("correlation_id") = "", nb::arg("metadata_json") = "",
+       "Send a structured AI agent reply through the C++ LANChat channel.");
+
 	    m.def("network_pop_lanchat_agent_trigger", []() -> nb::object {
 	        auto sys = get_network_system();
 	        if (!sys) {
@@ -479,6 +496,12 @@ void BindAll(nanobind::module_& m) {
         result["room_id"] = trigger->room_id;
         result["sender_id"] = trigger->sender_id;
         result["sender_name"] = trigger->sender_name;
+        result["sender_type"] = trigger->sender_type;
+        result["message_kind"] = trigger->message_kind;
+        result["target_agent_id"] = trigger->target_agent_id;
+        result["source_user_id"] = trigger->source_user_id;
+        result["correlation_id"] = trigger->correlation_id;
+        result["metadata_json"] = trigger->metadata_json;
         result["agent_id"] = trigger->agent_id;
         result["agent_name"] = trigger->agent_name;
         result["persona"] = trigger->persona;
@@ -494,6 +517,12 @@ void BindAll(nanobind::module_& m) {
             item["from"] = message.sender_name;
             item["text"] = message.text;
             item["ts"] = message.timestamp_ms / 1000;
+            item["sender_type"] = message.sender_type;
+            item["message_kind"] = message.message_kind;
+            item["target_agent_id"] = message.target_agent_id;
+            item["source_user_id"] = message.source_user_id;
+            item["correlation_id"] = message.correlation_id;
+            item["metadata_json"] = message.metadata_json;
             history.append(item);
         }
 	        result["history"] = history;
@@ -517,10 +546,16 @@ void BindAll(nanobind::module_& m) {
 	            item["sender_id"] = message.sender_id;
 	            item["room_id"] = message.room_id;
 	            item["seq"] = message.seq;
-	            item["from"] = message.sender_name;
-	            item["text"] = message.text;
-	            item["ts"] = message.timestamp_ms / 1000;
-	            history.append(item);
+            item["from"] = message.sender_name;
+            item["text"] = message.text;
+            item["ts"] = message.timestamp_ms / 1000;
+            item["sender_type"] = message.sender_type;
+            item["message_kind"] = message.message_kind;
+            item["target_agent_id"] = message.target_agent_id;
+            item["source_user_id"] = message.source_user_id;
+            item["correlation_id"] = message.correlation_id;
+            item["metadata_json"] = message.metadata_json;
+            history.append(item);
 	        }
 	        return history;
 	    }, nb::arg("limit") = 20, "Return a recent LANChat history snapshot for Python AI/GM logic.");
@@ -546,9 +581,26 @@ void BindAll(nanobind::module_& m) {
 	                                             const std::string& sender_name,
 	                                             const std::string& text) -> bool {
 	        auto sys = get_network_system();
-	        return sys && sys->lanchat_send_agent_reply(sender_id, sender_name, text).accepted;
+	        return sys && sys->lanchat_send_agent_reply_ex(
+                sender_id, sender_name, text, "system", "agent_reply").accepted;
 	    }, nb::arg("sender_id"), nb::arg("sender_name"), nb::arg("text"),
 	       "Send a GM/system message through the C++ reliable LANChat channel.");
+
+	    m.def("network_send_system_message_ex", [](const std::string& sender_id,
+	                                                const std::string& sender_name,
+	                                                const std::string& text,
+	                                                const std::string& message_kind,
+	                                                const std::string& correlation_id,
+	                                                const std::string& metadata_json) -> bool {
+	        auto sys = get_network_system();
+	        return sys && sys->lanchat_send_agent_reply_ex(
+                sender_id, sender_name, text, "system",
+                message_kind.empty() ? "agent_reply" : message_kind,
+                "", "", correlation_id, metadata_json).accepted;
+	    }, nb::arg("sender_id"), nb::arg("sender_name"), nb::arg("text"),
+           nb::arg("message_kind") = "agent_reply", nb::arg("correlation_id") = "",
+           nb::arg("metadata_json") = "",
+	       "Send a structured GM/system message through the C++ reliable LANChat channel.");
 
 	    m.def("network_lock_object", [](const std::string& object_id,
 	                                     const std::string& user_id,

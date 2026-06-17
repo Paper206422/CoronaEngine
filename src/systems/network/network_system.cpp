@@ -198,7 +198,14 @@ std::string history_json(const std::vector<Network::LanChatMessage>& history) {
             << ",\"seq\":" << message.seq
             << ",\"from\":" << json_string(message.sender_name)
             << ",\"text\":" << json_string(message.text)
-            << ",\"ts\":" << (message.timestamp_ms / 1000) << "}";
+            << ",\"ts\":" << (message.timestamp_ms / 1000)
+            << ",\"sender_type\":" << json_string(message.sender_type)
+            << ",\"message_kind\":" << json_string(message.message_kind)
+            << ",\"target_agent_id\":" << json_string(message.target_agent_id)
+            << ",\"source_user_id\":" << json_string(message.source_user_id)
+            << ",\"correlation_id\":" << json_string(message.correlation_id)
+            << ",\"metadata_json\":" << json_string(message.metadata_json)
+            << "}";
     }
     out << "]";
     return out.str();
@@ -229,6 +236,12 @@ std::string message_event_json(const Network::LanChatMessage& message) {
         << ",\"from\":" << json_string(message.sender_name)
         << ",\"text\":" << json_string(message.text)
         << ",\"ts\":" << (message.timestamp_ms / 1000)
+        << ",\"sender_type\":" << json_string(message.sender_type)
+        << ",\"message_kind\":" << json_string(message.message_kind)
+        << ",\"target_agent_id\":" << json_string(message.target_agent_id)
+        << ",\"source_user_id\":" << json_string(message.source_user_id)
+        << ",\"correlation_id\":" << json_string(message.correlation_id)
+        << ",\"metadata_json\":" << json_string(message.metadata_json)
         << "}";
     return out.str();
 }
@@ -253,7 +266,8 @@ std::string lanchat_error_event_json(const std::string& code,
     return out.str();
 }
 
-bool read_chat_message(Network::BufferReader& r, Network::LanChatMessage& message) {
+bool read_chat_message(Network::BufferReader& r, Network::LanChatMessage& message,
+                       bool structured = false) {
     if (!r.has_remaining(2)) return false;
     uint16_t message_id_len = r.read_u16();
     if (!r.has_remaining(message_id_len + 2)) return false;
@@ -272,19 +286,59 @@ bool read_chat_message(Network::BufferReader& r, Network::LanChatMessage& messag
     if (!r.has_remaining(text_len + 8)) return false;
     message.text = r.read_string(text_len);
     message.timestamp_ms = r.read_u64();
+    message.sender_type = "user";
+    message.message_kind = "chat";
+    if (!structured) {
+        return true;
+    }
+    if (r.has_remaining(2)) {
+        uint16_t sender_type_len = r.read_u16();
+        if (!r.has_remaining(sender_type_len)) return false;
+        message.sender_type = r.read_string(sender_type_len);
+    }
+    if (r.has_remaining(2)) {
+        uint16_t message_kind_len = r.read_u16();
+        if (!r.has_remaining(message_kind_len)) return false;
+        message.message_kind = r.read_string(message_kind_len);
+    }
+    if (r.has_remaining(2)) {
+        uint16_t target_agent_len = r.read_u16();
+        if (!r.has_remaining(target_agent_len)) return false;
+        message.target_agent_id = r.read_string(target_agent_len);
+    }
+    if (r.has_remaining(2)) {
+        uint16_t source_user_len = r.read_u16();
+        if (!r.has_remaining(source_user_len)) return false;
+        message.source_user_id = r.read_string(source_user_len);
+    }
+    if (r.has_remaining(2)) {
+        uint16_t correlation_len = r.read_u16();
+        if (!r.has_remaining(correlation_len)) return false;
+        message.correlation_id = r.read_string(correlation_len);
+    }
+    if (r.has_remaining(2)) {
+        uint16_t metadata_len = r.read_u16();
+        if (!r.has_remaining(metadata_len)) return false;
+        message.metadata_json = r.read_string(metadata_len);
+    }
     return true;
 }
 
 std::vector<uint8_t> build_chat_packet_for_type(
     const Network::LanChatMessage& message,
     Network::MessageType type) {
-    auto packet = Network::build_chat_message(
-        message.message_id, message.sender_id, message.room_id, message.seq,
-        message.sender_name, message.text, message.timestamp_ms);
-    if (!packet.empty()) {
-        packet[0] = static_cast<uint8_t>(type);
+    Network::MessageType wire_type = type;
+    if (type == Network::MessageType::CHAT_MESSAGE) {
+        wire_type = Network::MessageType::CHAT_MESSAGE_V2;
+    } else if (type == Network::MessageType::CHAT_AGENT_REPLY) {
+        wire_type = Network::MessageType::CHAT_AGENT_REPLY_V2;
     }
-    return packet;
+    return Network::build_chat_message_v2(
+        wire_type,
+        message.message_id, message.sender_id, message.room_id, message.seq,
+        message.sender_name, message.text, message.timestamp_ms,
+        message.sender_type, message.message_kind, message.target_agent_id,
+        message.source_user_id, message.correlation_id, message.metadata_json);
 }
 
 bool send_to_first_peer(Network::PeerManager& peer_manager,
@@ -668,6 +722,16 @@ void NetworkSystem::lanchat_leave_room() {
 }
 
 Network::LanChatMessageResult NetworkSystem::lanchat_send_message(const std::string& text) {
+    return lanchat_send_message_ex(text, "chat");
+}
+
+Network::LanChatMessageResult NetworkSystem::lanchat_send_message_ex(
+    const std::string& text,
+    const std::string& message_kind,
+    const std::string& target_agent_id,
+    const std::string& source_user_id,
+    const std::string& correlation_id,
+    const std::string& metadata_json) {
     if (impl_->session_role == SessionRole::Client && impl_->peer_manager.peer_count() == 0) {
         return {false, {}, "CONNECTING"};
     }
@@ -687,6 +751,12 @@ Network::LanChatMessageResult NetworkSystem::lanchat_send_message(const std::str
         message.text = text;
         message.seq = 0;
         message.timestamp_ms = timestamp;
+        message.sender_type = "user";
+        message.message_kind = message_kind.empty() ? "chat" : message_kind;
+        message.target_agent_id = target_agent_id;
+        message.source_user_id = source_user_id.empty() ? sender_id : source_user_id;
+        message.correlation_id = correlation_id;
+        message.metadata_json = metadata_json;
         auto packet = build_chat_packet_for_type(message, Network::MessageType::CHAT_MESSAGE);
         if (!send_to_first_peer(impl_->peer_manager, packet)) {
             return {false, {}, "CONNECTING"};
@@ -694,8 +764,11 @@ Network::LanChatMessageResult NetworkSystem::lanchat_send_message(const std::str
         return {true, message, {}};
     }
 
-    auto result = impl_->lanchat.record_message(
-        message_id, sender_id, impl_->lanchat_nickname, text, timestamp);
+    auto result = impl_->lanchat.record_message_ex(
+        message_id, sender_id, impl_->lanchat_nickname, text, timestamp,
+        "user", message_kind.empty() ? "chat" : message_kind, target_agent_id,
+        source_user_id.empty() ? sender_id : source_user_id, correlation_id,
+        metadata_json);
     if (!result.accepted) {
         return result;
     }
@@ -715,6 +788,20 @@ Network::LanChatMessageResult NetworkSystem::lanchat_send_agent_reply(
     const std::string& agent_id,
     const std::string& agent_name,
     const std::string& text) {
+    return lanchat_send_agent_reply_ex(
+        agent_id, agent_name, text, "agent", "agent_reply");
+}
+
+Network::LanChatMessageResult NetworkSystem::lanchat_send_agent_reply_ex(
+    const std::string& agent_id,
+    const std::string& agent_name,
+    const std::string& text,
+    const std::string& sender_type,
+    const std::string& message_kind,
+    const std::string& target_agent_id,
+    const std::string& source_user_id,
+    const std::string& correlation_id,
+    const std::string& metadata_json) {
     const uint64_t timestamp = now_ms();
     const std::string sender_id = agent_id.empty() ? local_peer_id() : agent_id;
     const std::string sender_name = agent_name.empty() ? "Agent" : agent_name;
@@ -731,6 +818,12 @@ Network::LanChatMessageResult NetworkSystem::lanchat_send_agent_reply(
         message.text = text;
         message.seq = 0;
         message.timestamp_ms = timestamp;
+        message.sender_type = sender_type.empty() ? "agent" : sender_type;
+        message.message_kind = message_kind.empty() ? "agent_reply" : message_kind;
+        message.target_agent_id = target_agent_id;
+        message.source_user_id = source_user_id;
+        message.correlation_id = correlation_id;
+        message.metadata_json = metadata_json;
         auto packet = build_chat_packet_for_type(message, Network::MessageType::CHAT_AGENT_REPLY);
         if (!send_to_first_peer(impl_->peer_manager, packet)) {
             return {false, {}, "CONNECTING"};
@@ -738,8 +831,11 @@ Network::LanChatMessageResult NetworkSystem::lanchat_send_agent_reply(
         return {true, message, {}};
     }
 
-    auto result = impl_->lanchat.record_message(
-        message_id, sender_id, sender_name, text, timestamp);
+    auto result = impl_->lanchat.record_message_ex(
+        message_id, sender_id, sender_name, text, timestamp,
+        sender_type.empty() ? "agent" : sender_type,
+        message_kind.empty() ? "agent_reply" : message_kind,
+        target_agent_id, source_user_id, correlation_id, metadata_json);
     if (!result.accepted) {
         return result;
     }
@@ -1153,7 +1249,7 @@ void NetworkSystem::on_custom_message(const std::string& sender_peer_id,
                 Network::kChannelReliable, members_packet.data(), members_packet.size(), true);
             const auto* peer_info = impl_->peer_manager.find_peer(sender_peer_id);
             if (peer_info && peer_info->peer) {
-                auto history_packet = Network::build_chat_history_snapshot(
+                auto history_packet = Network::build_chat_history_snapshot_v2(
                     impl_->lanchat.room_id(), impl_->lanchat.history());
                 impl_->peer_manager.send_to(
                     peer_info->peer, Network::kChannelReliable,
@@ -1266,7 +1362,8 @@ void NetworkSystem::on_custom_message(const std::string& sender_peer_id,
             impl_->lanchat_event_callback(
                 member_update_event_json(impl_->lanchat.members(), local_peer_id()));
         }
-    } else if (mt == MessageType::CHAT_HISTORY_SNAPSHOT) {
+    } else if (mt == MessageType::CHAT_HISTORY_SNAPSHOT ||
+               mt == MessageType::CHAT_HISTORY_SNAPSHOT_V2) {
         if (impl_->session_role == SessionRole::Host) return;
         Network::BufferReader r(data + 1, len - 1);
         if (!r.has_remaining(2)) return;
@@ -1276,9 +1373,10 @@ void NetworkSystem::on_custom_message(const std::string& sender_peer_id,
         uint16_t message_count = r.read_u16();
         std::vector<Network::LanChatMessage> history;
         history.reserve(message_count);
+        const bool structured = mt == MessageType::CHAT_HISTORY_SNAPSHOT_V2;
         for (uint16_t i = 0; i < message_count; ++i) {
             Network::LanChatMessage message;
-            if (!read_chat_message(r, message)) return;
+            if (!read_chat_message(r, message, structured)) return;
             history.push_back(std::move(message));
         }
         if (impl_->lanchat.room_id() != room_id) return;
@@ -1293,24 +1391,34 @@ void NetworkSystem::on_custom_message(const std::string& sender_peer_id,
             impl_->lanchat_event_callback(
                 history_snapshot_event_json(impl_->lanchat.history()));
         }
-    } else if (mt == MessageType::CHAT_MESSAGE || mt == MessageType::CHAT_AGENT_REPLY) {
+    } else if (mt == MessageType::CHAT_MESSAGE || mt == MessageType::CHAT_AGENT_REPLY ||
+               mt == MessageType::CHAT_MESSAGE_V2 || mt == MessageType::CHAT_AGENT_REPLY_V2) {
         Network::BufferReader r(data + 1, len - 1);
         Network::LanChatMessage message;
-        if (!read_chat_message(r, message)) return;
+        const bool structured =
+            mt == MessageType::CHAT_MESSAGE_V2 || mt == MessageType::CHAT_AGENT_REPLY_V2;
+        if (!read_chat_message(r, message, structured)) return;
+        if (!structured && mt == MessageType::CHAT_AGENT_REPLY) {
+            message.sender_type = "agent";
+            message.message_kind = "agent_reply";
+        }
 
         if (impl_->lanchat.room_id() != message.room_id) return;
         Network::LanChatMessageResult result;
         if (impl_->session_role == SessionRole::Host) {
-            result = impl_->lanchat.record_message(
+            result = impl_->lanchat.record_message_ex(
                 message.message_id, message.sender_id, message.sender_name,
-                message.text, message.timestamp_ms);
+                message.text, message.timestamp_ms, message.sender_type,
+                message.message_kind, message.target_agent_id, message.source_user_id,
+                message.correlation_id, message.metadata_json);
         } else {
             result = impl_->lanchat.apply_remote_message(message);
         }
         if (result.accepted && impl_->lanchat_event_callback) {
             impl_->lanchat_event_callback(message_event_json(result.message));
         }
-        if (result.accepted && mt == MessageType::CHAT_MESSAGE) {
+        if (result.accepted &&
+            (mt == MessageType::CHAT_MESSAGE || mt == MessageType::CHAT_MESSAGE_V2)) {
             impl_->lanchat.enqueue_agent_triggers_for_message(result.message, local_peer_id());
         }
         if (result.accepted && impl_->session_role == SessionRole::Host) {

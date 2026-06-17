@@ -79,8 +79,13 @@ def _capture_single_model(output_dir: str, model_name: str, tier: int = 99) -> O
                 {"output_path": filepath, "output_mode": "base_color"},
             )
             try:
-                future.result(timeout=5.0)
-                saved.append(filepath)
+                ok = future.result(timeout=5.0)
+                if ok is False:
+                    logger.warning("[ModelReviewer] %s az=%d 截图工具返回失败", model_name, az)
+                elif os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+                    saved.append(filepath)
+                else:
+                    logger.warning("[ModelReviewer] %s az=%d 截图文件缺失或为空", model_name, az)
             except FuturesTimeoutError:
                 logger.warning("[ModelReviewer] %s az=%d 截图超时, 跳过", model_name, az)
                 executor.shutdown(wait=False, cancel_futures=True)

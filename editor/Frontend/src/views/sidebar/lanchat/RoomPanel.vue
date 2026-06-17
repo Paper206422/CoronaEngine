@@ -308,16 +308,21 @@ async function onLeave() {
   }
 }
 
-async function onSend() {
+function onSend() {
   const text = draft.value;
   if (!text.trim()) return;
   draft.value = '';
   mentionCandidates.value = [];
   mentionActiveIndex.value = 0;
-  await lanchat.sendMessage(text);
+  lanchat.sendMessage(text).catch((error) => {
+    console.warn('[LANChat] send message failed', error);
+  });
 }
 
 function gmProposalId(message) {
+  if (message?.correlation_id && message?.message_kind === 'gm_proposal') {
+    return String(message.correlation_id);
+  }
   const text = String(message?.text || '');
   if (!text.includes('GM 提案')) return '';
   const match = text.match(/\bgm-\d+\b/i);
@@ -327,7 +332,11 @@ function gmProposalId(message) {
 async function sendGmDecision(proposalId, decision) {
   if (!proposalId) return;
   const verb = decision === 'reject' ? '拒绝' : '确认';
-  await lanchat.sendMessage(`@GM ${verb} ${proposalId}`);
+  await lanchat.sendMessage(`@GM ${verb} ${proposalId}`, {
+    message_kind: 'confirmation',
+    correlation_id: proposalId,
+    metadata: { decision, proposal_id: proposalId },
+  });
 }
 
 async function onAddAgent() {

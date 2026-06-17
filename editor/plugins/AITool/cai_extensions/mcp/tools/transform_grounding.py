@@ -147,6 +147,26 @@ def _clamp_delta_to_zone(
     return dx, dz
 
 
+def _remaining_overlaps(
+    moved: Sequence[float],
+    fixed: Sequence[tuple[str, list[float]]],
+) -> list[dict[str, Any]]:
+    remaining: list[dict[str, Any]] = []
+    for other_name, other_aabb in fixed:
+        oy = _overlap_y(moved, other_aabb)
+        if oy <= 0.0:
+            continue
+        ox, oz = _overlap_xz(moved, other_aabb)
+        if ox > 0.0 and oz > 0.0:
+            remaining.append({
+                "actor": other_name,
+                "overlap_x": round(float(ox), 4),
+                "overlap_y": round(float(oy), 4),
+                "overlap_z": round(float(oz), 4),
+            })
+    return remaining
+
+
 def resolve_actor_overlaps(
     actor: Any,
     obstacles: Iterable[Any] = (),
@@ -224,8 +244,14 @@ def resolve_actor_overlaps(
         total_dz += chosen[1]
         moved = _translate_aabb(moved, chosen[0], chosen[1])
 
+    remaining = _remaining_overlaps(moved, fixed)
     if abs(total_dx) < 1e-5 and abs(total_dz) < 1e-5:
-        return {"changed": False, "reason": "no_delta", "resolved": resolved}
+        return {
+            "changed": False,
+            "reason": "no_delta",
+            "resolved": resolved and not remaining,
+            "remaining_overlap": remaining,
+        }
     pos = _actor_vec(actor, "get_position", [0.0, 0.0, 0.0])
     new_pos = [pos[0] + total_dx, pos[1], pos[2] + total_dz]
     setter = getattr(actor, "set_position", None)
@@ -235,7 +261,8 @@ def resolve_actor_overlaps(
         "changed": True,
         "position": new_pos,
         "delta": [total_dx, 0.0, total_dz],
-        "resolved": resolved,
+        "resolved": resolved and not remaining,
+        "remaining_overlap": remaining,
     }
 
 

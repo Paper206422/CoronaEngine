@@ -406,6 +406,7 @@ def _repair_recent_imports(
                 obstacles,
                 extra_obstacle_aabbs=door_aabbs.values(),
                 zone_aabb=zone_aabb,
+                max_iterations=32,
             )
             after = list(actor.get_position())
             return {
@@ -426,6 +427,14 @@ def _repair_recent_imports(
                         inst.transform = transform
                     transform["pos"] = list(result.get("position") or actor.get_position())
                 logger.info("[ProgressiveWorkflow] AABB repair %s -> %s", actor_id, result.get("position"))
+            overlap = result.get("overlap") or {}
+            if overlap and not overlap.get("resolved", True):
+                logger.warning(
+                    "[ProgressiveWorkflow] AABB unresolved %s reason=%s remaining=%s",
+                    actor_id,
+                    overlap.get("reason") or "overlap",
+                    overlap.get("remaining_overlap") or [],
+                )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[ProgressiveWorkflow] AABB repair skipped for %s: %s", actor_id, exc)
     return repaired
@@ -452,7 +461,10 @@ def _distribute_assets_to_phases(
         asset.setdefault("layout_role", role)
         # 简单分类（可扩展为查 placement_type）
         if any(kw in name for kw in ["地毯", "rug", "floor", "桌", "table", "椅", "chair", "床", "bed"]):
-            asset.setdefault("layout_role", "furniture")
+            if _is_surface_asset(asset):
+                asset["layout_role"] = "surface"
+            else:
+                asset.setdefault("layout_role", "furniture")
             if indoor_zone_id:
                 asset.setdefault("zone_id", indoor_zone_id)
             if shell_zone_id:
@@ -503,6 +515,7 @@ def _assign_default_progressive_positions(phase_map: Dict[str, List[Dict[str, An
     """
     zones = _zone_lookup(composer)
     counters: Dict[str, int] = {}
+    indoor_states: Dict[str, Dict[str, Any]] = {}
     for phase, assets in phase_map.items():
         for asset in assets:
             if asset.get("pos") is not None:
@@ -515,7 +528,9 @@ def _assign_default_progressive_positions(phase_map: Dict[str, List[Dict[str, An
                 asset["pos"] = _outdoor_default_pos(asset, idx, zone, composer)
                 asset.setdefault("scale", _outdoor_default_scale(asset, zone, composer))
             else:
-                asset["pos"] = _indoor_default_pos(idx, zone)
+                state_key = zone_id or "__default_indoor__"
+                state = indoor_states.setdefault(state_key, {})
+                asset["pos"] = _indoor_default_pos(asset, idx, zone, state)
 
 
 def _zone_lookup(composer: Any) -> Dict[str, Any]:
@@ -534,10 +549,91 @@ def _is_outdoor_zone(zone: Any) -> bool:
     )
 
 
-def _indoor_default_pos(index: int, zone: Any) -> List[float]:
+def _indoor_default_pos(
+    asset: Dict[str, Any],
+    index: int,
+    zone: Any,
+    state: Optional[Dict[str, Any]] = None,
+) -> List[float]:
+    """Return a first-pass indoor slot for progressive import.
+
+    The old fallback used a fixed seven-point pattern, which made beds,
+    wardrobes, desks and rugs compete for the same central points. This planner
+    stays scene-agnostic but uses asset semantics and room dimensions so AABB
+    repair starts from a layout that is already plausible.
+    """
+
     size = list(getattr(getattr(zone, "volume", None), "size", []) or [5.0, 5.0, 3.0])
     width = float(size[0] if len(size) > 0 else 5.0)
     depth = float(size[1] if len(size) > 1 else 5.0)
+    half_x = max(1.0, width / 2.0)
+    half_z = max(1.0, depth / 2.0)
+    wall_x = max(0.35, half_x - 0.65)
+    wall_z = max(0.35, half_z - 0.65)
+    side_x = max(0.35, half_x - 0.8)
+    side_z = max(0.0, min(wall_z * 0.45, half_z - 0.9))
+
+    name = str(asset.get("name") or "").lower()
+    role = str(asset.get("layout_role") or _infer_layout_role(asset)).lower()
+    state = state if isinstance(state, dict) else {}
+    anchors = state.setdefault("anchors", {})
+    counts = state.setdefault("counts", {})
+
+    def _reserve(slot: str, pos: List[float]) -> List[float]:
+        count = int(counts.get(slot, 0) or 0)
+        counts[slot] = count + 1
+        if count:
+            step = 0.42 * count
+            pos = [
+                max(-half_x + 0.35, min(half_x - 0.35, pos[0] + ((-1) ** count) * step)),
+                pos[1],
+                max(-half_z + 0.35, min(half_z - 0.35, pos[2] - step * 0.35)),
+            ]
+        return [round(float(pos[0]), 3), 0.0, round(float(pos[2]), 3)]
+
+    if role == "surface" or _is_surface_asset(asset):
+        anchors["surface"] = [0.0, 0.0, 0.0]
+        return _reserve("surface", [0.0, 0.0, 0.0])
+
+    if any(kw in name for kw in ("床", "bed", "crib")):
+        pos = [0.0, 0.0, -wall_z]
+        anchors["bed"] = pos
+        return _reserve("bed", pos)
+
+    if any(kw in name for kw in ("书桌", "desk", "writing table", "study table")):
+        pos = [-side_x, 0.0, side_z]
+        anchors["desk"] = pos
+        return _reserve("desk", pos)
+
+    if any(kw in name for kw in ("椅", "chair", "stool")):
+        desk = anchors.get("desk")
+        if desk:
+            return _reserve("chair", [desk[0] + 0.75, 0.0, desk[2] - 0.35])
+        return _reserve("chair", [-side_x + 0.65, 0.0, side_z])
+
+    if any(kw in name for kw in ("台灯", "lamp", "desk light", "light")):
+        desk = anchors.get("desk")
+        if desk:
+            return _reserve("lamp", [desk[0] + 0.25, 0.0, desk[2] + 0.2])
+        bed = anchors.get("bed")
+        if bed:
+            return _reserve("lamp", [bed[0] + min(1.0, half_x - 0.7), 0.0, bed[2] + 0.35])
+        return _reserve("lamp", [0.0, 0.0, side_z])
+
+    if any(kw in name for kw in ("衣柜", "wardrobe", "closet")):
+        return _reserve("wardrobe", [wall_x, 0.0, -wall_z * 0.25])
+
+    if any(kw in name for kw in ("书架", "bookshelf", "bookcase", "shelf")):
+        return _reserve("bookshelf", [-wall_x, 0.0, -wall_z * 0.25])
+
+    if any(kw in name for kw in ("玩具柜", "toy cabinet", "toy storage", "柜", "cabinet")):
+        return _reserve("cabinet", [wall_x, 0.0, side_z])
+
+    if any(kw in name for kw in ("桌", "table")):
+        pos = [-side_x, 0.0, side_z]
+        anchors.setdefault("desk", pos)
+        return _reserve("table", pos)
+
     margin_x = max(0.4, min(width / 2.0 - 0.4, 1.0))
     margin_z = max(0.4, min(depth / 2.0 - 0.4, 1.0))
     pattern = [
@@ -557,6 +653,14 @@ def _indoor_default_pos(index: int, zone: Any) -> List[float]:
     return [x, 0.0, min(depth / 2.0 - 0.5, z)]
 
 
+def _is_surface_asset(asset: Dict[str, Any]) -> bool:
+    name = str(asset.get("name") or "").lower()
+    role = str(asset.get("layout_role") or "").lower()
+    return role == "surface" or any(
+        kw in name for kw in ("地毯", "rug", "carpet", "floor mat", "mat")
+    )
+
+
 def _infer_layout_role(asset: Dict[str, Any]) -> str:
     explicit = str(asset.get("layout_role") or "").strip().lower()
     if explicit:
@@ -564,6 +668,8 @@ def _infer_layout_role(asset: Dict[str, Any]) -> str:
     name = str(asset.get("name") or "").lower()
     if any(kw in name for kw in ("fountain", "喷泉", "statue", "雕像", "angel", "天使")):
         return "landmark"
+    if any(kw in name for kw in ("地毯", "rug", "carpet", "floor mat", "mat")):
+        return "surface"
     if any(kw in name for kw in ("bench", "长椅", "streetlight", "路灯", "stall", "摊")):
         return "foreground_object"
     if any(kw in name for kw in ("fence", "boundary", "围栏", "栅栏")):

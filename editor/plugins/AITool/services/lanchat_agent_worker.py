@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import threading
 from typing import Any, Callable
@@ -25,7 +26,7 @@ class LANChatAgentWorker:
         self._host_action_executor = host_action_executor
         self._sleep_seconds = sleep_seconds
         self._async_agent_execution = (
-            os.getenv("LANCHAT_AGENT_ASYNC", "0") == "1"
+            os.getenv("LANCHAT_AGENT_ASYNC", "1") == "1"
             if async_agent_execution is None
             else bool(async_agent_execution)
         )
@@ -88,16 +89,30 @@ class LANChatAgentWorker:
             if not text:
                 return
             try:
-                self._corona_engine.network_send_agent_reply(
-                    agent_id,
-                    agent_name,
-                    text,
-                )
+                if hasattr(self._corona_engine, "network_send_agent_reply_ex"):
+                    self._corona_engine.network_send_agent_reply_ex(
+                        agent_id,
+                        agent_name,
+                        text,
+                        "progress",
+                        agent_id,
+                        self._correlation_id(trigger),
+                        json.dumps({"phase": "progress"}, ensure_ascii=False),
+                    )
+                else:
+                    self._corona_engine.network_send_agent_reply(
+                        agent_id,
+                        agent_name,
+                        text,
+                    )
             except Exception as exc:
                 self._logger.debug("Failed to send LANChat progress reply: %s", exc)
 
         try:
             from .agent_progress_context import agent_progress_sink
+
+            if self._async_agent_execution and self._should_send_fast_ack(trigger):
+                _send_progress("已收到你的要求；如果当前正在生成，我会在下一阶段吸收这条调整。")
 
             with agent_progress_sink(_send_progress):
                 with self._agent_call_lock:
@@ -114,11 +129,7 @@ class LANChatAgentWorker:
         try:
             self._broadcast_confirmed_action(action_payload)
             return bool(
-                self._corona_engine.network_send_agent_reply(
-                    agent_id,
-                    agent_name,
-                    str(reply or ""),
-                )
+                self._send_final_reply(agent_id, agent_name, str(reply or ""), trigger, action_payload)
             )
         except Exception as exc:
             self._logger.debug("Failed to send LANChat agent reply: %s", exc)
@@ -129,6 +140,39 @@ class LANChatAgentWorker:
             processed = self.process_once()
             if not processed:
                 self._stop_event.wait(self._sleep_seconds)
+
+    def _send_final_reply(
+        self,
+        agent_id: str,
+        agent_name: str,
+        text: str,
+        trigger: dict[str, Any],
+        action_payload: dict[str, Any] | None = None,
+    ) -> bool:
+        if action_payload and action_payload.get("status") == "pending_host_confirmation":
+            proposal_id = str(action_payload.get("proposal_id") or self._correlation_id(trigger))
+            metadata = dict(action_payload)
+            metadata.setdefault("requires_host_confirm", True)
+            if hasattr(self._corona_engine, "network_send_system_message_ex"):
+                return bool(self._corona_engine.network_send_system_message_ex(
+                    agent_id,
+                    agent_name,
+                    text,
+                    "gm_proposal",
+                    proposal_id,
+                    json.dumps(metadata, ensure_ascii=False),
+                ))
+        if hasattr(self._corona_engine, "network_send_agent_reply_ex"):
+            return bool(self._corona_engine.network_send_agent_reply_ex(
+                agent_id,
+                agent_name,
+                text,
+                "agent_reply",
+                agent_id,
+                self._correlation_id(trigger),
+                json.dumps({"reply_to": str(trigger.get("message_id") or "")}, ensure_ascii=False),
+            ))
+        return bool(self._corona_engine.network_send_agent_reply(agent_id, agent_name, text))
 
     def _has_engine_api(self) -> bool:
         return (
@@ -181,6 +225,26 @@ class LANChatAgentWorker:
                 agent_factory=self._agent_factory or self._default_agent_factory,
             )
         return self._host_action_executor
+
+    @staticmethod
+    def _correlation_id(trigger: dict[str, Any]) -> str:
+        return str(trigger.get("correlation_id") or trigger.get("message_id") or "")
+
+    @staticmethod
+    def _should_send_fast_ack(trigger: dict[str, Any]) -> bool:
+        kind = str(trigger.get("message_kind") or "chat").lower()
+        if kind and kind != "chat":
+            return False
+        text = str(trigger.get("text") or "")
+        if not text.strip():
+            return False
+        keywords = (
+            "生成", "设计", "场景", "房间", "卧室", "广场", "教堂",
+            "添加", "放大", "缩小", "移动", "移", "删", "删除", "调整",
+            "靠左", "靠右", "远一点", "近一点", "不要太拥挤",
+            "generate", "create", "move", "scale", "delete", "adjust",
+        )
+        return any(keyword in text for keyword in keywords)
 
     @staticmethod
     def _messages_from_trigger(trigger: dict[str, Any]) -> list[str]:

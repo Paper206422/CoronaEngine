@@ -52,12 +52,52 @@ class FakeEngine:
         self.replies.append((agent_id, agent_name, text))
         return True
 
+    def network_send_agent_reply_ex(
+        self,
+        agent_id,
+        agent_name,
+        text,
+        message_kind="agent_reply",
+        target_agent_id="",
+        correlation_id="",
+        metadata_json="",
+    ):
+        self.replies.append((
+            agent_id,
+            agent_name,
+            text,
+            message_kind,
+            target_agent_id,
+            correlation_id,
+            metadata_json,
+        ))
+        return True
+
     def network_broadcast_intent(self, user_id, tooltip, preview_position, status):
         self.intents.append((user_id, tooltip, preview_position, status))
         return True
 
     def network_send_system_message(self, sender_id, sender_name, text):
         self.system_messages.append((sender_id, sender_name, text))
+        return True
+
+    def network_send_system_message_ex(
+        self,
+        sender_id,
+        sender_name,
+        text,
+        message_kind="agent_reply",
+        correlation_id="",
+        metadata_json="",
+    ):
+        self.system_messages.append((
+            sender_id,
+            sender_name,
+            text,
+            message_kind,
+            correlation_id,
+            metadata_json,
+        ))
         return True
 
 
@@ -203,13 +243,36 @@ def test_host_confirmation_rejects_explicit_non_host_role():
     print("[OK] explicit non-host confirmation is rejected when role metadata exists")
 
 
+def test_structured_confirmation_uses_correlation_id_and_metadata():
+    orch = LanChatAgentOrchestrator(agent_factory=_agent_factory)
+    proposal = orch.handle_trigger(_trigger("@GM conflict on table", "GM"))
+    assert proposal.proposal is True
+    proposal_id = proposal.action_payload["proposal_id"]
+
+    structured = _trigger("", "GM")
+    structured["message_kind"] = "confirmation"
+    structured["correlation_id"] = proposal_id
+    structured["metadata_json"] = '{"decision":"confirm"}'
+
+    confirmed = orch.handle_trigger(structured)
+    assert confirmed.action_payload["status"] == "confirmed"
+    assert confirmed.action_payload["confirmation_mode"] == "structured_confirmation"
+    assert confirmed.action_payload["proposal_id"] == proposal_id
+    print("[OK] structured confirmation consumes proposal by correlation_id")
+
+
 def test_worker_uses_orchestrator_and_sends_reply():
     engine = FakeEngine([_trigger()])
-    worker = LANChatAgentWorker(corona_engine=engine, agent_factory=_agent_factory)
+    worker = LANChatAgentWorker(
+        corona_engine=engine,
+        agent_factory=_agent_factory,
+        async_agent_execution=False,
+    )
     assert worker.process_once() is True
     assert len(engine.replies) == 1
     assert engine.replies[0][0] == "agent-b"
     assert "agent-reply" in engine.replies[0][2]
+    assert engine.replies[0][3] == "agent_reply"
     print("[OK] worker polls C++ trigger and replies through C++")
 
 
@@ -226,11 +289,17 @@ def test_worker_streams_sanitized_progress_reply_before_final():
         return _agent
 
     engine = FakeEngine([_trigger("生成一个广场场景")])
-    worker = LANChatAgentWorker(corona_engine=engine, agent_factory=progress_agent_factory)
+    worker = LANChatAgentWorker(
+        corona_engine=engine,
+        agent_factory=progress_agent_factory,
+        async_agent_execution=False,
+    )
     assert worker.process_once() is True
     assert len(engine.replies) == 2
     assert "生成进度" in engine.replies[0][2]
+    assert engine.replies[0][3] == "progress"
     assert "final scene reply" in engine.replies[-1][2]
+    assert engine.replies[-1][3] == "agent_reply"
     print("[OK] worker streams progress reply before final compose summary")
 
 
@@ -252,11 +321,41 @@ def test_worker_async_agent_execution_returns_before_slow_agent_reply():
     assert worker.process_once() is True
     assert time.time() - started < 0.04
     deadline = time.time() + 1.0
-    while time.time() < deadline and not engine.replies:
+    while time.time() < deadline and (
+        not engine.replies or "slow final reply" not in engine.replies[-1][2]
+    ):
         time.sleep(0.01)
     assert engine.replies
     assert "slow final reply" in engine.replies[-1][2]
     print("[OK] async worker returns before slow agent reply and sends later")
+
+
+def test_worker_async_sends_fast_ack_before_agent_lock_finishes():
+    def slow_agent_factory():
+        def _agent(persona, messages):
+            time.sleep(0.08)
+            return "slow compose done"
+
+        return _agent
+
+    engine = FakeEngine([_trigger("@小B 生成一个卧室", "小B")])
+    worker = LANChatAgentWorker(
+        corona_engine=engine,
+        agent_factory=slow_agent_factory,
+        async_agent_execution=True,
+    )
+    assert worker.process_once() is True
+    deadline = time.time() + 0.04
+    while time.time() < deadline and not engine.replies:
+        time.sleep(0.005)
+    assert engine.replies
+    assert engine.replies[0][3] == "progress"
+    assert "已收到" in engine.replies[0][2]
+    deadline = time.time() + 1.0
+    while time.time() < deadline and "slow compose done" not in engine.replies[-1][2]:
+        time.sleep(0.01)
+    assert "slow compose done" in engine.replies[-1][2]
+    print("[OK] async worker sends fast ack before long compose finishes")
 
 
 def test_worker_async_agent_calls_are_serialized_per_worker():
@@ -306,10 +405,13 @@ def test_worker_broadcasts_confirmed_gm_action():
         corona_engine=engine,
         agent_factory=_agent_factory,
         host_action_executor=executor,
+        async_agent_execution=False,
     )
     assert worker.process_once() is True
     assert worker.process_once() is True
-    assert len(engine.replies) == 2
+    assert engine.system_messages and engine.system_messages[0][3] == "gm_proposal"
+    assert len(engine.replies) == 1
+    assert engine.replies[0][3] == "agent_reply"
     assert engine.intents, "confirmed GM action should be visible to C++ intent channel"
     assert engine.intents[-1][0] == "user-a"
     statuses = [row[3] for row in engine.intents]
@@ -356,6 +458,7 @@ def test_host_action_executor_runs_under_gate_and_reports_result():
     ]
     assert engine.system_messages
     assert "scene delta applied" in engine.system_messages[-1][2]
+    assert engine.system_messages[-1][3] == "action_status"
     print("[OK] host action executor runs under EngineWriteGate and reports SceneDelta")
 
 
@@ -488,9 +591,11 @@ if __name__ == "__main__":
     test_host_confirmation_rejects_wrong_proposal_id()
     test_host_confirmation_replay_does_not_requeue_action()
     test_host_confirmation_rejects_explicit_non_host_role()
+    test_structured_confirmation_uses_correlation_id_and_metadata()
     test_worker_uses_orchestrator_and_sends_reply()
     test_worker_streams_sanitized_progress_reply_before_final()
     test_worker_async_agent_execution_returns_before_slow_agent_reply()
+    test_worker_async_sends_fast_ack_before_agent_lock_finishes()
     test_worker_async_agent_calls_are_serialized_per_worker()
     test_worker_broadcasts_confirmed_gm_action()
     test_host_action_executor_runs_under_gate_and_reports_result()

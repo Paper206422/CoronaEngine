@@ -101,6 +101,8 @@ def test_no_screenshot_skipped():
     )
     assert "无图" in report.skipped
     assert not report.advices
+    assert "未完成" in report.to_user_text()
+    assert "未发现明显语义问题" not in report.to_user_text()
     print("[OK] 无截图跳过审查")
 
 

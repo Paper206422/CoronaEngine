@@ -122,9 +122,26 @@ public:
                            const std::string& nickname);
     void lanchat_leave_room();
     Network::LanChatMessageResult lanchat_send_message(const std::string& text);
+    Network::LanChatMessageResult lanchat_send_message_ex(
+        const std::string& text,
+        const std::string& message_kind,
+        const std::string& target_agent_id = {},
+        const std::string& source_user_id = {},
+        const std::string& correlation_id = {},
+        const std::string& metadata_json = {});
     Network::LanChatMessageResult lanchat_send_agent_reply(const std::string& agent_id,
                                                            const std::string& agent_name,
                                                            const std::string& text);
+    Network::LanChatMessageResult lanchat_send_agent_reply_ex(
+        const std::string& agent_id,
+        const std::string& agent_name,
+        const std::string& text,
+        const std::string& sender_type,
+        const std::string& message_kind,
+        const std::string& target_agent_id = {},
+        const std::string& source_user_id = {},
+        const std::string& correlation_id = {},
+        const std::string& metadata_json = {});
     Network::LanChatResult lanchat_register_agent(const std::string& agent_id,
                                                   const std::string& name,
                                                   const std::string& persona,

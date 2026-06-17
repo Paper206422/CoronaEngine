@@ -59,6 +59,10 @@ class VlmReviewReport:
     def to_user_text(self) -> str:
         act = self.actionable()
         if not act:
+            if self.timed_out or self.skipped:
+                skipped = len(self.skipped)
+                timed_out = len(self.timed_out)
+                return f"VLM 外审未完成：截图失败/跳过 {skipped} 个，超时 {timed_out} 个；本轮以 AABB 几何检查为准。"
             return "VLM 审查未发现明显语义问题。"
         lines = ["VLM 审查发现可优化项（建议，非强制）："]
         for a in act[:5]:

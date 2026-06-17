@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -118,6 +119,7 @@ class LanChatAgentOrchestrator:
 
         self._pending_proposal = {
             "proposal_id": proposal_id,
+            "correlation_id": proposal_id,
             "status": "pending_host_confirmation",
             "source_user_id": str(trigger.get("sender_id") or ""),
             "target_agent_id": str(trigger.get("agent_id") or ""),
@@ -140,11 +142,27 @@ class LanChatAgentOrchestrator:
 
     def _consume_confirmation(self, text: str, trigger: dict[str, Any] | None = None) -> str | None:
         self._last_confirmed_action = None
-        is_confirm = any(word in text for word in self._CONFIRM_WORDS)
-        is_reject = any(word in text for word in self._REJECT_WORDS)
+        trigger = trigger or {}
+        metadata = self._metadata_from_trigger(trigger)
+        kind = str(trigger.get("message_kind") or "").strip().lower()
+        decision = str(metadata.get("decision") or "").strip().lower()
+        is_structured_confirmation = kind == "confirmation"
+        is_confirm = (
+            decision in {"confirm", "confirmed", "yes", "accept"}
+            or any(word in text for word in self._CONFIRM_WORDS)
+        )
+        is_reject = (
+            decision in {"reject", "rejected", "no", "cancel"}
+            or any(word in text for word in self._REJECT_WORDS)
+        )
+        if is_structured_confirmation and not is_confirm and not is_reject:
+            return "【GM】结构化确认缺少 decision=confirm|reject，未进入执行队列。"
         if not is_confirm and not is_reject:
             return None
         mentioned_ids = {match.group(0).lower() for match in self._PROPOSAL_ID_PATTERN.finditer(text)}
+        correlation_id = str(trigger.get("correlation_id") or metadata.get("proposal_id") or "").strip().lower()
+        if correlation_id:
+            mentioned_ids.add(correlation_id)
         processed_matches = [
             item for item in sorted(mentioned_ids)
             if item in self._processed_proposals
@@ -160,7 +178,7 @@ class LanChatAgentOrchestrator:
             for item in mentioned_ids:
                 self._processed_proposals.setdefault(item, "mismatched")
             return f"【GM】确认编号不匹配，当前待确认提案是 {pid}。请回复：@GM 确认 {pid} 或 @GM 拒绝 {pid}。"
-        host_check = self._trusted_host_confirmation(trigger or {})
+        host_check = self._trusted_host_confirmation(trigger)
         if host_check is False:
             return f"【GM】只有房主可以确认 {pid}；该请求没有进入 host 执行队列。"
         if is_confirm:
@@ -168,6 +186,8 @@ class LanChatAgentOrchestrator:
             self._last_confirmed_action["status"] = "confirmed"
             if not mentioned_ids:
                 self._last_confirmed_action["confirmation_mode"] = "bare_text_fallback"
+            elif is_structured_confirmation:
+                self._last_confirmed_action["confirmation_mode"] = "structured_confirmation"
             elif host_check is None:
                 self._last_confirmed_action["confirmation_mode"] = "proposal_id_without_verified_host"
             else:
@@ -183,6 +203,22 @@ class LanChatAgentOrchestrator:
             self._processed_proposals[pid.lower()] = "rejected"
             return f"【GM】已取消 {pid}，不会执行该提案。"
         return None
+
+    @staticmethod
+    def _metadata_from_trigger(trigger: dict[str, Any]) -> dict[str, Any]:
+        metadata = trigger.get("metadata")
+        if isinstance(metadata, dict):
+            return metadata
+        raw = trigger.get("metadata_json")
+        if not raw:
+            return {}
+        if isinstance(raw, dict):
+            return raw
+        try:
+            parsed = json.loads(str(raw))
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     def _run_role_agent(self, trigger: dict[str, Any], state: DiscussionState) -> str:
         agent = self._get_agent()

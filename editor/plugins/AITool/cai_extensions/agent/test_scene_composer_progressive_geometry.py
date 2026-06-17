@@ -144,6 +144,33 @@ def test_zone_and_door_aabb_helpers():
     print("[OK] ZoneTree derives zone AABB and door clearance AABB")
 
 
+def test_indoor_room_slot_planner_uses_asset_semantics():
+    composer = FakeComposer()
+    phase_map = _distribute_assets_to_phases(
+        [
+            {"name": "儿童床", "model_path": "/m/bed.glb"},
+            {"name": "书桌", "model_path": "/m/desk.glb"},
+            {"name": "椅子", "model_path": "/m/chair.glb"},
+            {"name": "衣柜", "model_path": "/m/wardrobe.glb"},
+            {"name": "书架", "model_path": "/m/bookshelf.glb"},
+            {"name": "地毯", "model_path": "/m/rug.glb"},
+            {"name": "台灯", "model_path": "/m/lamp.glb"},
+            {"name": "玩具柜", "model_path": "/m/toy.glb"},
+        ],
+        [],
+        composer,
+    )
+    rows = {a["name"]: a for phase in phase_map.values() for a in phase}
+    assert rows["地毯"]["layout_role"] == "surface"
+    assert rows["儿童床"]["pos"][2] < 0.0
+    assert rows["书桌"]["pos"][0] < 0.0
+    assert rows["椅子"]["pos"] != rows["书桌"]["pos"]
+    assert rows["台灯"]["pos"] != [0.0, 0.0, 0.0]
+    unique_positions = {tuple(row["pos"]) for row in rows.values()}
+    assert len(unique_positions) >= 6
+    print("[OK] indoor room slot planner separates large furniture, surface, and dependents")
+
+
 def test_filter_aabbs_by_zone():
     layout = FakeLayout([
         FakeInstance("table", "main_building"),
@@ -173,6 +200,7 @@ def test_progressive_post_shell_framework_generates_floor_and_boundary():
 if __name__ == "__main__":
     test_zone_and_asset_routing()
     test_zone_and_door_aabb_helpers()
+    test_indoor_room_slot_planner_uses_asset_semantics()
     test_filter_aabbs_by_zone()
     test_progressive_post_shell_framework_generates_floor_and_boundary()
     print("\n=== progressive mixed geometry ALL PASS ===")

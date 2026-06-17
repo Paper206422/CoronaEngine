@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import threading
 import time
 from collections import deque
@@ -76,7 +77,7 @@ class LanChatHostActionExecutor:
                     payload=self._result_payload(payload, "CommandRejected", False, str(exc)),
                 )
                 self._broadcast_status(payload, "host_action_failed")
-                self._send_system_message(result.message)
+                self._send_system_message(result.message, payload, "failed")
                 return result
 
             result_text = str(result_text or "").strip()
@@ -89,7 +90,7 @@ class LanChatHostActionExecutor:
                     payload=self._result_payload(payload, "CommandRejected", False, message),
                 )
                 self._broadcast_status(payload, "host_action_failed")
-                self._send_system_message(result.message)
+                self._send_system_message(result.message, payload, "failed")
                 return result
 
             if self._looks_no_delta_result(result_text):
@@ -101,7 +102,7 @@ class LanChatHostActionExecutor:
                     payload=self._result_payload(payload, "AcceptedNoDelta", True, message),
                 )
                 self._broadcast_status(payload, "accepted_no_delta")
-                self._send_system_message(result.message)
+                self._send_system_message(result.message, payload, "accepted_no_delta")
                 return result
 
             message = f"{result_text}（语义执行完成；peer actor sync 以底层 SceneDelta 为准。）"
@@ -112,7 +113,7 @@ class LanChatHostActionExecutor:
                 payload=self._result_payload(payload, "SceneDelta", True, message),
             )
             self._broadcast_status(payload, "host_action_executed")
-            self._send_system_message(result.message)
+            self._send_system_message(result.message, payload, "executed")
             return result
 
     def enqueue_and_process(self, action_payload: dict[str, Any]) -> HostActionExecutionResult | None:
@@ -181,10 +182,24 @@ class LanChatHostActionExecutor:
         return self._agent
 
     def _broadcast_status(self, payload: dict[str, Any], status: str) -> None:
-        if not self._corona_engine or not hasattr(self._corona_engine, "network_broadcast_intent"):
+        if not self._corona_engine:
             return
         source_user_id = str(payload.get("source_user_id") or "unknown")
         tooltip = str(payload.get("intent_text") or payload.get("proposal_id") or status)
+        if hasattr(self._corona_engine, "network_send_system_message_ex"):
+            try:
+                self._corona_engine.network_send_system_message_ex(
+                    self._system_sender_id,
+                    self._system_sender_name,
+                    f"[Host status] {status}: {tooltip}",
+                    "action_status",
+                    str(payload.get("proposal_id") or ""),
+                    json.dumps(self._action_status_metadata(payload, status), ensure_ascii=False),
+                )
+            except Exception as exc:
+                self._logger.debug("Failed to send structured host action status %s: %s", status, exc)
+        if not hasattr(self._corona_engine, "network_broadcast_intent"):
+            return
         try:
             self._corona_engine.network_broadcast_intent(
                 source_user_id,
@@ -195,17 +210,47 @@ class LanChatHostActionExecutor:
         except Exception as exc:
             self._logger.debug("Failed to broadcast host action status %s: %s", status, exc)
 
-    def _send_system_message(self, message: str) -> None:
-        if not self._corona_engine or not hasattr(self._corona_engine, "network_send_system_message"):
+    def _send_system_message(
+        self,
+        message: str,
+        payload: dict[str, Any] | None = None,
+        status: str = "",
+    ) -> None:
+        if not self._corona_engine:
             return
+        payload = payload or {}
         try:
-            self._corona_engine.network_send_system_message(
-                self._system_sender_id,
-                self._system_sender_name,
-                f"【Host 执行结果】{message}",
-            )
+            if hasattr(self._corona_engine, "network_send_system_message_ex"):
+                self._corona_engine.network_send_system_message_ex(
+                    self._system_sender_id,
+                    self._system_sender_name,
+                    f"【Host 执行结果】{message}",
+                    "action_status",
+                    str(payload.get("proposal_id") or ""),
+                    json.dumps({
+                        **self._action_status_metadata(payload, status or "executed"),
+                        "message": message,
+                    }, ensure_ascii=False),
+                )
+            else:
+                self._corona_engine.network_send_system_message(
+                    self._system_sender_id,
+                    self._system_sender_name,
+                    f"【Host 执行结果】{message}",
+                )
         except Exception as exc:
             self._logger.debug("Failed to send host action system message: %s", exc)
+
+    @staticmethod
+    def _action_status_metadata(payload: dict[str, Any], status: str) -> dict[str, Any]:
+        return {
+            "status": status,
+            "proposal_id": str(payload.get("proposal_id") or ""),
+            "source_user_id": str(payload.get("source_user_id") or ""),
+            "target_agent_id": str(payload.get("target_agent_id") or ""),
+            "intent_text": str(payload.get("intent_text") or ""),
+            "execution": "host_single_writer",
+        }
 
     @staticmethod
     def _result_payload(
