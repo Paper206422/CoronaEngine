@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <corona/utils/path_utils.h>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -12,7 +13,7 @@ inline std::optional<std::filesystem::path> resolve_project_relative_path(
     const std::string& relative_path) {
     if (relative_path.empty()) return std::nullopt;
 
-    std::filesystem::path rel(relative_path);
+    std::filesystem::path rel = Utils::utf8_to_path(relative_path);
     if (rel.is_absolute()) return std::nullopt;
 
     for (const auto& part : rel) {

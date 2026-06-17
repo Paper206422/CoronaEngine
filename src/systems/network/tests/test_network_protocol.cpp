@@ -8,6 +8,7 @@
 
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -610,6 +611,27 @@ void test_project_relative_path_validation() {
                 "empty path rejected");
 }
 
+void test_project_relative_path_uses_utf8_for_non_ascii_segments() {
+    const auto root = std::filesystem::temp_directory_path() /
+        "corona_network_utf8_path_test";
+    const auto expected = root /
+        std::filesystem::u8path(u8"Resource/models/绿植/base.obj");
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(expected.parent_path());
+    {
+        std::ofstream file(expected, std::ios::binary);
+        file << "mesh";
+    }
+
+    auto resolved = Corona::Network::resolve_project_relative_path(
+        root, u8"Resource/models/绿植/base.obj");
+    expect_true(resolved.has_value(), "utf8 project relative path accepted");
+    expect_true(resolved && std::filesystem::exists(*resolved),
+                "utf8 project relative path resolves to existing file");
+
+    std::filesystem::remove_all(root);
+}
+
 void test_network_system_session_role_defaults_to_none() {
     Corona::Systems::NetworkSystem sys;
 
@@ -1147,6 +1169,7 @@ int main() {
     test_lanchat_state_enqueues_virtual_gm_from_mention_and_target();
     test_lanchat_state_tracks_locks_and_preview_conflicts();
     test_project_relative_path_validation();
+    test_project_relative_path_uses_utf8_for_non_ascii_segments();
     test_network_system_session_role_defaults_to_none();
     test_actor_device_follow_camera_defaults_false_and_round_trips();
     test_network_identity_registry_resolves_actor_components();

@@ -18,6 +18,8 @@ const networkPanel = read('src/views/sidebar/Network.vue');
 const roomPanel = read('src/views/sidebar/lanchat/RoomPanel.vue');
 const useDockPanel = read('src/composables/useDockPanel.js');
 const networkSystem = read('../../src/systems/network/network_system.cpp');
+const networkFileTransfer = read('../../include/corona/systems/network/file_transfer.h');
+const networkProtocolTests = read('../../src/systems/network/tests/test_network_protocol.cpp');
 const legacyLanChat = read('../../editor/plugins/LANChat/main.py');
 const actorCore = read('../../editor/CoronaCore/core/entities/actor.py');
 const actorBroadcastTests = read('../../editor/CoronaCore/tests/test_actor_network_broadcast.py');
@@ -204,6 +206,36 @@ assertIncludes(
   networkSystem,
   'is_message_from_connected_host',
   'NetworkSystem clients must validate host authority for inbound LANChat state'
+);
+assertIncludes(
+  networkSystem,
+  'Utils::path_to_utf8(*full_path)',
+  'NetworkSystem FILE_REQUEST errors must log UTF-8 paths for non-ASCII model names'
+);
+assertIncludes(
+  networkFileTransfer,
+  '#include <corona/utils/path_utils.h>',
+  'Network file transfer path resolution must use the shared UTF-8 path utilities'
+);
+assertIncludes(
+  networkFileTransfer,
+  'Utils::utf8_to_path(relative_path)',
+  'Network file transfer must decode wire paths as UTF-8 before filesystem access'
+);
+assertNotIncludes(
+  networkFileTransfer,
+  'std::filesystem::path rel(relative_path)',
+  'Network file transfer must not construct filesystem paths from UTF-8 wire strings as ANSI'
+);
+assertIncludes(
+  networkProtocolTests,
+  'test_project_relative_path_uses_utf8_for_non_ascii_segments',
+  'Network protocol tests must cover UTF-8 project-relative file transfer paths'
+);
+assertIncludes(
+  networkProtocolTests,
+  'Resource/models/绿植/base.obj',
+  'Network protocol tests must use a non-ASCII model path regression case'
 );
 assertIncludes(
   networkSystem,

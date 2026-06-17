@@ -1682,7 +1682,7 @@ void NetworkSystem::handle_file_request(const std::string& sender_peer_id,
         std::ifstream file(*full_path, std::ios::binary | std::ios::ate);
         if (!file.is_open()) {
             CFW_LOG_ERROR("NetworkSystem: Cannot open file '{}' for FILE_REQUEST id={} from {}",
-                          full_path->string(), transfer_id, sender_peer_id);
+                          Utils::path_to_utf8(*full_path), transfer_id, sender_peer_id);
             impl_->outgoing_cache.erase(model_path);
             return;
         }
