@@ -330,6 +330,58 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
             self.assertEqual(actor_data["model_dependencies"], [])
             self.assertEqual((project_root / stable_path).read_bytes(), b"glb-data")
 
+    def test_models_path_is_copied_to_resource_with_obj_dependencies_before_broadcast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+            model_dir = project_root / "models" / "矮桌"
+            texture_dir = model_dir / "textures"
+            texture_dir.mkdir(parents=True)
+            (model_dir / "base.obj").write_text(
+                "mtllib base.mtl\nmesh-data",
+                encoding="utf-8",
+            )
+            (model_dir / "base.mtl").write_text(
+                "map_Kd textures/diffuse.png\n",
+                encoding="utf-8",
+            )
+            (texture_dir / "diffuse.png").write_bytes(b"png-data")
+
+            events = []
+            fake_editor = SimpleNamespace(
+                CoronaEngine=SimpleNamespace(
+                    active_project_path=str(project_root),
+                    Actor=FakeActorEngineObject,
+                    ActorProfile=SimpleNamespace,
+                ),
+                js_call_func=lambda name, args: events.append((name, args)),
+            )
+            parent = SimpleNamespace(route="Scene/main.scene")
+
+            with patch.object(actor_module, "CoronaEditor", fake_editor), \
+                 patch.object(actor_module, "CoronaEngine", fake_editor.CoronaEngine), \
+                 patch.object(actor_module, "Geometry", FakeGeometry), \
+                 patch.object(actor_module, "Optics", FakeOptics), \
+                 patch.object(actor_module, "Mechanics", FakeComponent), \
+                 patch.object(actor_module, "Acoustics", FakeComponent):
+                actor_module.Actor(
+                    route="models/矮桌/base.obj",
+                    actor_type="model",
+                    parent_scene=parent,
+                )
+
+            actor_data = events[0][1][0]
+            stable_path = "Resource/models/矮桌/base.obj"
+            self.assertEqual(actor_data["path"], stable_path)
+            self.assertEqual(actor_data["model"], stable_path)
+            self.assertEqual(actor_data["model_dependencies"], [
+                "Resource/models/矮桌/base.mtl",
+                "Resource/models/矮桌/textures/diffuse.png",
+            ])
+            self.assertEqual((project_root / stable_path).read_text(encoding="utf-8"),
+                             "mtllib base.mtl\nmesh-data")
+            self.assertTrue((project_root / "Resource" / "models" / "矮桌" / "base.mtl").exists())
+            self.assertTrue((project_root / "Resource" / "models" / "矮桌" / "textures" / "diffuse.png").exists())
+
     def test_remote_actor_disables_local_physics(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_root = Path(tmp)

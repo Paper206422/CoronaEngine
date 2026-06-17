@@ -432,6 +432,24 @@ class Actor:
                 self.final_model_path = str(project_root / copied_paths[0])
                 self.model_dependencies = copied_paths[1:]
                 return
+            stable_model_subdir = self._project_models_resource_subdir(rel_path)
+            if stable_model_subdir:
+                if not source_path.is_file():
+                    logging.warning("Actor project models path is missing: %s",
+                                    source_path)
+                    return
+                copied_paths = self._copy_model_asset_bundle_to_project(
+                    source_path,
+                    project_root,
+                    target_subdir=stable_model_subdir,
+                )
+                if not copied_paths:
+                    return
+                self.route = copied_paths[0]
+                self.model_path = copied_paths[0]
+                self.final_model_path = str(project_root / copied_paths[0])
+                self.model_dependencies = copied_paths[1:]
+                return
             self.route = rel_path
             self.model_path = rel_path
             self.final_model_path = str(source_path)
@@ -461,6 +479,14 @@ class Actor:
             return None
         local_rel = normalized[len("assets/"):]
         return Path(local_rel).parent.as_posix()
+
+    @staticmethod
+    def _project_models_resource_subdir(rel_path: str) -> Optional[str]:
+        normalized = rel_path.replace("\\", "/")
+        prefix = "models/"
+        if not normalized.startswith(prefix):
+            return None
+        return Path(normalized).parent.as_posix()
 
     def _copy_model_asset_bundle_to_project(self, source_path: Path,
                                             project_root: Path,

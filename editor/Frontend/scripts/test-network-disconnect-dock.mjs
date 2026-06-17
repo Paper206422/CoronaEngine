@@ -135,8 +135,18 @@ assertIncludes(
 );
 assertIncludes(
   actorCore,
+  'prefix = "models/"',
+  'Actor network broadcast must treat project models paths as unstable network sources'
+);
+assertIncludes(
+  actorCore,
   'target_subdir=local_model_subdir',
   'Actor network broadcast must copy local model library assets to a stable Resource subdir'
+);
+assertIncludes(
+  actorCore,
+  'target_subdir=stable_model_subdir',
+  'Actor network broadcast must copy project models assets to a stable Resource subdir'
 );
 assertIncludes(
   actorBroadcastTests,
@@ -147,6 +157,16 @@ assertIncludes(
   actorBroadcastTests,
   'Resource/local_model_library/models/书桌_6db78152/base.glb',
   'Actor network broadcast test must assert the stable Resource path for AI local models'
+);
+assertIncludes(
+  actorBroadcastTests,
+  'test_models_path_is_copied_to_resource_with_obj_dependencies_before_broadcast',
+  'Actor network broadcast tests must cover project models path stabilization'
+);
+assertIncludes(
+  actorBroadcastTests,
+  'Resource/models/矮桌/base.obj',
+  'Actor network broadcast test must assert the stable Resource path for project models'
 );
 
 assertIncludes(
