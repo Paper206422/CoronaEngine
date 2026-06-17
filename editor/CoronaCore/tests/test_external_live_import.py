@@ -339,18 +339,18 @@ class ExternalLiveImportTests(unittest.TestCase):
             self.assertEqual(scene.get_actors()[1].name, "Floor")
             self.assertFalse(scene.get_actors()[1].physics_enabled)
             self.assertEqual(scene.get_actors()[1].position, [0.0, 0.0, -1.0])
-            self.assertEqual(scene.get_actors()[1].scale, [2.0, 2.0, 2.0])
+            self.assertEqual(scene.get_actors()[1].scale, [1.0, 1.0, 1.0])
             self.assertTrue(scene.get_actors()[1].route.startswith("Resource/vision_proxies/"))
             self.assertTrue((root / scene.get_actors()[1].route).exists())
             proxy_text = (root / scene.get_actors()[1].route).read_text(encoding="utf-8")
-            self.assertIn("v 1 0 2", proxy_text)
+            self.assertIn("v 1 0 -1", proxy_text)
             self.assertIn("f 1 2 3", proxy_text)
             self.assertEqual(scene.get_actors()[2].name, "Ball")
             self.assertFalse(scene.get_actors()[2].physics_enabled)
             self.assertEqual(scene.get_actors()[2].position, [0.0, 0.0, -2.0])
-            self.assertEqual(scene.get_actors()[2].scale, [2.0, 2.0, 2.0])
+            self.assertEqual(scene.get_actors()[2].scale, [2.0, 1.0, 1.0])
             sphere_proxy_text = (root / scene.get_actors()[2].route).read_text(encoding="utf-8")
-            self.assertIn("v 0 0.5 2", sphere_proxy_text)
+            self.assertIn("v 0 0.5 0", sphere_proxy_text)
             self.assertIn("f 1 3 2", sphere_proxy_text)
             self.assertEqual(scene.vision_import_mode, "external_live")
             self.assertEqual(scene.vision_bindings[0]["actor_guid"],
@@ -361,8 +361,9 @@ class ExternalLiveImportTests(unittest.TestCase):
             self.assertEqual(scene.vision_bindings[2]["shape_type"], "sphere")
             self.assertEqual(scene.get_actors()[0].engine_obj.actor_guid,
                              scene.get_actors()[0].actor_guid)
+            self.assertEqual(scene.vision_bindings[0]["source_path"], str(vision_scene.resolve()))
             self.assertEqual(scene.get_actors()[0].engine_obj.external_vision_binding["source_path"],
-                             str(vision_scene.resolve()))
+                             loaded_paths[0])
             self.assertEqual(scene.get_actors()[0].engine_obj.external_vision_binding["shape_guid"],
                              "shape-chair")
             self.assertEqual(scene.get_actors()[1].engine_obj.external_vision_binding["shape_type"],
@@ -373,7 +374,32 @@ class ExternalLiveImportTests(unittest.TestCase):
             self.assertEqual(result["vision"]["binding_count"], 3)
             self.assertEqual(result["vision"]["unsupported_count"], 1)
             self.assertEqual(result["vision"]["unsupported_by_type"], {"cylinder": 1})
-            self.assertEqual(loaded_paths, [str(vision_scene.resolve())])
+            self.assertEqual(len(loaded_paths), 1)
+            self.assertEqual(Path(loaded_paths[0]).parent, vision_scene.parent)
+            self.assertNotEqual(loaded_paths[0], str(vision_scene.resolve()))
+            self.assertEqual(result["runtime_path"], loaded_paths[0])
+            derived = json.loads(Path(loaded_paths[0]).read_text(encoding="utf-8"))
+            chair_transform = derived["scene"]["shapes"][0]["param"]["transform"]
+            self.assertEqual(chair_transform["type"], "matrix4x4")
+            self.assertEqual(chair_transform["param"]["matrix4x4"][3], [1.0, 2.0, 3.0, 1.0])
+            floor_transform = derived["scene"]["shapes"][1]["param"]["transform"]
+            self.assertEqual(floor_transform["type"], "matrix4x4")
+            self.assertEqual(floor_transform["param"]["matrix4x4"][3], [0.0, 0.0, 1.0, 1.0])
+            self.assertEqual(floor_transform["param"]["matrix4x4"][0][0], 1.0)
+            ball_transform = derived["scene"]["shapes"][2]["param"]["transform"]
+            self.assertEqual(ball_transform["type"], "matrix4x4")
+            self.assertEqual(ball_transform["param"]["matrix4x4"][3], [0.0, 0.0, 2.0, 1.0])
+            self.assertEqual(ball_transform["param"]["matrix4x4"][0][0], 2.0)
+            self.assertEqual(ball_transform["param"]["matrix4x4"][1][1], 1.0)
+            scene.get_actors()[1].set_position([3.0, 4.0, -5.0])
+            scene.get_actors()[1].set_scale([1.5, 2.0, 2.5])
+            edited_path = scene_tools_module.prepare_external_live_vision_scene(scene)
+            edited = json.loads(Path(edited_path).read_text(encoding="utf-8"))
+            edited_floor_matrix = edited["scene"]["shapes"][1]["param"]["transform"]["param"]["matrix4x4"]
+            self.assertEqual(edited_floor_matrix[0], [1.5, 0.0, 0.0, 0.0])
+            self.assertEqual(edited_floor_matrix[1], [0.0, 2.0, 0.0, 0.0])
+            self.assertEqual(edited_floor_matrix[2], [0.0, 0.0, 2.5, 0.0])
+            self.assertEqual(edited_floor_matrix[3], [3.0, 4.0, 5.0, 1.0])
             self.assertLess(call_order.index("load_vision_scene"),
                             call_order.index("set_render_backend:vision"))
             self.assertTrue(scene.saved)
@@ -555,29 +581,70 @@ class ExternalLiveImportTests(unittest.TestCase):
         self.assertEqual(chair_binding["shape_index"], 3)
         self.assertEqual(scene._actors[1].engine_obj.external_vision_binding, {})
 
-    def test_main_view_restores_external_live_with_standard_vision_loader(self):
-        scene = SimpleNamespace(
-            route="Scene/main.scene",
-            vision_source_path="D:/vision/scene.json",
-            vision_import_mode="external_live",
-            vision_bindings=[{
-                "actor_guid": "actor-chair",
-                "shape_guid": "shape-chair",
-                "json_path": "/scene/shapes/0",
-            }],
-        )
-        legacy_loads = []
-        fake_editor = SimpleNamespace(
-            CoronaEngine=SimpleNamespace(
-                is_vision_available=lambda: True,
-                load_vision_scene=lambda path: legacy_loads.append(path),
+    def test_main_view_restores_external_live_with_derived_scene_loader(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "chair.obj").write_text("mesh", encoding="utf-8")
+            vision_scene = root / "scene.json"
+            vision_scene.write_text(json.dumps({
+                "scene": {
+                    "shapes": [{
+                        "type": "model",
+                        "name": "Chair",
+                        "guid": "shape-chair",
+                        "param": {"fn": "chair.obj"},
+                    }],
+                },
+            }), encoding="utf-8")
+
+            actor = FakeActor(name="Chair", route=str(root / "chair.obj"),
+                              actor_type="model", actor_data={
+                                  "actor_guid": "actor-chair",
+                                  "geometry": {
+                                      "position": [7.0, 8.0, -9.0],
+                                      "rotation": [0.0, 0.0, 0.0],
+                                      "scale": [2.0, 3.0, 4.0],
+                                  },
+                              })
+            scene = SimpleNamespace(
+                route="Scene/main.scene",
+                name="main",
+                vision_source_path=str(vision_scene),
+                vision_import_mode="external_live",
+                vision_bindings=[{
+                    "actor_guid": "actor-chair",
+                    "source_path": str(vision_scene),
+                    "shape_guid": "shape-chair",
+                    "shape_index": "0",
+                    "json_path": "/scene/shapes/0",
+                    "shape_type": "model",
+                }],
+                get_actors=lambda: [actor],
             )
-        )
+            loaded_paths = []
+            fake_editor = SimpleNamespace(
+                CoronaEngine=SimpleNamespace(
+                    is_vision_available=lambda: True,
+                    load_vision_scene=lambda path: loaded_paths.append(path),
+                )
+            )
 
-        with patch.object(main_view_module, "CoronaEditor", fake_editor):
-            main_view_module.MainView._apply_vision_source_for_scene(scene)
+            with patch.object(main_view_module, "CoronaEditor", fake_editor):
+                main_view_module.MainView._apply_vision_source_for_scene(scene)
 
-        self.assertEqual(legacy_loads, ["D:/vision/scene.json"])
+            self.assertEqual(len(loaded_paths), 1)
+            loaded_path = Path(loaded_paths[0])
+            self.assertEqual(loaded_path.parent, vision_scene.parent)
+            self.assertNotEqual(loaded_path, vision_scene)
+            self.assertEqual(scene.vision_bindings[0]["source_path"], str(vision_scene))
+            self.assertEqual(actor.engine_obj.external_vision_binding["source_path"],
+                             str(loaded_path))
+            derived = json.loads(loaded_path.read_text(encoding="utf-8"))
+            matrix = derived["scene"]["shapes"][0]["param"]["transform"]["param"]["matrix4x4"]
+            self.assertEqual(matrix[0], [2.0, 0.0, 0.0, 0.0])
+            self.assertEqual(matrix[1], [0.0, 3.0, 0.0, 0.0])
+            self.assertEqual(matrix[2], [0.0, 0.0, 4.0, 0.0])
+            self.assertEqual(matrix[3], [7.0, 8.0, 9.0, 1.0])
 
     def test_main_view_keeps_legacy_external_path_only(self):
         scene = SimpleNamespace(

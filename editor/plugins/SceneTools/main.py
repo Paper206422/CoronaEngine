@@ -3,6 +3,7 @@ import math
 import os
 import re
 import uuid
+import copy
 
 from CoronaCore.core.components import Optics
 from CoronaCore.core.corona_editor import CoronaEditor
@@ -327,15 +328,7 @@ def _apply_corona_trs_to_point(transform: dict, point):
 
 
 def _extract_vision_primitive_proxy_transform(shape: dict) -> dict:
-    shape_type = _vision_shape_type(shape)
-    local_vertices, _ = _vision_primitive_vertices(shape, shape_type)
-    world_vertices = _vision_primitive_world_vertices(shape, local_vertices)
-    center, max_axis = _aabb_center_and_max_axis(world_vertices)
-    return {
-        "position": center,
-        "rotation": [0.0, 0.0, 0.0],
-        "scale": [max_axis, max_axis, max_axis],
-    }
+    return _extract_vision_shape_transform(shape)
 
 
 def _extract_vision_shape_transform(shape: dict) -> dict:
@@ -490,10 +483,9 @@ def _ensure_vision_primitive_proxy(scene, shape: dict, shape_type: str, json_pat
     if not local_vertices or not faces:
         return "", ""
 
-    world_vertices = _vision_primitive_world_vertices(shape, local_vertices)
     vertices = [
-        [_clean_near_zero(world[0]), _clean_near_zero(world[1]), _clean_near_zero(-world[2])]
-        for world in world_vertices
+        [_clean_near_zero(vertex[0]), _clean_near_zero(vertex[1]), _clean_near_zero(-vertex[2])]
+        for vertex in local_vertices
     ]
 
     shape_guid = _vision_shape_guid(shape, json_path)
@@ -513,6 +505,200 @@ def _ensure_vision_primitive_proxy(scene, shape: dict, shape_type: str, json_pat
         file.write("\n".join(lines) + "\n")
 
     return rel_path, abs_path
+
+
+def _actor_transform(actor):
+    def _read_vec(method_name, attr_name, fallback):
+        method = getattr(actor, method_name, None)
+        if callable(method):
+            try:
+                value = method()
+            except Exception:
+                value = None
+        else:
+            value = getattr(actor, attr_name, None)
+        vec = _as_float3(value)
+        return vec if vec is not None else list(fallback)
+
+    return {
+        "position": _read_vec("get_position", "position", [0.0, 0.0, 0.0]),
+        "rotation": _read_vec("get_rotation", "rotation", [0.0, 0.0, 0.0]),
+        "scale": _read_vec("get_scale", "scale", [1.0, 1.0, 1.0]),
+    }
+
+
+def _rotate_corona_vector(vec, rotation):
+    x, y, z = vec
+    rx, ry, rz = rotation
+
+    cos_x = math.cos(rx)
+    sin_x = math.sin(rx)
+    y, z = y * cos_x - z * sin_x, y * sin_x + z * cos_x
+
+    cos_y = math.cos(ry)
+    sin_y = math.sin(ry)
+    x, z = x * cos_y + z * sin_y, -x * sin_y + z * cos_y
+
+    cos_z = math.cos(rz)
+    sin_z = math.sin(rz)
+    x, y = x * cos_z - y * sin_z, x * sin_z + y * cos_z
+    return [x, y, z]
+
+
+def _corona_trs_to_vision_matrix4x4(transform: dict):
+    position = transform.get("position", [0.0, 0.0, 0.0])
+    rotation = transform.get("rotation", [0.0, 0.0, 0.0])
+    scale = transform.get("scale", [1.0, 1.0, 1.0])
+
+    corona_columns = [
+        _rotate_corona_vector([scale[0], 0.0, 0.0], rotation) + [0.0],
+        _rotate_corona_vector([0.0, scale[1], 0.0], rotation) + [0.0],
+        _rotate_corona_vector([0.0, 0.0, scale[2]], rotation) + [0.0],
+        [position[0], position[1], position[2], 1.0],
+    ]
+
+    vision_columns = []
+    for col_index, column in enumerate(corona_columns):
+        vision_column = []
+        for row_index, value in enumerate(column):
+            if row_index == 2:
+                value = -value
+            if col_index == 2:
+                value = -value
+            vision_column.append(_clean_near_zero(float(value)))
+        vision_columns.append(vision_column)
+    return vision_columns
+
+
+def _shape_collection(document: dict):
+    scene_data = _vision_scene_data(document)
+    shapes = scene_data.get("shapes", [])
+    return shapes if isinstance(shapes, (list, dict)) else []
+
+
+def _remove_shape_at_json_path(document: dict, json_path: str) -> bool:
+    shapes = _shape_collection(document)
+    if not json_path.startswith("/scene/shapes/"):
+        return False
+    key = json_path[len("/scene/shapes/"):]
+    if isinstance(shapes, list):
+        try:
+            index = int(key)
+        except ValueError:
+            return False
+        if 0 <= index < len(shapes):
+            shapes[index] = None
+            return True
+        return False
+    if isinstance(shapes, dict) and key in shapes:
+        del shapes[key]
+        return True
+    return False
+
+
+def _shape_at_json_path(document: dict, json_path: str):
+    shapes = _shape_collection(document)
+    if not json_path.startswith("/scene/shapes/"):
+        return None
+    key = json_path[len("/scene/shapes/"):]
+    if isinstance(shapes, list):
+        try:
+            index = int(key)
+        except ValueError:
+            return None
+        if 0 <= index < len(shapes) and isinstance(shapes[index], dict):
+            return shapes[index]
+        return None
+    if isinstance(shapes, dict) and isinstance(shapes.get(key), dict):
+        return shapes[key]
+    return None
+
+
+def _compact_removed_shapes(document: dict) -> None:
+    scene_data = _vision_scene_data(document)
+    shapes = scene_data.get("shapes", [])
+    if isinstance(shapes, list):
+        scene_data["shapes"] = [shape for shape in shapes if shape is not None]
+
+
+def _derived_vision_scene_path(source_path: str, scene) -> str:
+    source_dir = os.path.dirname(os.path.abspath(source_path))
+    source_stem, source_ext = os.path.splitext(os.path.basename(source_path))
+    scene_stem = _safe_filename_stem(getattr(scene, "name", "") or "scene")
+    key = f"{os.path.abspath(source_path)}|{getattr(scene, 'route', '')}"
+    suffix = uuid.uuid5(uuid.NAMESPACE_URL, key).hex[:12]
+    return os.path.join(source_dir, f"{source_stem}.corona_{scene_stem}_{suffix}{source_ext or '.json'}")
+
+
+def _write_derived_external_live_scene(scene, source_path: str) -> str:
+    if not source_path or not os.path.isfile(source_path):
+        return source_path
+
+    with open(source_path, "r", encoding="utf-8") as file:
+        document = json.load(file)
+
+    derived = copy.deepcopy(document)
+    bindings = list(getattr(scene, "vision_bindings", []))
+    for binding in bindings:
+        json_path = binding.get("json_path", "")
+        actor = _find_actor_by_guid(scene, binding.get("actor_guid", ""))
+        if actor is None:
+            _remove_shape_at_json_path(derived, json_path)
+            continue
+
+        shape = _shape_at_json_path(derived, json_path)
+        if shape is None:
+            continue
+
+        shape_type = (binding.get("shape_type") or _vision_shape_type(shape)).lower()
+        if shape_type != "model" and shape_type not in _SUPPORTED_VISION_PRIMITIVES:
+            continue
+
+        params = shape.setdefault("param", {})
+        if not isinstance(params, dict):
+            params = {}
+            shape["param"] = params
+        params["transform"] = {
+            "type": "matrix4x4",
+            "param": {
+                "matrix4x4": _corona_trs_to_vision_matrix4x4(_actor_transform(actor)),
+            },
+        }
+
+    _compact_removed_shapes(derived)
+    path = _derived_vision_scene_path(source_path, scene)
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(derived, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+    return path
+
+
+def _sync_external_live_binding_source_path(scene, runtime_path: str) -> None:
+    if not runtime_path:
+        return
+    for binding in list(getattr(scene, "vision_bindings", [])):
+        actor = _find_actor_by_guid(scene, binding.get("actor_guid", ""))
+        if actor is None or not hasattr(actor, "set_external_vision_binding"):
+            continue
+        runtime_binding = dict(binding)
+        runtime_binding["source_path"] = runtime_path
+        actor.set_external_vision_binding(runtime_binding)
+
+
+def prepare_external_live_vision_scene(scene) -> str:
+    source_path = getattr(scene, "vision_source_path", "") or ""
+    if not source_path or getattr(scene, "vision_import_mode", "") != "external_live":
+        return source_path
+    source_path = os.path.abspath(source_path)
+    runtime_path = source_path
+    if getattr(scene, "vision_bindings", []):
+        try:
+            runtime_path = _write_derived_external_live_scene(scene, source_path)
+        except Exception as exc:
+            logger.exception("Failed to write derived external_live Vision scene: %s", exc)
+            runtime_path = source_path
+    _sync_external_live_binding_source_path(scene, runtime_path)
+    return runtime_path
 
 
 def _find_actor_by_guid(scene, actor_guid: str):
@@ -860,6 +1046,10 @@ class SceneTools(PluginBase):
             return {"status": "error", "message": str(exc)}
 
     @staticmethod
+    def prepare_external_live_vision_scene(scene) -> str:
+        return prepare_external_live_vision_scene(scene)
+
+    @staticmethod
     def create_camera_view(scene_name: str, name: str = None) -> dict:
         try:
             scene = scene_manager.get(scene_name)
@@ -1190,7 +1380,8 @@ class SceneTools(PluginBase):
             scene.vision_unsupported_shapes = unsupported_shapes
             scene.save_data()
 
-            CoronaEditor.CoronaEngine.load_vision_scene(abs_path)
+            runtime_path = prepare_external_live_vision_scene(scene)
+            CoronaEditor.CoronaEngine.load_vision_scene(runtime_path or abs_path)
             if active_camera is not None:
                 active_camera.set_render_backend("vision")
                 if hasattr(scene.engine_scene, "set_active_camera"):
@@ -1207,6 +1398,7 @@ class SceneTools(PluginBase):
                 "status": "success",
                 "scene": scene_name,
                 "path": abs_path,
+                "runtime_path": runtime_path or abs_path,
                 "import_mode": "external_live",
                 "camera_imported": camera_imported,
                 "camera": active_camera.to_dict() if active_camera is not None else None,

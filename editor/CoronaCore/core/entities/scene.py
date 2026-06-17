@@ -269,6 +269,13 @@ class Scene:
                 self.file_data['actors'][f'{actor_key}.follow_camera'] = (
                     'true' if actor.get_follow_camera() else 'false'
                 )
+            if hasattr(actor, 'get_physics_enabled'):
+                try:
+                    self.file_data['actors'][f'{actor_key}.mechanics.physics_enabled'] = (
+                        'true' if actor.get_physics_enabled() else 'false'
+                    )
+                except Exception:
+                    pass
 
             # 获取几何体属性
             if hasattr(actor, '_geometry'):
@@ -721,6 +728,11 @@ class Scene:
         follow_camera_key = f'{actor_name}.follow_camera'
         if follow_camera_key in actors_section:
             actor_data["follow_camera"] = actors_section.getboolean(follow_camera_key)
+        physics_enabled_key = f'{actor_name}.mechanics.physics_enabled'
+        if physics_enabled_key in actors_section:
+            actor_data["mechanics"] = {
+                "physics_enabled": actors_section.getboolean(physics_enabled_key)
+            }
 
         # 解析几何体属性
         pos_str = actors_section.get(f'{actor_name}.geometry.position', '0.0, 0.0, 0.0')

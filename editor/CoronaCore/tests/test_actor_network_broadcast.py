@@ -329,6 +329,7 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
                     get_rotation=lambda: [0.0, 0.0, 0.0],
                     get_scale=lambda: [1.0, 1.0, 1.0],
                     get_follow_camera=lambda: True,
+                    get_physics_enabled=lambda: False,
                 )
             ]
 
@@ -337,11 +338,53 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
             saved = configparser.ConfigParser()
             saved.read(scene_path, encoding="utf-8")
             self.assertTrue(saved["actors"].getboolean("hud_quad.follow_camera"))
+            self.assertFalse(saved["actors"].getboolean("hud_quad.mechanics.physics_enabled"))
             self.assertEqual(saved["actors"].get("hud_quad.actor_guid"), "actor-hud")
 
             actor_data = scene._build_actor_json(saved["actors"], "hud_quad")
             self.assertTrue(actor_data["follow_camera"])
+            self.assertFalse(actor_data["mechanics"]["physics_enabled"])
             self.assertEqual(actor_data["actor_guid"], "actor-hud")
+
+    def test_actor_data_restores_physics_enabled_to_mechanics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+            (project_root / "Resource").mkdir()
+            (project_root / "Resource" / "cube.obj").write_text("mesh", encoding="utf-8")
+            fake_editor = SimpleNamespace(
+                CoronaEngine=SimpleNamespace(
+                    active_project_path=str(project_root),
+                    Actor=FakeActorEngineObject,
+                    ActorProfile=SimpleNamespace,
+                ),
+                js_call_func=lambda name, args: None,
+            )
+            parent = SimpleNamespace(route="Scene/main.scene", save_data=lambda: None)
+
+            with patch.object(actor_module, "CoronaEditor", fake_editor), \
+                 patch.object(actor_module, "CoronaEngine", fake_editor.CoronaEngine), \
+                 patch.object(actor_module, "Geometry", FakeGeometry), \
+                 patch.object(actor_module, "Optics", FakeOptics), \
+                 patch.object(actor_module, "Mechanics", FakeComponent), \
+                 patch.object(actor_module, "Acoustics", FakeComponent):
+                actor = actor_module.Actor(
+                    route="Resource/cube.obj",
+                    actor_type="model",
+                    parent_scene=parent,
+                    actor_data={
+                        "actor_guid": "actor-cube",
+                        "geometry": {
+                            "position": [0, 0, 0],
+                            "rotation": [0, 0, 0],
+                            "scale": [1, 1, 1],
+                        },
+                        "mechanics": {
+                            "physics_enabled": False,
+                        },
+                    },
+                )
+
+            self.assertFalse(actor.get_physics_enabled())
 
     def test_scene_vision_bindings_persist_in_indexed_section(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -186,6 +186,10 @@ class Actor:
         self.set_scale(scale, True)
 
         self._create_and_add_profile()
+        self._apply_mechanics_data({
+            "physics_enabled": self.file_data.getboolean(
+                'mechanics', 'physics_enabled', fallback=True)
+        })
 
     def _create_components_from_actor_data(self, actor_data: dict):
         """从actor_data字典创建几何体和组件"""
@@ -201,6 +205,7 @@ class Actor:
         self.set_scale(actor_data["geometry"]["scale"], True)
 
         self._create_and_add_profile()
+        self._apply_mechanics_data(actor_data.get("mechanics", {}))
 
     def _create_and_add_profile(self):
         """创建组件、配置集合并添加到actor"""
@@ -225,6 +230,14 @@ class Actor:
         if stored is None:
             raise RuntimeError("无法向 Actor 添加默认 Profile（几何/组件不一致）")
         self.engine_obj.set_active_profile(stored)
+
+    def _apply_mechanics_data(self, mechanics_data: dict):
+        if not isinstance(mechanics_data, dict):
+            return
+        if not hasattr(self, '_mechanics') or self._mechanics is None:
+            return
+        if "physics_enabled" in mechanics_data:
+            self.set_physics_enabled(self._coerce_bool(mechanics_data.get("physics_enabled")))
 
     @staticmethod
     def _coerce_bool(value) -> bool:
@@ -427,6 +440,15 @@ class Actor:
             self.file_data['base']['path'] = self.model_path
             self.file_data['base']['actor_guid'] = self.actor_guid
             self.file_data['base']['follow_camera'] = 'true' if self._follow_camera else 'false'
+            if 'mechanics' not in self.file_data:
+                self.file_data['mechanics'] = {}
+            if hasattr(self, 'get_physics_enabled'):
+                try:
+                    self.file_data['mechanics']['physics_enabled'] = (
+                        'true' if self.get_physics_enabled() else 'false'
+                    )
+                except Exception:
+                    pass
             if self.model_path:
                 position = self.get_position()
                 rotation = self.get_rotation()
