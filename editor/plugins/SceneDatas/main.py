@@ -44,11 +44,6 @@ class SceneDatas(PluginBase):
             actor = scene.get_actor(actor_name)
         else:
             actor = scene_manager.find_actor(actor_name)
-            # 按名称未找到时，尝试按 route（文件路径）查找
-            if actor is None:
-                actor = scene_manager.find_actor_by_route(actor_name)
-        if actor is None:
-            raise ValueError(f"Actor '{actor_name}' not found (scene='{scene_name}')")
         return actor.to_dict()
 
     @staticmethod

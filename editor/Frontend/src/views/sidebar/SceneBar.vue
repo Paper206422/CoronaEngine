@@ -1192,8 +1192,6 @@ const onActorRowDoubleClick = (scene, event) => {
     return;
   }
 
-  // 双击时同步打开详情面板（与单击 ControlObject 行为一致）
-  ControlObject(scene);
   focusActorFromList(scene);
 };
 
