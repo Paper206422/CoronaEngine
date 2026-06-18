@@ -1513,6 +1513,50 @@ void NetworkSystem::on_custom_message(const std::string& sender_peer_id,
             CFW_LOG_INFO("NetworkSystem: Received ACTOR_CREATE from {} — actor='{}' scene='{}' model='{}' deps={}",
                          sender_peer_id, actor_guid, scene_name, model_path, dependency_paths.size());
 
+            if (!actor_guid.empty() && impl_->identity_registry.resolve_actor(actor_guid)) {
+                CFW_LOG_DEBUG(
+                    "NetworkSystem: Ignoring duplicate ACTOR_CREATE for registered actor='{}' scene='{}'",
+                    actor_guid, scene_name);
+                return;
+            }
+
+            auto pending_file_transfer_for_actor = [&]() {
+                for (auto& [_, group] : impl_->pending_file_transfer_groups) {
+                    if (group.actor_guid == actor_guid &&
+                        group.scene_name == scene_name &&
+                        group.model_path == model_path) {
+                        group.dependency_paths = dependency_paths;
+                        group.actor_json = actor_json;
+                        group.actor_packed = actor_packed;
+                        group.last_activity_time = Impl::Clock::now();
+                        return true;
+                    }
+                }
+                return false;
+            };
+            if (pending_file_transfer_for_actor()) {
+                CFW_LOG_DEBUG(
+                    "NetworkSystem: Coalesced duplicate ACTOR_CREATE while files are pending — actor='{}' scene='{}'",
+                    actor_guid, scene_name);
+                return;
+            }
+
+            auto upsert_pending_actor_create = [&](Impl::PendingAction action) {
+                auto it = std::find_if(
+                    impl_->pending_actor_creates.begin(),
+                    impl_->pending_actor_creates.end(),
+                    [&](const Impl::PendingAction& existing) {
+                        return existing.actor_guid == action.actor_guid &&
+                               existing.scene_name == action.scene_name &&
+                               existing.model_path == action.model_path;
+                    });
+                if (it != impl_->pending_actor_creates.end()) {
+                    *it = std::move(action);
+                    return;
+                }
+                impl_->pending_actor_creates.push_back(std::move(action));
+            };
+
             auto file_exists = [this](const std::string& path) {
                 auto full_path = Network::resolve_project_relative_path(
                     impl_->project_root, path);
@@ -1538,7 +1582,7 @@ void NetworkSystem::on_custom_message(const std::string& sender_peer_id,
                 pa.dependency_paths = dependency_paths;
                 pa.actor_json = actor_json;
                 pa.actor_packed = actor_packed;
-                impl_->pending_actor_creates.push_back(pa);
+                upsert_pending_actor_create(std::move(pa));
             } else {
                 uint64_t group_id = impl_->next_transfer_id++;
                 Impl::PendingFileTransfer group;
@@ -1673,10 +1717,25 @@ void NetworkSystem::on_custom_message(const std::string& sender_peer_id,
         uint32_t json_len = r.read_u32();
         if (!r.has_remaining(json_len)) return;
         pending.snapshot_json = r.read_string(json_len);
-        impl_->pending_actor_scene_snapshots.push_back(pending);
+        const std::string pending_scene_name = pending.scene_name;
+        const size_t pending_snapshot_size = pending.snapshot_json.size();
+        auto upsert_pending_actor_scene_snapshot = [&](Impl::PendingActorSceneSnapshot snapshot) {
+            auto it = std::find_if(
+                impl_->pending_actor_scene_snapshots.begin(),
+                impl_->pending_actor_scene_snapshots.end(),
+                [&](const Impl::PendingActorSceneSnapshot& existing) {
+                    return existing.scene_name == snapshot.scene_name;
+                });
+            if (it != impl_->pending_actor_scene_snapshots.end()) {
+                *it = std::move(snapshot);
+                return;
+            }
+            impl_->pending_actor_scene_snapshots.push_back(std::move(snapshot));
+        };
+        upsert_pending_actor_scene_snapshot(std::move(pending));
         CFW_LOG_INFO(
             "NetworkSystem: Received ACTOR_SCENE_SNAPSHOT from {} — scene='{}' bytes={}",
-            sender_peer_id, pending.scene_name, pending.snapshot_json.size());
+            sender_peer_id, pending_scene_name, pending_snapshot_size);
     } else if (mt == MessageType::ACTOR_STATE_UPDATE) {
         Network::BufferReader r(data + 1, len - 1);
         if (!r.has_remaining(2)) return;

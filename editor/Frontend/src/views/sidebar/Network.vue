@@ -195,6 +195,7 @@ const connectionAttemptStartedAt = ref(0);
 const ownershipClaimTimes = new Map();
 const currentSceneName = ref('Scene/default.scene');
 const snapshotRequestedScenes = new Set();
+const remoteRegisteredActorIdentities = new Set();
 
 const roleLabel = computed(() => {
   if (sessionRole.value === 'host') return '房主';
@@ -230,6 +231,7 @@ function resetSessionInfo() {
   connectStatus.value = '';
   connectionAttemptStartedAt.value = 0;
   snapshotRequestedScenes.clear();
+  remoteRegisteredActorIdentities.clear();
 }
 
 async function ensureProjectRoot() {
@@ -316,7 +318,7 @@ async function pollPeers() {
         await requestSceneSnapshotOnce(currentSceneName.value);
       }
       if (count > 0 && sessionRole.value === 'host') {
-        await broadcastCurrentSceneSnapshot(currentSceneName.value, true);
+        await broadcastCurrentSceneSnapshot(currentSceneName.value, false);
       }
     }
 
@@ -617,8 +619,13 @@ async function registerActorIdentityFromData(actorData, locallyOwned = true) {
   const actorGuid = actorData.actor_guid || '';
   const actorHandle = actorData.handle || '';
   if (!actorGuid || !actorHandle) return;
+  const identityKey = `${actorGuid}:${actorHandle}:${locallyOwned ? 'local' : 'remote'}`;
+  if (!locallyOwned && remoteRegisteredActorIdentities.has(identityKey)) return;
   try {
     await networkService.registerActorIdentity(actorGuid, actorHandle, locallyOwned);
+    if (!locallyOwned) {
+      remoteRegisteredActorIdentities.add(identityKey);
+    }
   } catch (_) {
     /* best effort — identity mapping is an optimization anchor */
   }
