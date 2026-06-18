@@ -54,14 +54,14 @@
       <button class="window-action maximize no-drag" aria-label="Toggle camera window fullscreen" @click="cycleWindowMode">[]</button>
       <button class="window-action close no-drag" aria-label="Close camera view" @click="closeView">x</button>
     </header>
-    <div class="gizmo-mode-switch no-drag" @mousedown.stop @pointerdown.stop>
+    <div class="ui-mode-switch no-drag" @mousedown.stop @pointerdown.stop>
       <button
-        v-for="item in gizmoModeItems"
+        v-for="item in viewportUiModeItems"
         :key="item.mode"
         type="button"
-        :class="{ active: gizmoMode === item.mode }"
+        :class="{ active: viewportUiMode === item.mode }"
         :title="item.title"
-        @click="selectGizmoMode(item.mode)"
+        @click="selectViewportUiMode(item.mode)"
       >
         {{ item.label }}
       </button>
@@ -75,6 +75,7 @@
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { appService, projectService, sceneService } from '@/utils/bridge.js';
+import { createViewportUiModeStore } from '@/utils/viewportUiMode.js';
 
 const route = useRoute();
 const sceneId = String(route.query.scene || '');
@@ -87,7 +88,7 @@ const outputMode = ref('final_color');
 const moveSpeed = ref(1);
 const renderWidth = ref(960);
 const renderHeight = ref(540);
-const gizmoMode = ref('move');
+const viewportUiMode = ref('flat2d');
 const visionAvailable = ref(false);
 const errorText = ref('');
 const dragHandle = ref(null);
@@ -105,10 +106,10 @@ const outputModes = [
   { value: 'visibility_buffer', label: 'Visibility' },
 ];
 
-const gizmoModeItems = [
-  { mode: 'move', label: 'Move', title: '移动' },
-  { mode: 'scale', label: 'Scale', title: '缩放' },
-  { mode: 'rotate', label: 'Rotate', title: '旋转' },
+const viewportUiModeStore = createViewportUiModeStore();
+const viewportUiModeItems = [
+  { mode: 'flat2d', label: '2D UI', title: '普通屏幕 UI' },
+  { mode: 'stereo3d', label: '3D UI', title: '光场屏立体 UI' },
 ];
 
 const unwrap = (result) => result?.data ?? result;
@@ -182,11 +183,29 @@ const selectOutput = async (mode) => {
   await changeOutput();
 };
 
-const selectGizmoMode = (mode) => {
-  gizmoMode.value = mode === 'scale' || mode === 'rotate' ? mode : 'move';
-  try {
-    window.coronaBridge?.setViewportGizmoMode?.(gizmoMode.value);
-  } catch (_) {}
+const viewportUiDescriptor = () => ({
+  scope: 'camera',
+  sceneId,
+  cameraId,
+  cameraHandle: camera.value?.handle || '',
+});
+
+const syncViewportUiMode = () => {
+  viewportUiMode.value = viewportUiModeStore.get(viewportUiDescriptor());
+  viewportUiModeStore.applyToBridge({
+    bridge: window.coronaBridge,
+    cameraHandle: camera.value?.handle,
+    mode: viewportUiMode.value,
+  });
+};
+
+const selectViewportUiMode = (mode) => {
+  viewportUiMode.value = viewportUiModeStore.set(viewportUiDescriptor(), mode);
+  viewportUiModeStore.applyToBridge({
+    bridge: window.coronaBridge,
+    cameraHandle: camera.value?.handle,
+    mode: viewportUiMode.value,
+  });
 };
 
 const saveSettings = async () => {
@@ -471,7 +490,7 @@ onMounted(async () => {
   }
   try {
     await loadCamera();
-    selectGizmoMode(gizmoMode.value);
+    syncViewportUiMode();
     await syncWindowSize(true);
   } catch (error) {
     errorText.value = error.message;
@@ -516,7 +535,7 @@ onBeforeUnmount(() => {
 }
 .input-layer { position: absolute; inset: 34px 0 0; z-index: 1; }
 .camera-overlay.borderless .input-layer { inset: 0; }
-.gizmo-mode-switch {
+.ui-mode-switch {
   position: absolute;
   z-index: 4;
   top: 42px;
@@ -530,8 +549,8 @@ onBeforeUnmount(() => {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
   pointer-events: auto;
 }
-.camera-overlay.borderless .gizmo-mode-switch { top: 10px; }
-.gizmo-mode-switch button {
+.camera-overlay.borderless .ui-mode-switch { top: 10px; }
+.ui-mode-switch button {
   height: 24px;
   min-width: 42px;
   padding: 0 8px;
@@ -543,8 +562,8 @@ onBeforeUnmount(() => {
   font-weight: 600;
   cursor: pointer;
 }
-.gizmo-mode-switch button:hover { background: rgba(255, 255, 255, 0.1); }
-.gizmo-mode-switch button.active {
+.ui-mode-switch button:hover { background: rgba(255, 255, 255, 0.1); }
+.ui-mode-switch button.active {
   background: #4b5563;
   color: #fff;
 }
