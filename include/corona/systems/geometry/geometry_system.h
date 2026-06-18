@@ -308,6 +308,16 @@ class GeometrySystem : public Kernel::SystemBase {
     void on_unload_requested(const Events::ActorUnloadRequestedEvent& event);
     void process_async_tasks();  // 处理完成的异步资源任务
 
+    /// 卸载完成时释放 actor 关联的 GPU 资源（HardwareBuffer / HardwareImage），
+    /// 并清理对应的 LOD 缓存条目。不释放 SharedDataHub 存储槽位本身——
+    /// 槽位归 Python API 层 Geometry 对象所有，由其析构函数回收。
+    void release_actor_gpu_resources(std::uintptr_t actor);
+
+    /// 重新加载完成时重建 actor 关联的 GPU 资源（HardwareBuffer / HardwareImage），
+    /// 从已导入的 Scene 资源中重新创建 mesh_handles 并恢复 model_resource_handle。
+    /// 同时清理 LOD 缓存以保证下一帧 update() 重新上传 LOD 数据。
+    void rebuild_actor_gpu_resources(std::uintptr_t actor, std::uint64_t rid);
+
     // ========================================
     // 动态减面内部管线（在 update() 中每帧调用，外部不可见）
     // ========================================

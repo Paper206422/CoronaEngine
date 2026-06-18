@@ -516,6 +516,469 @@ void GeometrySystem::on_unload_completed(const Events::ActorUnloadCompletedEvent
 }
 
 // ============================================================================
+// GPU 资源释放（unload 时由 process_async_tasks 调用）
+// ============================================================================
+
+// ============================================================================
+// release_actor_gpu_resources
+// 功能：释放指定 actor 占用的全部 GPU 资源（显存中的顶点/索引缓冲和纹理）
+// 调用时机：process_async_tasks() 中处理 ActorUnloadCompletedEvent 时
+// 注意：只清理 GPU 端资源，不删除 SharedDataHub 中的存储槽位
+// ============================================================================
+void GeometrySystem::release_actor_gpu_resources(std::uintptr_t actor) {
+    // ---- 第 0 步：获取全局数据中心单例 ----
+    // SharedDataHub 是所有系统共享的数据仓库，存 Actor/Profile/Geometry 等设备数据
+    auto& hub = SharedDataHub::instance();
+
+    // ---- 第 1 步：以只读模式获取 actor 数据 ----
+    // try_acquire_read 返回一个 RAII 读锁守卫，离开作用域自动释放
+    auto actor_read = hub.actor_storage().try_acquire_read(actor);
+    if (!actor_read.valid()) return;  // actor 句柄无效（可能已被销毁），直接返回
+
+    // ---- 第 2 步：用 visited 集合去重 ----
+    // 一个 actor 的多个 profile 可能共享同一个 geometry（例如 optics 和 mechanics 引用同一几何体）
+    // 用 unordered_set 记录已处理的 geometry，避免重复释放
+    std::unordered_set<std::uintptr_t> visited_geometry_handles;
+
+    // ---- 第 3 步：遍历 actor 身上每个 Profile ----
+    // Profile 是"配件槽位"——它聚合了 optics/mechanics/geometry/acoustics 的句柄
+    for (auto profile_handle : actor_read->profile_handles) {
+        auto profile = hub.profile_storage().try_acquire_read(profile_handle);
+        if (!profile) continue;  // profile 句柄已失效
+
+        // ---- 第 4 步：从 Profile 的 4 条路径收集 geometry 句柄 ----
+        // 路径 A：Profile 自身直接挂载的 geometry_handle
+        // 路径 B：Profile → OpticsDevice → geometry_handle（光学设备可能引用几何体）
+        // 路径 C：Profile → MechanicsDevice → geometry_handle（力学设备必然引用几何体，最常用）
+        // 路径 D：Profile → AcousticsDevice → geometry_handle（声学设备可能引用几何体）
+        std::vector<std::uintptr_t> geom_handles;
+
+        // 路径 A：Profile 自身的 geometry 直连
+        if (profile->geometry_handle != 0) {
+            geom_handles.push_back(profile->geometry_handle);
+        }
+        // 路径 B：OpticsDevice（视觉渲染设备）→ geometry
+        if (profile->optics_handle != 0) {
+            if (auto optics = hub.optics_storage().try_acquire_read(profile->optics_handle)) {
+                if (optics->geometry_handle != 0) {
+                    geom_handles.push_back(optics->geometry_handle);
+                }
+            }
+        }
+        // 路径 C：MechanicsDevice（物理/变换设备）→ geometry（最常用的路径）
+        if (profile->mechanics_handle != 0) {
+            if (auto mech = hub.mechanics_storage().try_acquire_read(profile->mechanics_handle)) {
+                if (mech->geometry_handle != 0) {
+                    geom_handles.push_back(mech->geometry_handle);
+                }
+            }
+        }
+        // 路径 D：AcousticsDevice（声学设备）→ geometry
+        if (profile->acoustics_handle != 0) {
+            if (auto acoustics = hub.acoustics_storage().try_acquire_read(profile->acoustics_handle)) {
+                if (acoustics->geometry_handle != 0) {
+                    geom_handles.push_back(acoustics->geometry_handle);
+                }
+            }
+        }
+
+        // ---- 第 5 步：对每个收集到的 geometry 释放 GPU 资源 ----
+        for (auto geom_handle : geom_handles) {
+            // visited_geometry_handles.insert() 返回 pair<iter, bool>
+            // .second == false 表示已存在 → 跳过，避免重复处理
+            if (!visited_geometry_handles.insert(geom_handle).second) continue;
+
+            // ---- 第 5.1 步：统计该 geometry 有多少个 mesh（子网格）----
+            // 一个 GeometryDevice 可能包含多个 MeshDevice（例如一个模型有多个材质）
+            uint32_t mesh_count = 0;
+            if (auto geom_read = hub.geometry_storage().try_acquire_read(geom_handle)) {
+                mesh_count = static_cast<uint32_t>(geom_read->mesh_handles.size());
+            } else {
+                continue;  // geometry 句柄已失效
+            }
+
+            // ---- 第 5.2 步：清理 LOD 缓存 ----
+            // 每个 mesh 可能在 upload_lod_from_scene_data() 中创建了多级 LOD GPU 缓冲
+            // make_lod_key(geom_handle, i) 生成唯一键：(geometry_handle << 32) | mesh_index
+            {
+                std::unique_lock lod_lock(impl_->lod_cache_mutex);  // 独占锁（写操作）
+                for (uint32_t i = 0; i < mesh_count; ++i) {
+                    impl_->lod_cache.erase(Impl::make_lod_key(geom_handle, i));
+                }
+            }  // lod_lock 在此析构，自动释放互斥锁
+
+            // ---- 第 5.3 步：销毁 mesh_handles 中的 GPU 缓冲 ----
+            // mesh_handles 是 vector<MeshDevice>，每个 MeshDevice 内含：
+            //   vertexBuffer / indexBuffer（渲染用）
+            //   vertexStorageBuffer / indexStorageBuffer（Compute Shader 用）
+            //   textureBuffer（纹理）
+            // clear() 触发每个元素的析构 → HardwareBuffer/HardwareImage 析构 → GPU 显存归还
+            // 注意：model_resource_handle 保留不删，以便 reload 时能找到模型资源条目
+            if (auto geom_write = hub.geometry_storage().try_acquire_write(geom_handle)) {
+                geom_write->mesh_handles.clear();
+            }  // geom_write 析构时自动释放写锁
+
+            // ---- 第 5.4 步：日志 ----
+            CFW_LOG_NOTICE("[GeometrySystem] Released GPU resources for geometry {}, "
+                           "{} mesh(es), actor {}",
+                           geom_handle,   // geometry 在 SharedDataHub 中的句柄地址
+                           mesh_count,    // 释放了多少个 mesh 的 GPU 缓冲
+                           actor);        // 所属 actor 句柄
+        }
+    }
+}
+
+// ============================================================================
+// rebuild_actor_gpu_resources
+// 功能：释放后重新加载 actor 时，重建全部 GPU 资源（顶点/索引缓冲 + 纹理）
+// 调用时机：process_async_tasks() 检测到 load 任务完成后，发布事件前
+// 参数：
+//   actor — actor 句柄（SharedDataHub 中的地址）
+//   rid   — 资源 UID（ResourceManager 分配的唯一标识，由 import_async 返回）
+// 说明：这个函数是 unload → reload 生命周期中"重建"环节的核心
+// ============================================================================
+void GeometrySystem::rebuild_actor_gpu_resources(std::uintptr_t actor, std::uint64_t rid) {
+    // ---- 第 0 步：获取两个全局单例 ----
+    // SharedDataHub：管理所有系统共享的设备数据（actor/profile/geometry 等）
+    auto& hub = SharedDataHub::instance();
+    // ResourceManager：管理所有资源文件（Scene/Image 等），通过 UID 查找
+    auto& resource_manager = Resource::ResourceManager::get_instance();
+
+    // ---- 第 1 步：读取 actor 数据 ----
+    auto actor_read = hub.actor_storage().try_acquire_read(actor);
+    if (!actor_read.valid()) return;  // actor 句柄无效
+
+    // ---- 第 2 步：去重集合（与 release 函数逻辑相同）----
+    // 多个 profile 可能引用同一 geometry，用 set 防止重复重建
+    std::unordered_set<std::uintptr_t> visited_geometry_handles;
+
+    // ---- 第 3 步：遍历 actor 的所有 profile ----
+    for (auto profile_handle : actor_read->profile_handles) {
+        auto profile = hub.profile_storage().try_acquire_read(profile_handle);
+        if (!profile) continue;
+
+        // ---- 第 4 步：4 条路径收集 geometry 句柄（同 release 逻辑）----
+        // 路径 A：Profile 直连 geometry
+        // 路径 B：Profile → OpticsDevice → geometry
+        // 路径 C：Profile → MechanicsDevice → geometry（最常用）
+        // 路径 D：Profile → AcousticsDevice → geometry
+        std::vector<std::uintptr_t> geom_handles;
+
+        // 路径 A：profile 自身的 geometry_handle
+        if (profile->geometry_handle != 0) {
+            geom_handles.push_back(profile->geometry_handle);
+        }
+        // 路径 B：光学设备 → geometry
+        if (profile->optics_handle != 0) {
+            if (auto optics = hub.optics_storage().try_acquire_read(profile->optics_handle)) {
+                if (optics->geometry_handle != 0) {
+                    geom_handles.push_back(optics->geometry_handle);
+                }
+            }
+        }
+        // 路径 C：力学/物理设备 → geometry（渲染对象的主要路径）
+        if (profile->mechanics_handle != 0) {
+            if (auto mech = hub.mechanics_storage().try_acquire_read(profile->mechanics_handle)) {
+                if (mech->geometry_handle != 0) {
+                    geom_handles.push_back(mech->geometry_handle);
+                }
+            }
+        }
+        // 路径 D：声学设备 → geometry
+        if (profile->acoustics_handle != 0) {
+            if (auto acoustics = hub.acoustics_storage().try_acquire_read(profile->acoustics_handle)) {
+                if (acoustics->geometry_handle != 0) {
+                    geom_handles.push_back(acoustics->geometry_handle);
+                }
+            }
+        }
+
+        // ---- 第 5 步：对每个 geometry 重建 GPU 资源 ----
+        for (auto geom_handle : geom_handles) {
+            // 去重：同一 geometry 只处理一次
+            if (!visited_geometry_handles.insert(geom_handle).second) continue;
+
+            // ---- 第 5.1 步：判断是否需要重建 ----
+            // model_resource_handle 是 SharedDataHub 中 ModelResource 条目的句柄
+            // release() 时保留了它（未置零），通过它找到对应的模型资源条目
+            // mesh_handles 在 release() 时已 clear()，所以 empty() == true 表示需要重建
+            // 初始加载时 Python API 已填充 mesh_handles，此时不为空 → 无需重建
+            std::uintptr_t model_res_handle = 0;  // ModelResource 句柄
+            bool needs_rebuild = false;            // 是否需要重建 GPU 缓冲
+            {
+                auto geom_read = hub.geometry_storage().try_acquire_read(geom_handle);
+                if (!geom_read) continue;  // geometry 已失效
+                model_res_handle = geom_read->model_resource_handle;
+                // 关键判断：mesh_handles 为空 → 被 release() 清理过 → 需要重建
+                //          mesh_handles 不为空 → 初始加载已完成 → 无需重建
+                needs_rebuild = geom_read->mesh_handles.empty();
+            }  // geom_read 析构，释放读锁
+
+            // ---- 第 5.2 步：更新 ModelResource 中的 model_id ----
+            // reload 时 import_async 可能分配新的资源 UID，必须更新
+            // 无论是否需要 rebuild 都要更新，确保后续 LOD 上传能正确查找到 Scene 数据
+            if (model_res_handle != 0) {
+                if (auto model_res = hub.model_resource_storage().try_acquire_write(model_res_handle)) {
+                    model_res->model_id = rid;  // 写入新的资源 UID
+                }
+            }
+
+            // ---- 第 5.3 步：如果不需要重建，跳过此 geometry ----
+            // 初始加载场景：mesh_handles 已在 Python API 层创建完毕
+            if (!needs_rebuild) {
+                continue;  // 无需重建，直接处理下一个 geometry
+            }
+
+            // ---- 第 5.4 步：从 ResourceManager 获取导入的 Scene 数据 ----
+            // rid 是 import_async 完成后返回的资源唯一标识
+            // Scene 资源包含完整的模型数据：顶点/索引/材质/纹理/LOD 等
+            auto scene_read = resource_manager.acquire_read<Resource::Scene>(rid);
+            if (!scene_read.valid()) {
+                CFW_LOG_ERROR("[GeometrySystem] Failed to acquire Scene resource for rid={}", rid);
+                continue;  // 资源无效，跳过
+            }
+            auto& scene = *scene_read;  // 解引用读锁守卫，获得 Scene 数据引用
+
+            // ================================================================
+            // 阶段 A：创建 MeshDevice 数组
+            // 为 Scene 中的每个 mesh 创建 GPU 缓冲（顶点/索引/纹理）
+            // 分两步：先创建所有 HardwareBuffer/HardwareImage，再批量上传纹理数据
+            // ================================================================
+            std::vector<MeshDevice> mesh_devices;                     // 输出：新的 mesh 设备数组
+            mesh_devices.reserve(scene.data.meshes.size());            // 预分配内存，避免 realloc
+
+            // ---- 待上传纹理列表（第一阶段收集，第二阶段批量执行）----
+            // 纹理上传涉及 GPU 传输，批量处理比逐个处理效率高
+            struct PendingTextureUpload {
+                std::uint32_t mesh_idx;               // 对应 mesh_devices 中的索引
+                HardwareImage* texture;               // 指向已创建的 HardwareImage 对象
+                std::vector<unsigned char> rgba_data; // 纹理像素数据（RGBA 格式）
+                unsigned char* data_ptr;              // 指向 rgba_data 中数据的指针
+            };
+            std::vector<PendingTextureUpload> pending_uploads;
+            pending_uploads.reserve(scene.data.meshes.size());
+
+            // ---- 创建共享的 1x1 白色占位纹理 ----
+            // 用于无纹理的 mesh，确保渲染管线始终有纹理可采样
+            // static → 全局唯一，所有无纹理 mesh 共享同一张（节省显存）
+            // lambda 立即执行 → 程序启动时构造一次
+            static HardwareImage shared_placeholder_texture = []() {
+                // 构造 1×1 像素、RGBA8 sRGB 格式的纹理创建信息
+                HardwareImageCreateInfo placeholder_info{};
+                placeholder_info.width        = 1;                       // 1 像素宽
+                placeholder_info.height       = 1;                       // 1 像素高
+                placeholder_info.format       = ImageFormat::RGBA8_SRGB; // sRGB 色彩空间
+                placeholder_info.usage        = ImageUsage::SampledImage; // 可作为着色器采样源
+                placeholder_info.arrayLayers  = 1;                       // 无数组层
+                placeholder_info.mipLevels    = 1;                       // 无 mipmap
+
+                static const unsigned char white_pixel[4] = {255, 255, 255, 255};  // 不透明白色
+                HardwareImage texture(placeholder_info);               // 创建 GPU 纹理对象
+                HardwareExecutor temp_executor;                        // 临时命令执行器
+                // 将白色像素数据拷贝到 GPU 纹理，提交执行
+                temp_executor << texture.copyFrom(white_pixel) << temp_executor.commit();
+                return texture;  // 返回创建好的纹理（move 语义）
+            }();
+
+            // ---- 第一阶段：遍历所有 mesh，创建 GPU 缓冲 ----
+            for (std::uint32_t mesh_idx = 0; mesh_idx < scene.data.meshes.size(); ++mesh_idx) {
+                const auto& mesh = scene.data.meshes[mesh_idx];  // 当前 mesh 的 CPU 端数据
+                MeshDevice dev{};  // 零初始化 MeshDevice（所有句柄为 0/null）
+
+                // ---- 创建顶点/索引缓冲（4 个）----
+                // vertexBuffer / indexBuffer：渲染管线使用（Vertex Shader 读取）
+                // vertexStorageBuffer / indexStorageBuffer：Compute Shader 使用（可读写）
+                // get_mesh_vertices() 返回 meshopt 优化后的顶点数组
+                // get_mesh_indices() 返回 meshopt 优化后的索引数组
+                dev.vertexBuffer        = HardwareBuffer(scene.get_mesh_vertices(mesh_idx), BufferUsage::VertexBuffer);
+                dev.indexBuffer         = HardwareBuffer(scene.get_mesh_indices(mesh_idx),  BufferUsage::IndexBuffer);
+                dev.vertexStorageBuffer = HardwareBuffer(scene.get_mesh_vertices(mesh_idx), BufferUsage::StorageBuffer);
+                dev.indexStorageBuffer  = HardwareBuffer(scene.get_mesh_indices(mesh_idx),  BufferUsage::StorageBuffer);
+
+                // ---- 材质索引 ----
+                // material_index 指向 scene.data.materials 数组
+                // InvalidIndex（最大值）表示无材质 → 降级为 0（使用默认材质）
+                dev.materialIndex = (mesh.material_index != Resource::InvalidIndex)
+                                        ? mesh.material_index                    // 有效材质索引
+                                        : 0;                                    // 降级为默认材质
+
+                // ---- 读取材质颜色（base_color：RGBA 漫反射颜色）----
+                if (mesh.material_index != Resource::InvalidIndex &&
+                    mesh.material_index < scene.data.materials.size()) {
+                    dev.materialColor = scene.data.materials[mesh.material_index].base_color;
+                }
+
+                // ---- 纹理处理 ----
+                bool texture_created = false;               // 标记：是否已创建纹理
+                HardwareImageCreateInfo create_info{};       // 纹理创建参数（零初始化）
+
+                // 检查是否有有效材质和纹理
+                if (mesh.material_index != Resource::InvalidIndex &&
+                    mesh.material_index < scene.data.materials.size()) {
+                    // 从材质中获取 albedo（漫反射）纹理 ID
+                    auto texture_id = scene.data.materials[mesh.material_index].albedo_texture;
+
+                    if (texture_id != Resource::InvalidTextureId) {
+                        // 尝试从资源管理器获取纹理图像数据
+                        auto texture_data = resource_manager.acquire_read<Resource::Image>(texture_id);
+                        if (texture_data && texture_data->get_data() != nullptr) {
+                            const int tex_width    = texture_data->get_width();     // 纹理宽度（像素）
+                            const int tex_height   = texture_data->get_height();    // 纹理高度（像素）
+                            const int tex_channels = texture_data->get_channels();  // 颜色通道数（1/3/4）
+
+                            if (tex_width > 0 && tex_height > 0 && tex_channels > 0) {
+                                // ========================================
+                                // 分支 A：压缩纹理（BC1/BC3/ASTC）
+                                // ========================================
+                                if (texture_data->is_compressed()) {
+                                    // 获取压缩后的数据（GPU 可直接使用的格式）
+                                    const auto& compressed = texture_data->get_compressed_data();
+                                    create_info.width        = tex_width;
+                                    create_info.height       = tex_height;
+                                    create_info.usage        = ImageUsage::SampledImage;
+                                    create_info.arrayLayers  = 1;
+                                    create_info.mipLevels    = 1;
+
+                                    // 根据压缩格式设置对应的 GPU 图像格式
+                                    if (compressed.format == Resource::CompressedData::Format::BC1) {
+                                        create_info.format = ImageFormat::BC1_RGB_SRGB;     // DXT1，无 alpha
+                                    } else if (compressed.format == Resource::CompressedData::Format::BC3) {
+                                        create_info.format = ImageFormat::BC3_RGBA_SRGB;    // DXT5，含 alpha
+                                    } else if (compressed.format == Resource::CompressedData::Format::ASTC_4x4) {
+                                        create_info.format = ImageFormat::ASTC_4x4_SRGB;    // 移动端常用
+                                    }
+
+                                    // 将压缩数据加入待上传队列
+                                    PendingTextureUpload upload{mesh_idx, nullptr, {}, nullptr};
+                                    upload.rgba_data.assign(compressed.data.begin(), compressed.data.end());
+                                    upload.data_ptr = upload.rgba_data.data();
+
+                                    // 创建 GPU 纹理对象（此时尚未上传像素数据）
+                                    dev.textureBuffer = HardwareImage(create_info);
+                                    upload.texture = &dev.textureBuffer;
+                                    pending_uploads.push_back(std::move(upload));
+                                    texture_created = true;
+                                }
+                                // ========================================
+                                // 分支 B：未压缩纹理（RGBA 像素数据）
+                                // ========================================
+                                else {
+                                    create_info.width        = tex_width;
+                                    create_info.height       = tex_height;
+                                    create_info.format       = ImageFormat::RGBA8_SRGB;   // 统一转为 RGBA8
+                                    create_info.usage        = ImageUsage::SampledImage;
+                                    create_info.arrayLayers  = 1;
+                                    create_info.mipLevels    = 1;
+
+                                    unsigned char* src_data = texture_data->get_data();  // 原始像素数据指针
+                                    PendingTextureUpload upload{mesh_idx, nullptr, {}, nullptr};
+
+                                    // ---- 根据通道数转换为 RGBA ----
+                                    if (tex_channels == 4) {
+                                        // RGBA：直接拷贝，无需转换
+                                        upload.rgba_data.assign(src_data,
+                                            src_data + static_cast<size_t>(tex_width) * tex_height * 4);
+                                        upload.data_ptr = upload.rgba_data.data();
+                                    } else if (tex_channels == 3) {
+                                        // RGB → RGBA：补充 alpha=255（完全不透明）
+                                        upload.rgba_data.resize(static_cast<size_t>(tex_width) * tex_height * 4);
+                                        for (int i = 0; i < tex_width * tex_height; ++i) {
+                                            upload.rgba_data[i * 4 + 0] = src_data[i * 3 + 0];  // R
+                                            upload.rgba_data[i * 4 + 1] = src_data[i * 3 + 1];  // G
+                                            upload.rgba_data[i * 4 + 2] = src_data[i * 3 + 2];  // B
+                                            upload.rgba_data[i * 4 + 3] = 255;                  // A=不透明
+                                        }
+                                        upload.data_ptr = upload.rgba_data.data();
+                                    } else if (tex_channels == 1) {
+                                        // 灰度 → RGBA：R=G=B=灰度值, A=255
+                                        upload.rgba_data.resize(static_cast<size_t>(tex_width) * tex_height * 4);
+                                        for (int i = 0; i < tex_width * tex_height; ++i) {
+                                            upload.rgba_data[i * 4 + 0] = src_data[i];  // R=灰度
+                                            upload.rgba_data[i * 4 + 1] = src_data[i];  // G=灰度
+                                            upload.rgba_data[i * 4 + 2] = src_data[i];  // B=灰度
+                                            upload.rgba_data[i * 4 + 3] = 255;          // A=不透明
+                                        }
+                                        upload.data_ptr = upload.rgba_data.data();
+                                    }
+
+                                    // 如果有有效数据，创建 GPU 纹理并加入上传队列
+                                    if (upload.data_ptr != nullptr) {
+                                        dev.textureBuffer = HardwareImage(create_info);   // 创建 GPU 纹理对象
+                                        upload.texture = &dev.textureBuffer;              // 指向刚创建的纹理
+                                        pending_uploads.push_back(std::move(upload));    // 入队等待批量上传
+                                        texture_created = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---- 无纹理的兜底：使用共享白色占位纹理 ----
+                // 确保每个 mesh 都有纹理句柄，避免渲染时空指针
+                if (!texture_created) {
+                    dev.textureBuffer = shared_placeholder_texture;  // 拷贝共享纹理句柄
+                }
+
+                // ---- 将构建好的 MeshDevice 加入数组 ----
+                mesh_devices.emplace_back(std::move(dev));
+            }  // 第一阶段结束：所有 mesh 的 GPU 缓冲已创建，纹理像素尚未上传
+
+            // ================================================================
+            // 阶段 B：批量上传纹理像素到 GPU
+            // 使用 HardwareExecutor 执行异步 GPU 传输
+            // 每 32 个纹理一批，平衡内存占用和批次开销
+            // ================================================================
+            if (!pending_uploads.empty()) {
+                constexpr size_t kBatchSize = 32;  // 每批最多 32 个纹理
+                for (size_t batch_start = 0; batch_start < pending_uploads.size(); batch_start += kBatchSize) {
+                    size_t batch_end = std::min(batch_start + kBatchSize, pending_uploads.size());
+
+                    HardwareExecutor batch_executor;  // GPU 命令执行器
+                    // 将本批次所有纹理的 copyFrom 命令加入执行器
+                    for (size_t i = batch_start; i < batch_end; ++i) {
+                        auto& upload = pending_uploads[i];
+                        HardwareImage& tex = mesh_devices[upload.mesh_idx].textureBuffer;
+                        batch_executor << tex.copyFrom(upload.data_ptr);  // 将像素数据拷贝到 GPU
+                    }
+                    // 提交所有命令到 GPU 队列并执行
+                    batch_executor << batch_executor.commit();
+                    batch_executor.waitForDeferredResources();  // 等待本批次传输完成
+                }
+            }
+
+            // ================================================================
+            // 阶段 C：写回 GeometryDevice
+            // 将重建好的 mesh_handles 写回 SharedDataHub
+            // ================================================================
+
+            // ---- 先清理旧 LOD 缓存 ----
+            // mesh_handles 已经重建（新的 GPU 缓冲句柄），旧 LOD 条目指向已销毁的缓冲
+            // 必须清除，否则下一帧 upload_lod_from_scene_data() 会检测到 mismatched handles 并重建
+            {
+                std::unique_lock lod_lock(impl_->lod_cache_mutex);  // 独占锁
+                for (uint32_t i = 0; i < static_cast<uint32_t>(mesh_devices.size()); ++i) {
+                    impl_->lod_cache.erase(Impl::make_lod_key(geom_handle, i));
+                }
+            }  // lod_lock 析构
+
+            // ---- 将新 mesh_handles 写入 GeometryDevice ----
+            if (auto geom_write = hub.geometry_storage().try_acquire_write(geom_handle)) {
+                geom_write->mesh_handles = std::move(mesh_devices);  // move 语义，避免拷贝
+            }  // geom_write 析构，释放写锁
+
+            // ---- 日志：记录重建完成 ----
+            CFW_LOG_NOTICE("[GeometrySystem] Rebuilt GPU resources for geometry {}, "
+                           "{} mesh(es), actor {}, rid={}",
+                           geom_handle,                // geometry 句柄
+                           scene.data.meshes.size(),   // 重建的 mesh 数量
+                           actor,                      // 所属 actor
+                           rid);                       // 资源 UID
+        }
+    }
+}
+
+// ============================================================================
 // 异步资源任务处理
 // ============================================================================
 
