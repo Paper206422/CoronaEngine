@@ -37,3 +37,12 @@ export const buildDragRegions = ({ toolbarRect, noDragRects = [], padding = 0 } 
   }
   return regions.length > 0 ? regions : [{ x: 0, y: 0, w: 0, h: 0 }];
 };
+
+export const dragRegionsSignature = (regions = []) => (
+  Array.isArray(regions) ? regions : []
+).map((region) => [
+  Math.round(Number(region?.x ?? 0)),
+  Math.round(Number(region?.y ?? 0)),
+  Math.round(Number(region?.w ?? 0)),
+  Math.round(Number(region?.h ?? 0)),
+].join(',')).join('|');

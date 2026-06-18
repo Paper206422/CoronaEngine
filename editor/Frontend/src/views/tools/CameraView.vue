@@ -75,7 +75,7 @@
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { appService, projectService, sceneService } from '@/utils/bridge.js';
-import { buildDragRegions } from '@/utils/cameraDragRegions.js';
+import { buildDragRegions, dragRegionsSignature } from '@/utils/cameraDragRegions.js';
 import { createViewportUiModeStore } from '@/utils/viewportUiMode.js';
 
 const route = useRoute();
@@ -238,6 +238,8 @@ const saveSettings = async () => {
 let resizeTimer = 0;
 let lastSyncedWidth = 0;
 let lastSyncedHeight = 0;
+let dragRegionFrame = 0;
+let lastDragRegionSignature = '';
 
 const syncWindowSize = async (force = false) => {
   if (!camera.value) return;
@@ -301,11 +303,7 @@ const toggleBorderlessFullscreen = async () => {
     await appService.toggleBorderlessThisCameraView(sceneId, cameraId);
     borderlessFullscreen.value = !borderlessFullscreen.value;
     await nextTick();
-    if (borderlessFullscreen.value) {
-      await syncDragRegions();
-    } else {
-      await syncDragRegions();
-    }
+    await syncDragRegions({ force: true });
   } catch (error) {
     errorText.value = error.message;
   } finally {
@@ -466,9 +464,16 @@ const updateLook = (event) => {
   publishPose();
 };
 
-const syncDragRegions = async () => {
+const pushDragRegions = async (regions, force = false) => {
+  const signature = dragRegionsSignature(regions);
+  if (!force && signature === lastDragRegionSignature) return;
+  lastDragRegionSignature = signature;
+  await projectService.setCurrentTabDragRegions(regions).catch(() => {});
+};
+
+const syncDragRegions = async ({ force = false } = {}) => {
   if (borderlessFullscreen.value) {
-    await projectService.setCurrentTabDragRegions([{ x: 0, y: 0, w: 0, h: 0 }]).catch(() => {});
+    await pushDragRegions([{ x: 0, y: 0, w: 0, h: 0 }], force);
     return;
   }
   await nextTick();
@@ -478,13 +483,21 @@ const syncDragRegions = async () => {
   const noDragRects = Array.from(toolbar.querySelectorAll('.no-drag'))
     .map((element) => element.getBoundingClientRect());
   const regions = buildDragRegions({ toolbarRect, noDragRects, padding: 2 });
-  await projectService.setCurrentTabDragRegions(regions).catch(() => {});
+  await pushDragRegions(regions, force);
+};
+
+const scheduleDragRegionSync = () => {
+  if (dragRegionFrame) return;
+  dragRegionFrame = window.requestAnimationFrame(() => {
+    dragRegionFrame = 0;
+    syncDragRegions().catch(() => {});
+  });
 };
 
 onMounted(async () => {
   document.documentElement.style.background = 'transparent';
   document.body.style.background = 'transparent';
-  await syncDragRegions();
+  await syncDragRegions({ force: true });
   try {
     await loadCamera();
     syncViewportUiMode();
@@ -493,7 +506,7 @@ onMounted(async () => {
     errorText.value = error.message;
   }
   window.addEventListener('resize', scheduleWindowSizeSync);
-  window.addEventListener('resize', syncDragRegions);
+  window.addEventListener('resize', scheduleDragRegionSync);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
   animationFrame = requestAnimationFrame(movementFrame);
@@ -501,9 +514,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   cancelAnimationFrame(animationFrame);
+  if (dragRegionFrame) window.cancelAnimationFrame(dragRegionFrame);
   window.clearTimeout(resizeTimer);
   window.removeEventListener('resize', scheduleWindowSizeSync);
-  window.removeEventListener('resize', syncDragRegions);
+  window.removeEventListener('resize', scheduleDragRegionSync);
   window.removeEventListener('keydown', onKeyDown);
   window.removeEventListener('keyup', onKeyUp);
 });
