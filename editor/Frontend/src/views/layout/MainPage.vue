@@ -356,7 +356,6 @@
         :mode="gizmoMode"
         :screen-offset="gizmoScreenOffset"
         @mode-change="handleGizmoModeChange"
-        @drag-start="handleGizmoDragStart"
       />
     </div>
 
@@ -491,7 +490,6 @@ import { useDockStore } from '@/stores/dockStore.js';
 import { PLUGIN_MANIFEST } from '@/config/pluginManifest.js';
 import { coronaEventBus } from '@/utils/eventBus.js';
 import { createViewportPickController, indexActorsByHandle } from '@/utils/viewportPick.js';
-import { createViewportGizmoController } from '@/utils/viewportGizmo.js';
 import AIHintBubble from '@/components/ui/AIHintBubble.vue';
 import ViewportGizmoOverlay from '@/components/viewport/ViewportGizmoOverlay.vue';
 import { startStageHints, stopStageHints, setHintShowMs } from '@/services/aiHintGenerator.js';
@@ -529,7 +527,6 @@ const viewportPickSurfaceRef = ref(null);
 const selectedGizmoActor = ref(null);
 const gizmoState = ref(null);
 const gizmoMode = ref('move');
-let gizmoRefreshRafId = null;
 const viewportLayoutVersion = ref(0);
 
 // 摄像头移动速度（可调节）
@@ -561,35 +558,12 @@ const gizmoScreenOffset = computed(() => {
   };
 });
 
-const viewportPickController = createViewportPickController({
-  retryDelayMs: 60,
-  getBridge: () => window.coronaBridge,
-  getCameraBinding: () => cameraBindingState.value,
-  getHitRect: getViewportHitRect,
-  getRenderRect: getViewportRenderRect,
-  getActorIndex: () => actorPickIndex,
-  onPickStart: () => {
-    clearGizmoSelection();
-  },
-  emitActorChange: (type, sceneId, actorName) => {
-    if (typeof window.__coronaEmit === 'function') {
-      window.__coronaEmit('actor-change', type, sceneId, actorName);
-    } else {
-      coronaEventBus.emit('actor-change', type, sceneId, actorName);
-    }
-  },
-});
-
-const mergeGizmoState = (state) => {
-  if (!state) {
-    gizmoState.value = null;
-    return;
+const emitActorChangeFast = (type, sceneId, actorName) => {
+  if (typeof window.__coronaEmit === 'function') {
+    window.__coronaEmit('actor-change', type, sceneId, actorName);
+  } else {
+    coronaEventBus.emit('actor-change', type, sceneId, actorName);
   }
-  gizmoState.value = {
-    ...(gizmoState.value || {}),
-    ...state,
-    transform: state.transform ?? gizmoState.value?.transform,
-  };
 };
 
 const emitTransformUpdateFast = (sceneId, actorName, position, rotation, scale, type) => {
@@ -600,45 +574,50 @@ const emitTransformUpdateFast = (sceneId, actorName, position, rotation, scale, 
   }
 };
 
-const viewportGizmoController = createViewportGizmoController({
+const viewportPickController = createViewportPickController({
+  retryDelayMs: 60,
   getBridge: () => window.coronaBridge,
   getCameraBinding: () => cameraBindingState.value,
   getHitRect: getViewportHitRect,
   getRenderRect: getViewportRenderRect,
-  getSelectedActor: () => selectedGizmoActor.value,
-  onStateChange: mergeGizmoState,
-  emitTransformUpdate: emitTransformUpdateFast,
+  getActorIndex: () => actorPickIndex,
+  onPickStart: () => {
+    clearGizmoSelection();
+  },
+  emitActorChange: (type, sceneId, actorName) => emitActorChangeFast(type, sceneId, actorName),
 });
+
+const syncNativeGizmoMode = () => {
+  try {
+    window.coronaBridge?.setViewportGizmoMode?.(gizmoMode.value);
+  } catch (_) {}
+};
+
+const syncNativeGizmoSelection = () => {
+  const actor = selectedGizmoActor.value;
+  const bridge = window.coronaBridge;
+  const cameraHandle = Number(cameraBindingState.value.cameraHandle || 0);
+  const actorHandle = Number(actor?.handle || 0);
+  const sceneId = actor?.sceneId || cameraBindingState.value.sceneId || '';
+  if (!bridge || typeof bridge.setViewportGizmoSelection !== 'function' ||
+      cameraHandle <= 0 || actorHandle <= 0 || !sceneId) {
+    return;
+  }
+  try {
+    bridge.setViewportGizmoSelection(sceneId, cameraHandle, actorHandle);
+  } catch (_) {}
+};
 
 const clearGizmoSelection = () => {
   selectedGizmoActor.value = null;
   gizmoState.value = null;
-  if (gizmoRefreshRafId != null) {
-    cancelAnimationFrame(gizmoRefreshRafId);
-    gizmoRefreshRafId = null;
-  }
-  viewportGizmoController.dispose();
-};
-
-const requestGizmoState = () => {
-  if (!selectedGizmoActor.value) {
-    clearGizmoSelection();
-    return;
-  }
-  viewportGizmoController.requestState();
-};
-
-const scheduleGizmoStateRefresh = () => {
-  if (!selectedGizmoActor.value || gizmoRefreshRafId != null) return;
-  gizmoRefreshRafId = requestAnimationFrame(() => {
-    gizmoRefreshRafId = null;
-    requestGizmoState();
-  });
+  try {
+    window.coronaBridge?.clearViewportGizmoSelection?.();
+  } catch (_) {}
 };
 
 const handleViewportLayoutChange = () => {
   viewportLayoutVersion.value += 1;
-  scheduleGizmoStateRefresh();
 };
 
 const hasActiveMovementKeys = () => Object.values(movementKeys).some((value) => value);
@@ -855,6 +834,9 @@ const applySceneSnapshot = (sceneId, payload) => {
     cameraName: activeCameraName,
     cameraHandle: activeCamera?.handle ?? activeCamera?.camera_handle ?? null,
   };
+  if (selectedGizmoActor.value) {
+    syncNativeGizmoSelection();
+  }
 
   if (
     activeCamera &&
@@ -1281,6 +1263,24 @@ const handleActorPickResult = (payload) => {
   if (result.status === 'pending' || result.status === 'stale') return;
 
   if (result.status !== 'selected') {
+    const fallbackActorHandle = Number(payload?.actorHandle || 0);
+    if (
+      result.status === 'unknown' &&
+      payload?.status === 'success' &&
+      Number.isFinite(fallbackActorHandle) &&
+      fallbackActorHandle > 0
+    ) {
+      clearGizmoSelection();
+      selectedGizmoActor.value = {
+        handle: fallbackActorHandle,
+        name: payload?.actorName || `Actor ${fallbackActorHandle}`,
+        type: payload?.actorType || 'actor',
+        sceneId: payload?.sceneId || cameraBindingState.value.sceneId || DEFAULT_SCENE_NAME,
+      };
+      gizmoState.value = { native: true };
+      syncNativeGizmoSelection();
+      return;
+    }
     clearGizmoSelection();
     return;
   }
@@ -1292,45 +1292,52 @@ const handleActorPickResult = (payload) => {
     type: result.actor.type || 'actor',
     sceneId: result.payload.sceneId,
   };
-  requestGizmoState();
+  gizmoState.value = { native: true };
+  syncNativeGizmoSelection();
 };
 
-const handleGizmoStateResult = (payload) => {
-  const handled = viewportGizmoController.handleState(payload);
-  if (
-    !handled &&
-    payload?.status === 'error' &&
-    payload?.requestId === viewportGizmoController.currentRequestId() &&
-    selectedGizmoActor.value &&
-    Number(payload?.actorHandle || 0) === Number(selectedGizmoActor.value.handle || 0) &&
-    (payload?.sceneId || selectedGizmoActor.value.sceneId) === selectedGizmoActor.value.sceneId
-  ) {
+const handleNativeGizmoSelection = (payload) => {
+  const actorHandle = Number(payload?.actorHandle || 0);
+  const sceneId = payload?.sceneId || cameraBindingState.value.sceneId || DEFAULT_SCENE_NAME;
+  if (actorHandle <= 0) {
     clearGizmoSelection();
+    return;
   }
+
+  const indexedActor = actorPickIndex.get(actorHandle);
+  if (!indexedActor?.name) return;
+
+  selectedGizmoActor.value = {
+    handle: actorHandle,
+    name: indexedActor.name,
+    type: indexedActor.type || 'actor',
+    sceneId,
+  };
+  gizmoState.value = { native: true };
+  emitActorChangeFast(selectedGizmoActor.value.type, sceneId, indexedActor.name);
 };
 
-const handleGizmoTransformResult = (payload) => {
-  if (viewportGizmoController.handleTransform(payload)) {
-    scheduleGizmoStateRefresh();
-  }
+const handleNativeGizmoTransform = (payload) => {
+  const actorHandle = Number(payload?.actorHandle || 0);
+  const transform = payload?.transform || {};
+  const actor =
+    Number(selectedGizmoActor.value?.handle || 0) === actorHandle
+      ? selectedGizmoActor.value
+      : actorPickIndex.get(actorHandle);
+  if (!actor?.name) return;
+  emitTransformUpdateFast(
+    payload?.sceneId || actor.sceneId || cameraBindingState.value.sceneId || DEFAULT_SCENE_NAME,
+    actor.name,
+    Array.isArray(transform.position) ? transform.position : [0, 0, 0],
+    Array.isArray(transform.rotation) ? transform.rotation : [0, 0, 0],
+    Array.isArray(transform.scale) ? transform.scale : [1, 1, 1],
+    actor.type || 'actor'
+  );
 };
 
 const handleGizmoModeChange = (mode) => {
   gizmoMode.value = mode === 'scale' || mode === 'rotate' ? mode : 'move';
-};
-
-const handleGizmoDragStart = (mode, axis, event) => {
-  const normalizedMode = mode === 'scale' || mode === 'rotate' ? mode : 'move';
-  gizmoMode.value = normalizedMode;
-  viewportGizmoController.beginDrag({ mode: normalizedMode, axis, event });
-};
-
-const onGizmoPointerMove = (event) => {
-  viewportGizmoController.moveDrag(event);
-};
-
-const onGizmoPointerUp = (event) => {
-  viewportGizmoController.endDrag(event);
+  syncNativeGizmoMode();
 };
 
 const sendCameraUpdateFast = () => {
@@ -1355,7 +1362,6 @@ const sendCameraUpdateFast = () => {
       [...cameraState.value.up],
       cameraState.value.fov
     );
-    scheduleGizmoStateRefresh();
     return true;
   } catch (e) {
     return false;
@@ -1862,11 +1868,9 @@ onMounted(async () => {
   document.addEventListener('mousedown', onMouseDown);
   document.addEventListener('mousemove', onMouseMove);
   document.addEventListener('mouseup', onMouseUp);
-  document.addEventListener('pointermove', onGizmoPointerMove);
-  document.addEventListener('pointerup', onGizmoPointerUp);
-  document.addEventListener('pointercancel', onGizmoPointerUp);
   document.addEventListener('contextmenu', onContextMenu);
   window.addEventListener('resize', handleViewportLayoutChange);
+  syncNativeGizmoMode();
   setupListener();
 
   // 跨窗口事件监听：scene-add / scene-rename / panel-closed
@@ -1881,8 +1885,8 @@ onMounted(async () => {
     if (panelId) dockStore.popIn(panelId);
   });
   coronaEventBus.on('actor-pick-result', handleActorPickResult);
-  coronaEventBus.on('actor-gizmo-state', handleGizmoStateResult);
-  coronaEventBus.on('actor-gizmo-transform', handleGizmoTransformResult);
+  coronaEventBus.on('native-gizmo-selection', handleNativeGizmoSelection);
+  coronaEventBus.on('native-gizmo-transform', handleNativeGizmoTransform);
 
   // 启动阶段性包菜提示：每隔一段时间根据用户操作自动弹出 AI 提示气泡
   startStageHints(
@@ -1907,25 +1911,17 @@ onUnmounted(() => {
   coronaEventBus.off('scene-rename');
   coronaEventBus.off('panel-closed');
   coronaEventBus.off('actor-pick-result', handleActorPickResult);
-  coronaEventBus.off('actor-gizmo-state', handleGizmoStateResult);
-  coronaEventBus.off('actor-gizmo-transform', handleGizmoTransformResult);
+  coronaEventBus.off('native-gizmo-selection', handleNativeGizmoSelection);
+  coronaEventBus.off('native-gizmo-transform', handleNativeGizmoTransform);
   window.removeEventListener('storage', onStorageChange);
   stopMoveLoop();
-  if (gizmoRefreshRafId != null) {
-    cancelAnimationFrame(gizmoRefreshRafId);
-    gizmoRefreshRafId = null;
-  }
   viewportPickController.dispose();
-  viewportGizmoController.dispose();
   document.removeEventListener('keydown', handleKeyDown);
   document.removeEventListener('keyup', handleKeyUp);
   document.removeEventListener('click', handleClickOutside);
   document.removeEventListener('mousedown', onMouseDown);
   document.removeEventListener('mousemove', onMouseMove);
   document.removeEventListener('mouseup', onMouseUp);
-  document.removeEventListener('pointermove', onGizmoPointerMove);
-  document.removeEventListener('pointerup', onGizmoPointerUp);
-  document.removeEventListener('pointercancel', onGizmoPointerUp);
   document.removeEventListener('contextmenu', onContextMenu);
   window.removeEventListener('resize', handleViewportLayoutChange);
 });

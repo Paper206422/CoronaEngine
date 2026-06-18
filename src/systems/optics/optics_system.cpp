@@ -1477,10 +1477,14 @@ float half_to_float(uint16_t h) {
 
 std::optional<OpticsSystem::ActorPickRequest> OpticsSystem::take_pending_actor_pick(std::uintptr_t camera_handle) {
     std::uintptr_t pick_handle = 0;
+    std::uint32_t camera_width = 0;
+    std::uint32_t camera_height = 0;
     if (auto camera = SharedDataHub::instance().camera_storage().try_acquire_read(camera_handle)) {
         pick_handle = camera->actor_pick_handle;
+        camera_width = camera->width;
+        camera_height = camera->height;
     }
-    if (pick_handle == 0) {
+    if (pick_handle == 0 || camera_width == 0 || camera_height == 0) {
         return std::nullopt;
     }
 
@@ -1496,7 +1500,7 @@ std::optional<OpticsSystem::ActorPickRequest> OpticsSystem::take_pending_actor_p
     request.y = pick->y;
     pick->pending = false;
 
-    if (request.x >= hardware_->gbufferSize.x || request.y >= hardware_->gbufferSize.y) {
+    if (request.x >= camera_width || request.y >= camera_height) {
         pick->actor_handle = 0;
         pick->result_x = request.x;
         pick->result_y = request.y;

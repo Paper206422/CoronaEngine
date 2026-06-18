@@ -5,6 +5,7 @@
 #include <corona/resource/types/scene.h>
 #include <corona/shared_data_hub.h>
 #include <corona/systems/ui/camera_viewport_manager.h>
+#include <corona/systems/ui/viewport_gizmo_manager.h>
 #include <include/cef_values.h>
 #include <nlohmann/json.hpp>
 #include <SDL3/SDL.h>
@@ -2279,6 +2280,32 @@ bool handle_realtime_process_message(CefRefPtr<CefBrowser> browser,
 
     if (message->GetName() == "ViewportPick") {
         return handle_viewport_pick(frame, message);
+    }
+
+    if (message->GetName() == "ViewportGizmoMode") {
+        auto args = message->GetArgumentList();
+        if (!args || args->GetSize() < 1) {
+            return true;
+        }
+        ViewportGizmoManager::instance().set_mode(args->GetString(0).ToString());
+        return true;
+    }
+
+    if (message->GetName() == "ViewportGizmoClearSelection") {
+        ViewportGizmoManager::instance().clear_selection();
+        return true;
+    }
+
+    if (message->GetName() == "ViewportGizmoSelection") {
+        auto args = message->GetArgumentList();
+        if (!args || args->GetSize() < 3) {
+            return true;
+        }
+        ViewportGizmoManager::instance().set_selection(
+            args->GetString(0).ToString(),
+            static_cast<std::uintptr_t>(args->GetDouble(1)),
+            static_cast<std::uintptr_t>(args->GetDouble(2)));
+        return true;
     }
 
     if (message->GetName() == "ActorGizmoState") {

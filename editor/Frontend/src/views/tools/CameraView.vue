@@ -54,6 +54,18 @@
       <button class="window-action maximize no-drag" aria-label="Toggle camera window fullscreen" @click="cycleWindowMode">[]</button>
       <button class="window-action close no-drag" aria-label="Close camera view" @click="closeView">x</button>
     </header>
+    <div class="gizmo-mode-switch no-drag" @mousedown.stop @pointerdown.stop>
+      <button
+        v-for="item in gizmoModeItems"
+        :key="item.mode"
+        type="button"
+        :class="{ active: gizmoMode === item.mode }"
+        :title="item.title"
+        @click="selectGizmoMode(item.mode)"
+      >
+        {{ item.label }}
+      </button>
+    </div>
     <div class="input-layer" @mousedown="beginLook" @mousemove="updateLook" @mouseup="endLook" />
     <div v-if="errorText" class="error">{{ errorText }}</div>
   </div>
@@ -75,6 +87,7 @@ const outputMode = ref('final_color');
 const moveSpeed = ref(1);
 const renderWidth = ref(960);
 const renderHeight = ref(540);
+const gizmoMode = ref('move');
 const visionAvailable = ref(false);
 const errorText = ref('');
 const dragHandle = ref(null);
@@ -90,6 +103,12 @@ const outputModes = [
   { value: 'position', label: 'Position' },
   { value: 'object_id', label: 'Object ID' },
   { value: 'visibility_buffer', label: 'Visibility' },
+];
+
+const gizmoModeItems = [
+  { mode: 'move', label: 'Move', title: '移动' },
+  { mode: 'scale', label: 'Scale', title: '缩放' },
+  { mode: 'rotate', label: 'Rotate', title: '旋转' },
 ];
 
 const unwrap = (result) => result?.data ?? result;
@@ -161,6 +180,13 @@ const selectOutput = async (mode) => {
   if (outputMode.value === mode) return;
   outputMode.value = mode;
   await changeOutput();
+};
+
+const selectGizmoMode = (mode) => {
+  gizmoMode.value = mode === 'scale' || mode === 'rotate' ? mode : 'move';
+  try {
+    window.coronaBridge?.setViewportGizmoMode?.(gizmoMode.value);
+  } catch (_) {}
 };
 
 const saveSettings = async () => {
@@ -445,6 +471,7 @@ onMounted(async () => {
   }
   try {
     await loadCamera();
+    selectGizmoMode(gizmoMode.value);
     await syncWindowSize(true);
   } catch (error) {
     errorText.value = error.message;
@@ -489,6 +516,38 @@ onBeforeUnmount(() => {
 }
 .input-layer { position: absolute; inset: 34px 0 0; z-index: 1; }
 .camera-overlay.borderless .input-layer { inset: 0; }
+.gizmo-mode-switch {
+  position: absolute;
+  z-index: 4;
+  top: 42px;
+  left: 10px;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  background: rgba(18, 22, 27, 0.82);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+}
+.camera-overlay.borderless .gizmo-mode-switch { top: 10px; }
+.gizmo-mode-switch button {
+  height: 24px;
+  min-width: 42px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.gizmo-mode-switch button:hover { background: rgba(255, 255, 255, 0.1); }
+.gizmo-mode-switch button.active {
+  background: #4b5563;
+  color: #fff;
+}
 .drag-handle {
   width: 22px;
   height: 24px;

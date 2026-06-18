@@ -76,40 +76,12 @@ const buildRingItems = (state, offset) => {
 
 export const buildGizmoRenderModel = (state, mode = 'move', screenOffset = {}) => {
   const normalizedMode = normalizeMode(mode);
-  const offset = normalizeOffset(screenOffset);
-  const centerSource = isPoint(state?.center?.screen) ? state.center : state?.scaleCenter;
-  const center = isPoint(centerSource?.screen) ? toLocalPoint(centerSource.screen, offset) : null;
-  if (!center) {
-    return {
-      visible: false,
-      mode: normalizedMode,
-      center: null,
-      axes: [],
-      rings: [],
-      showUniformScale: false,
-    };
-  }
-
-  if (normalizedMode === 'rotate') {
-    const rings = buildRingItems(state, offset);
-    return {
-      visible: rings.length > 0,
-      mode: normalizedMode,
-      center,
-      axes: [],
-      rings,
-      showUniformScale: false,
-    };
-  }
-
-  const axesSource = state?.axes || state?.scaleAxes;
-  const axes = buildAxisItems(axesSource, normalizedMode === 'scale' ? 'square' : 'arrow', offset);
   return {
-    visible: axes.length > 0,
+    visible: false,
     mode: normalizedMode,
-    center,
-    axes,
+    center: null,
+    axes: [],
     rings: [],
-    showUniformScale: normalizedMode === 'scale',
+    showUniformScale: false,
   };
 };

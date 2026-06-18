@@ -96,6 +96,61 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
                 return true;
             }
 
+            if (name == "setViewportGizmoMode") {
+                if (arguments.size() < 1 || !arguments[0] || !arguments[0]->IsString()) {
+                    exception = "setViewportGizmoMode(mode) requires a string mode";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                auto ctx = CefV8Context::GetCurrentContext();
+                if (!ctx || !ctx->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("ViewportGizmoMode");
+                msg->GetArgumentList()->SetString(0, arguments[0]->GetStringValue());
+                ctx->GetFrame()->SendProcessMessage(PID_BROWSER, msg);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
+            if (name == "clearViewportGizmoSelection") {
+                auto ctx = CefV8Context::GetCurrentContext();
+                if (!ctx || !ctx->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                CefRefPtr<CefProcessMessage> msg =
+                    CefProcessMessage::Create("ViewportGizmoClearSelection");
+                ctx->GetFrame()->SendProcessMessage(PID_BROWSER, msg);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
+            if (name == "setViewportGizmoSelection") {
+                if (arguments.size() < 3 ||
+                    !arguments[0] || !arguments[0]->IsString() ||
+                    !arguments[1] || (!arguments[1]->IsInt() && !arguments[1]->IsDouble()) ||
+                    !arguments[2] || (!arguments[2]->IsInt() && !arguments[2]->IsDouble())) {
+                    exception = "setViewportGizmoSelection(sceneId, cameraHandle, actorHandle) requires (string, number, number)";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                auto ctx = CefV8Context::GetCurrentContext();
+                if (!ctx || !ctx->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("ViewportGizmoSelection");
+                CefRefPtr<CefListValue> args = msg->GetArgumentList();
+                args->SetString(0, arguments[0]->GetStringValue());
+                args->SetDouble(1, arguments[1]->GetDoubleValue());
+                args->SetDouble(2, arguments[2]->GetDoubleValue());
+                ctx->GetFrame()->SendProcessMessage(PID_BROWSER, msg);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
             // ── setProperty: 属性编辑快速通道 ──
             if (name == "setProperty") {
                 // arguments: (actorHandle: number, propertyType: int, value: number)
@@ -490,6 +545,12 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
         CefRefPtr<CefV8Value> get_actor_gizmo_state =
             CefV8Value::CreateFunction("getActorGizmoState", handler);
         CefRefPtr<CefV8Value> actor_gizmo_drag = CefV8Value::CreateFunction("actorGizmoDrag", handler);
+        CefRefPtr<CefV8Value> set_viewport_gizmo_mode =
+            CefV8Value::CreateFunction("setViewportGizmoMode", handler);
+        CefRefPtr<CefV8Value> clear_viewport_gizmo_selection =
+            CefV8Value::CreateFunction("clearViewportGizmoSelection", handler);
+        CefRefPtr<CefV8Value> set_viewport_gizmo_selection =
+            CefV8Value::CreateFunction("setViewportGizmoSelection", handler);
         CefRefPtr<CefV8Value> inject_input = CefV8Value::CreateFunction("injectInput", handler);
         CefRefPtr<CefV8Value> dock_command = CefV8Value::CreateFunction("dockCommand", handler);
         CefRefPtr<CefV8Value> compute_actor_focus_pose =
@@ -500,6 +561,13 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
         bridge->SetValue("pickActor", pick_actor, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("getActorGizmoState", get_actor_gizmo_state, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("actorGizmoDrag", actor_gizmo_drag, V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("setViewportGizmoMode", set_viewport_gizmo_mode, V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("clearViewportGizmoSelection",
+                         clear_viewport_gizmo_selection,
+                         V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("setViewportGizmoSelection",
+                         set_viewport_gizmo_selection,
+                         V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("injectInput", inject_input, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("dockCommand", dock_command, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("computeActorFocusPose", compute_actor_focus_pose, V8_PROPERTY_ATTRIBUTE_NONE);
