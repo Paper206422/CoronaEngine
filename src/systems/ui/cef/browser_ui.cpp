@@ -494,10 +494,10 @@ void BrowserRenderer::render_single_tab(int tab_id,
                 static_cast<int>(window_size.x), static_cast<int>(window_size.y));
         }
 
+        bool in_drag_region = false;
+
         // ----------------- 拖拽区域检测与启动窗口移动 -----------------
         if (!is_main_tab) {
-            bool in_drag_region = false;
-
             // 检测鼠标是否在拖拽区域内
             // - 若 drag_regions 不为空，按指定区域检测
             // - 若为空（如 Vue 页面未通过 CEF 设置拖拽区域），顶部 30px 作为默认拖拽句柄
@@ -580,7 +580,7 @@ void BrowserRenderer::render_single_tab(int tab_id,
         }
 
         // 仅当未拖拽时传递鼠标事件给浏览器
-        if (!tab->dragging_window) {
+        if (!tab->dragging_window && !tab->drag_pending && !in_drag_region) {
             handle_browser_mouse_events(tab, tab_id, active_tab_id, url_input_active_tab, io);
         }
     }

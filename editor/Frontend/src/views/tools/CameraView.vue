@@ -1,7 +1,7 @@
 <template>
   <div class="camera-overlay" :class="{ borderless: borderlessFullscreen }" @contextmenu.prevent>
-    <header v-if="!borderlessFullscreen" class="toolbar camera-drag-region">
-      <div ref="dragHandle" class="drag-handle" aria-label="Move camera window">::</div>
+    <header v-if="!borderlessFullscreen" ref="toolbarRef" class="toolbar camera-drag-region">
+      <div class="drag-handle" aria-label="Move camera window">::</div>
       <input
         v-model="cameraName"
         class="name-input no-drag"
@@ -75,6 +75,7 @@
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { appService, projectService, sceneService } from '@/utils/bridge.js';
+import { buildDragRegions } from '@/utils/cameraDragRegions.js';
 import { createViewportUiModeStore } from '@/utils/viewportUiMode.js';
 
 const route = useRoute();
@@ -91,7 +92,7 @@ const renderHeight = ref(540);
 const viewportUiMode = ref('flat2d');
 const visionAvailable = ref(false);
 const errorText = ref('');
-const dragHandle = ref(null);
+const toolbarRef = ref(null);
 const backendMenuOpen = ref(false);
 const outputMenuOpen = ref(false);
 const borderlessFullscreen = ref(false);
@@ -301,18 +302,9 @@ const toggleBorderlessFullscreen = async () => {
     borderlessFullscreen.value = !borderlessFullscreen.value;
     await nextTick();
     if (borderlessFullscreen.value) {
-      await projectService.setDragRegions('', 0, 0, 0, 0).catch(() => {});
+      await syncDragRegions();
     } else {
-      const dragRect = dragHandle.value?.getBoundingClientRect();
-      if (dragRect) {
-        await projectService.setDragRegions(
-          '',
-          Math.floor(dragRect.x),
-          Math.floor(dragRect.y),
-          Math.floor(dragRect.width),
-          Math.floor(dragRect.height),
-        ).catch(() => {});
-      }
+      await syncDragRegions();
     }
   } catch (error) {
     errorText.value = error.message;
@@ -474,20 +466,25 @@ const updateLook = (event) => {
   publishPose();
 };
 
+const syncDragRegions = async () => {
+  if (borderlessFullscreen.value) {
+    await projectService.setCurrentTabDragRegions([{ x: 0, y: 0, w: 0, h: 0 }]).catch(() => {});
+    return;
+  }
+  await nextTick();
+  const toolbar = toolbarRef.value;
+  const toolbarRect = toolbar?.getBoundingClientRect?.();
+  if (!toolbarRect) return;
+  const noDragRects = Array.from(toolbar.querySelectorAll('.no-drag'))
+    .map((element) => element.getBoundingClientRect());
+  const regions = buildDragRegions({ toolbarRect, noDragRects, padding: 2 });
+  await projectService.setCurrentTabDragRegions(regions).catch(() => {});
+};
+
 onMounted(async () => {
   document.documentElement.style.background = 'transparent';
   document.body.style.background = 'transparent';
-  await nextTick();
-  const dragRect = dragHandle.value?.getBoundingClientRect();
-  if (dragRect) {
-    await projectService.setDragRegions(
-      '',
-      Math.floor(dragRect.x),
-      Math.floor(dragRect.y),
-      Math.floor(dragRect.width),
-      Math.floor(dragRect.height),
-    ).catch(() => {});
-  }
+  await syncDragRegions();
   try {
     await loadCamera();
     syncViewportUiMode();
@@ -496,6 +493,7 @@ onMounted(async () => {
     errorText.value = error.message;
   }
   window.addEventListener('resize', scheduleWindowSizeSync);
+  window.addEventListener('resize', syncDragRegions);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
   animationFrame = requestAnimationFrame(movementFrame);
@@ -505,6 +503,7 @@ onBeforeUnmount(() => {
   cancelAnimationFrame(animationFrame);
   window.clearTimeout(resizeTimer);
   window.removeEventListener('resize', scheduleWindowSizeSync);
+  window.removeEventListener('resize', syncDragRegions);
   window.removeEventListener('keydown', onKeyDown);
   window.removeEventListener('keyup', onKeyUp);
 });

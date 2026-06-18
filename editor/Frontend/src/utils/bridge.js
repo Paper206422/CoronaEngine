@@ -194,6 +194,12 @@ export const projectService = {
       tabId: null,
       regions: [{ x, y, w, h }],
     }),
+  setCurrentTabDragRegions: (regions) =>
+    Bridge.callDockCommand({
+      cmd: 'setDragRegions',
+      tabId: null,
+      regions: Array.isArray(regions) ? regions : [],
+    }),
 };
 
 export const appService = {
