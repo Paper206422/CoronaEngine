@@ -241,4 +241,45 @@ std::vector<CameraReleaseCommand> SharedDataHub::drain_camera_releases() {
     }
     return releases;
 }
+
+void SharedDataHub::set_viewport_ui_mode(std::uintptr_t camera_handle, ViewportUiMode mode) {
+    if (camera_handle == 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(viewport_ui_mutex_);
+    auto& state = viewport_ui_states_[camera_handle];
+    state.camera_handle = camera_handle;
+    state.mode = mode;
+}
+
+ViewportUiState SharedDataHub::viewport_ui_state(std::uintptr_t camera_handle) const {
+    std::lock_guard<std::mutex> lock(viewport_ui_mutex_);
+    const auto it = viewport_ui_states_.find(camera_handle);
+    if (it != viewport_ui_states_.end()) {
+        return it->second;
+    }
+    ViewportUiState state;
+    state.camera_handle = camera_handle;
+    return state;
+}
+
+void SharedDataHub::enqueue_viewport_ui_pointer(ViewportUiPointerCommand command) {
+    if (command.camera_handle == 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(viewport_ui_mutex_);
+    command.sequence = ++viewport_ui_pointer_sequence_;
+    pending_viewport_ui_pointer_commands_.push_back(std::move(command));
+}
+
+std::vector<ViewportUiPointerCommand> SharedDataHub::drain_viewport_ui_pointer_commands() {
+    std::vector<ViewportUiPointerCommand> commands;
+    {
+        std::lock_guard<std::mutex> lock(viewport_ui_mutex_);
+        commands.swap(pending_viewport_ui_pointer_commands_);
+    }
+    return commands;
+}
 }  // namespace Corona

@@ -301,6 +301,48 @@ struct CameraReleaseCommand {
     std::uintptr_t actor_pick_handle{};
 };
 
+enum class ViewportUiMode : std::uint8_t {
+    Flat2D,
+    Stereo3D,
+};
+
+enum class ViewportUiCursorShape : std::uint8_t {
+    Arrow,
+    Hand,
+    Crosshair,
+    Grab,
+    Grabbing,
+    Hidden,
+};
+
+struct ViewportUiCalibration {
+    float lenticular_pitch{8.0f};
+    float slant_angle_radians{0.0f};
+    float phase_offset{0.0f};
+    std::array<float, 3> rgb_subpixel_offsets{0.0f, 1.0f / 3.0f, 2.0f / 3.0f};
+    std::uint32_t display_width{1920};
+    std::uint32_t display_height{1080};
+    float parallax_scale{0.0f};
+};
+
+struct ViewportUiState {
+    std::uintptr_t camera_handle{};
+    ViewportUiMode mode{ViewportUiMode::Flat2D};
+    ViewportUiCursorShape cursor_shape{ViewportUiCursorShape::Arrow};
+    ViewportUiCalibration calibration{};
+};
+
+struct ViewportUiPointerCommand {
+    std::uintptr_t camera_handle{};
+    std::string event_type;
+    float x{0.0f};
+    float y{0.0f};
+    std::uint32_t buttons{0};
+    std::uint32_t modifiers{0};
+    ViewportUiCursorShape cursor_shape{ViewportUiCursorShape::Arrow};
+    std::uint64_t sequence{};
+};
+
 struct EnvironmentDevice {
     ktm::fvec3 sun_position;
     std::uint32_t floor_grid_enabled{1};
@@ -428,6 +470,10 @@ class SharedDataHub {
     std::vector<CameraStateUpdateCommand> drain_camera_state_updates();
     void enqueue_camera_release(CameraReleaseCommand command);
     std::vector<CameraReleaseCommand> drain_camera_releases();
+    void set_viewport_ui_mode(std::uintptr_t camera_handle, ViewportUiMode mode);
+    [[nodiscard]] ViewportUiState viewport_ui_state(std::uintptr_t camera_handle) const;
+    void enqueue_viewport_ui_pointer(ViewportUiPointerCommand command);
+    std::vector<ViewportUiPointerCommand> drain_viewport_ui_pointer_commands();
 
    private:
     ModelResourceStorage model_resource_storage_;
@@ -459,6 +505,10 @@ class SharedDataHub {
     std::uint64_t camera_state_update_sequence_{0};
     std::mutex camera_release_mutex_;
     std::vector<CameraReleaseCommand> pending_camera_releases_;
+    mutable std::mutex viewport_ui_mutex_;
+    std::unordered_map<std::uintptr_t, ViewportUiState> viewport_ui_states_;
+    std::vector<ViewportUiPointerCommand> pending_viewport_ui_pointer_commands_;
+    std::uint64_t viewport_ui_pointer_sequence_{0};
 };
 
 }  // namespace Corona

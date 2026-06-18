@@ -9,7 +9,6 @@
 #include "cef_client.h"
 #include "corona/kernel/core/i_logger.h"
 #include "corona/systems/ui/camera_viewport_manager.h"
-#include "corona/systems/ui/viewport_gizmo_manager.h"
 
 namespace fs = std::filesystem;
 
@@ -193,9 +192,6 @@ void BrowserManager::remove_tab(int tab_id) {
 
     BrowserTab* tab = tabs_[tab_id].get();
     if (tab->camera_view) {
-        if (auto record = CameraViewportManager::instance().find_by_tab(tab_id)) {
-            ViewportGizmoManager::instance().clear_camera(record->camera_handle);
-        }
         CameraViewportManager::instance().unregister_view(
             tab_id, tab->preserve_camera_open_on_close);
     }

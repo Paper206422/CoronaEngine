@@ -1,10 +1,8 @@
 #include "browser_ui.h"
 
 #include <corona/systems/ui/camera_viewport_manager.h>
-#include <corona/systems/ui/viewport_gizmo_manager.h>
 
 #include <SDL3/SDL.h>
-#include <nlohmann/json.hpp>
 
 #include <cstdlib>
 #include <cstdint>
@@ -261,46 +259,6 @@ void BrowserInputHandler::send_key_events_to_browser(const CefRefPtr<CefBrowser>
 static MouseUtils::MouseStateManager mouse_state;
 
 namespace {
-
-void emit_native_viewport_gizmo_events(BrowserTab* tab) {
-    if (!tab || !tab->client) {
-        return;
-    }
-    const auto browser = tab->client->GetBrowser();
-    if (!browser) {
-        return;
-    }
-    const auto frame = browser->GetMainFrame();
-    if (!frame) {
-        return;
-    }
-
-    auto emit_json_event = [&](const char* event_name, const nlohmann::json& payload) {
-        const std::string script =
-            std::string("window.__coronaEmit && window.__coronaEmit(") +
-            nlohmann::json(event_name).dump() + "," + payload.dump() + ");";
-        frame->ExecuteJavaScript(script, frame->GetURL(), 0);
-    };
-
-    for (const auto& event : ViewportGizmoManager::instance().drain_selection_events()) {
-        nlohmann::json payload;
-        payload["sceneId"] = event.scene_id;
-        payload["cameraHandle"] = static_cast<std::uint64_t>(event.camera_handle);
-        payload["actorHandle"] = static_cast<std::uint64_t>(event.actor_handle);
-        emit_json_event("native-gizmo-selection", payload);
-    }
-
-    for (const auto& event : ViewportGizmoManager::instance().drain_transform_events()) {
-        nlohmann::json payload;
-        payload["sceneId"] = event.scene_id;
-        payload["cameraHandle"] = static_cast<std::uint64_t>(event.camera_handle);
-        payload["actorHandle"] = static_cast<std::uint64_t>(event.actor_handle);
-        payload["transform"]["position"] = {event.position[0], event.position[1], event.position[2]};
-        payload["transform"]["rotation"] = {event.rotation[0], event.rotation[1], event.rotation[2]};
-        payload["transform"]["scale"] = {event.scale[0], event.scale[1], event.scale[2]};
-        emit_json_event("native-gizmo-transform", payload);
-    }
-}
 
 SDL_Window* sdl_window_from_viewport(ImGuiViewport* viewport) {
     if (!viewport || !viewport->PlatformHandle) {
@@ -616,38 +574,13 @@ void BrowserRenderer::render_single_tab(int tab_id,
         }
         // -------------------------------------------------------------
 
-        const ImVec2 image_origin = ImGui::GetCursorScreenPos();
-        bool viewport_gizmo_captures_mouse = false;
-
         // 渲染浏览器纹理
         if (is_valid_texture_id(tab->texture_id)) {
             ImGui::Image(tab->texture_id, avail_size);
         }
 
-        if (tab->camera_view) {
-            if (auto record = CameraViewportManager::instance().find_by_tab(tab_id)) {
-                viewport_gizmo_captures_mouse = ViewportGizmoManager::instance().render(
-                    record->scene_id,
-                    record->camera_handle,
-                    image_origin,
-                    avail_size,
-                    ImGui::GetWindowDrawList());
-            }
-        } else if (is_main_tab) {
-            const auto selected_camera = ViewportGizmoManager::instance().selected_camera_handle();
-            if (selected_camera != 0) {
-                viewport_gizmo_captures_mouse = ViewportGizmoManager::instance().render(
-                    std::string{},
-                    selected_camera,
-                    image_origin,
-                    avail_size,
-                    ImGui::GetWindowDrawList());
-            }
-            emit_native_viewport_gizmo_events(tab);
-        }
-
         // 仅当未拖拽时传递鼠标事件给浏览器
-        if (!tab->dragging_window && !viewport_gizmo_captures_mouse) {
+        if (!tab->dragging_window) {
             handle_browser_mouse_events(tab, tab_id, active_tab_id, url_input_active_tab, io);
         }
     }
