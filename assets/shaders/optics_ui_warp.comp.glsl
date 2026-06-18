@@ -20,7 +20,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 float wrapPhaseCentered(float phase)
 {
     float wrapped = fract(phase);
-    return wrapped >= 0.5 ? wrapped - 1.0 : wrapped;
+    return 2.0 * wrapped - 1.0;
 }
 
 float channelSample(int channel, ivec2 pos)
@@ -28,7 +28,7 @@ float channelSample(int channel, ivec2 pos)
     float rgbOffset = pushConsts.rgbSubpixelOffsets[channel];
     float pitch = max(abs(pushConsts.lenticularPitch), 1.0e-5);
     float phaseAccumulator =
-        (float(pos.x) + pushConsts.slant * float(pos.y) + rgbOffset) / pitch +
+        (float(pos.x) + rgbOffset - pushConsts.slant * float(pos.y)) / pitch +
         pushConsts.phaseOffset;
     float phase = wrapPhaseCentered(phaseAccumulator);
     float sampleX = float(pos.x) + phase * pushConsts.parallaxScale;

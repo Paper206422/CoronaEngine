@@ -6,9 +6,13 @@ import {
   wrapPhaseCentered,
 } from './viewportUiWarp.js';
 
-assert.equal(wrapPhaseCentered(0.0), 0.0);
-assert.equal(wrapPhaseCentered(0.5), -0.5);
-assert.equal(wrapPhaseCentered(-0.75), 0.25);
+const assertNear = (actual, expected, epsilon = 1e-9) => {
+  assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} ~= ${expected}`);
+};
+
+assert.equal(wrapPhaseCentered(0.0), -1.0);
+assert.equal(wrapPhaseCentered(0.5), 0.0);
+assert.equal(wrapPhaseCentered(-0.75), -0.5);
 
 const calibration = normalizeLfdCalibration({
   lenticularPitch: 8,
@@ -38,6 +42,9 @@ const green = computeLfdUiWarpSample({
 assert.notEqual(red.phase, green.phase);
 assert.notEqual(red.sampleX, green.sampleX);
 assert.equal(red.sampleY, green.sampleY);
+assertNear(green.phaseAccumulator, (32 - 0.25 * 16) / 8 + 0.1);
+assertNear(green.phase, 0.2);
+assertNear(green.sampleX, 12.2);
 
 const flat = computeLfdUiWarpSample({
   pixelX: 32,

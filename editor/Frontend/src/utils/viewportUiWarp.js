@@ -1,14 +1,14 @@
 const DEFAULT_CALIBRATION = Object.freeze({
-  lenticularPitch: 8,
-  slantAngleRadians: 0,
-  phaseOffset: 0,
+  lenticularPitch: 19.1849,
+  slantAngleRadians: 0.2333,
+  phaseOffset: 10,
   rgbSubpixelOffsets: [0, 1 / 3, 2 / 3],
   parallaxScale: 0,
 });
 
 export const wrapPhaseCentered = (phase) => {
   const wrapped = phase - Math.floor(phase);
-  return wrapped >= 0.5 ? wrapped - 1.0 : wrapped;
+  return 2 * wrapped - 1;
 };
 
 export const normalizeLfdCalibration = (calibration = {}) => {
@@ -39,7 +39,7 @@ export const computeLfdUiWarpSample = ({
   const clampedChannel = Math.max(0, Math.min(2, Math.trunc(channel)));
   const slope = Math.tan(cal.slantAngleRadians);
   const phaseAccumulator =
-    (Number(pixelX) + slope * Number(pixelY) + cal.rgbSubpixelOffsets[clampedChannel]) /
+    (Number(pixelX) + cal.rgbSubpixelOffsets[clampedChannel] - slope * Number(pixelY)) /
       cal.lenticularPitch +
     cal.phaseOffset;
   const phase = wrapPhaseCentered(phaseAccumulator);

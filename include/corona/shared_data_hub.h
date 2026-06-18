@@ -316,9 +316,9 @@ enum class ViewportUiCursorShape : std::uint8_t {
 };
 
 struct ViewportUiCalibration {
-    float lenticular_pitch{8.0f};
-    float slant_angle_radians{0.0f};
-    float phase_offset{0.0f};
+    float lenticular_pitch{19.1849f};
+    float slant_angle_radians{0.2333f};
+    float phase_offset{10.0f};
     std::array<float, 3> rgb_subpixel_offsets{0.0f, 1.0f / 3.0f, 2.0f / 3.0f};
     std::uint32_t display_width{1920};
     std::uint32_t display_height{1080};
