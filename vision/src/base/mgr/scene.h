@@ -113,6 +113,7 @@ public:
 
     // Geometry
     OC_MAKE_MEMBER_GETTER(geometry, &)
+    void bind_geometry_gpu_resource(SP<GeometryGpuResource> resource) noexcept;
     void update_geometry_instances() noexcept { geometry_.update_instances(instances_); }
 
     // Shapes
@@ -146,6 +147,7 @@ public:
     TLight load_light(const LightDesc &desc) noexcept;
 
     // Instances
+    void register_instance_meshes() noexcept;
     void fill_instances();
     [[nodiscard]] ShapeInstance *get_instance(uint id) noexcept { return instances_[id].get(); }
     [[nodiscard]] const ShapeInstance *get_instance(uint id) const noexcept { return instances_[id].get(); }

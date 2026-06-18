@@ -66,7 +66,6 @@ public:
         for (int i = 0; i < P.size(); ++i) {
             mesh.vertices().emplace_back(P[i], N[i], UVs[i]);
         }
-        mesh.update_data();
         add_instance(ShapeInstance(std::move(mesh)));
     }
 };

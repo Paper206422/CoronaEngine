@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string_view>
 #include <unordered_map>
 
@@ -10,6 +11,8 @@ namespace {
 
 using Corona::Systems::Vision::VisionOwnershipAuditEntry;
 using Corona::Systems::Vision::VisionPipelineSource;
+using Corona::Systems::Vision::VisionLogicalInstanceKey;
+using Corona::Systems::Vision::VisionLogicalInstanceRecord;
 using Corona::Systems::Vision::VisionResourceOwnership;
 using Corona::Systems::Vision::VisionSceneResource;
 using Corona::Systems::Vision::VisionSceneResourceKey;
@@ -43,9 +46,9 @@ void ownership_audit_covers_phase4_required_dependencies() {
     expect(audit_contains("Scene::geometry_",
                           VisionResourceOwnership::SharedSceneGpu),
            "Phase 4 audit should cover Scene::geometry_ as shared scene GPU");
-    expect(audit_contains("Geometry::rp_",
-                          VisionResourceOwnership::LegacyPipelineOwned),
-           "Phase 4 audit should cover Geometry::rp_ legacy pipeline dependency");
+    expect(audit_contains("Geometry::gpu_resource_",
+                          VisionResourceOwnership::SharedSceneGpu),
+           "Phase 4 audit should cover Geometry::gpu_resource_ as shared scene GPU");
     expect(audit_contains("FrameBuffer and denoiser state",
                           VisionResourceOwnership::PerPipelineRenderState),
            "Phase 4 audit should keep framebuffer and denoiser per pipeline");
@@ -82,12 +85,109 @@ void transform_state_lives_on_scene_resource() {
            "external_live source should be visible from scene resource");
 
     resource.external_live_transform_signatures.emplace(42u, 100u);
+    expect(!resource.scene_gpu_needs_transform_upload(),
+           "fresh scene resource should not need a transform upload");
     resource.mark_transforms_changed();
 
     expect(resource.logical_transform_version == 1u,
            "scene resource transform version should increment on shared transform update");
+    expect(resource.scene_gpu_needs_transform_upload(),
+           "scene GPU resource should lag after a shared transform update");
+    resource.mark_scene_gpu_transforms_uploaded();
+    expect(!resource.scene_gpu_needs_transform_upload(),
+           "scene GPU resource should be marked current after upload");
+    expect(resource.scene_gpu_transform_version == resource.logical_transform_version,
+           "scene GPU transform version should match logical version after upload");
     expect(resource.external_live_transform_signatures.at(42u) == 100u,
            "external_live transform signature cache should live on scene resource");
+}
+
+void scene_gpu_resource_lives_on_scene_resource() {
+    VisionSceneResource resource;
+    expect(!resource.has_scene_gpu_resource(),
+           "fresh scene resource should not own a scene GPU resource");
+    expect(resource.scene_gpu_resource_identity() == 0u,
+           "fresh scene resource GPU resource identity should be empty");
+
+    auto* fake_gpu_resource =
+        reinterpret_cast<::vision::GeometryGpuResource*>(0x1000);
+    std::shared_ptr<::vision::GeometryGpuResource> shared_gpu_resource(
+        fake_gpu_resource,
+        [](::vision::GeometryGpuResource*) {});
+    resource.set_scene_gpu_resource(shared_gpu_resource);
+
+    expect(resource.has_scene_gpu_resource(),
+           "scene GPU resource should be stored on VisionSceneResource");
+    expect(resource.scene_gpu_resource_identity() ==
+               reinterpret_cast<std::uintptr_t>(fake_gpu_resource),
+           "scene GPU resource identity should be the shared resource pointer");
+    expect(resource.scene_gpu_resource == shared_gpu_resource,
+           "scene GPU resource should reuse the supplied shared pointer");
+
+    resource.set_scene_gpu_resource({});
+    expect(!resource.has_scene_gpu_resource(),
+           "scene GPU resource should be clearable when the scene resource is released");
+}
+
+void scene_gpu_resource_is_created_once_per_scene_resource() {
+    VisionSceneResource resource;
+    int factory_calls = 0;
+    auto* fake_gpu_resource =
+        reinterpret_cast<::vision::GeometryGpuResource*>(0x2000);
+    auto factory = [&]() {
+        ++factory_calls;
+        return std::shared_ptr<::vision::GeometryGpuResource>(
+            fake_gpu_resource,
+            [](::vision::GeometryGpuResource*) {});
+    };
+
+    auto first = resource.ensure_scene_gpu_resource(factory);
+    auto second = resource.ensure_scene_gpu_resource(factory);
+
+    expect(factory_calls == 1,
+           "scene GPU resource factory should run only once per VisionSceneResource");
+    expect(first == second,
+           "same VisionSceneResource should return the same scene GPU resource");
+    expect(resource.scene_gpu_resource == first,
+           "VisionSceneResource should retain the shared scene GPU resource");
+}
+
+void logical_instance_identity_is_shared_per_scene_resource() {
+    VisionSceneResource resource;
+    VisionLogicalInstanceRecord first{
+        .key = VisionLogicalInstanceKey{.shape_index = 2, .instance_index = 0},
+        .actor_handle = 11u,
+        .transform_signature = 100u,
+        .object_to_world = {1.f, 0.f, 0.f, 0.f,
+                            0.f, 1.f, 0.f, 0.f,
+                            0.f, 0.f, 1.f, 0.f,
+                            0.f, 0.f, 0.f, 1.f},
+    };
+    VisionLogicalInstanceRecord updated = first;
+    updated.actor_handle = 12u;
+    updated.transform_signature = 200u;
+    updated.object_to_world[12] = 4.f;
+
+    expect(resource.upsert_logical_instance(first),
+           "first logical instance insert should report a change");
+    expect(resource.logical_instance_count() == 1u,
+           "logical instance list should contain one identity after insert");
+    expect(resource.upsert_logical_instance(updated),
+           "same logical instance key with changed data should update in place");
+    expect(resource.logical_instance_count() == 1u,
+           "same shape/instance key must not create duplicate logical identity");
+
+    const auto* record = resource.find_logical_instance(first.key);
+    expect(record != nullptr,
+           "updated logical instance should be findable by stable key");
+    expect(record->actor_handle == 12u,
+           "logical instance update should replace actor binding data");
+    expect(record->transform_signature == 200u,
+           "logical instance update should replace transform signature");
+    expect(record->object_to_world[12] == 4.f,
+           "logical instance update should replace CPU transform data");
+    expect(!resource.upsert_logical_instance(updated),
+           "upserting identical logical instance data should report no change");
 }
 
 void ownership_names_are_stable() {
@@ -109,6 +209,9 @@ int main() {
     ownership_audit_covers_phase4_required_dependencies();
     scene_resource_key_is_mode_independent();
     transform_state_lives_on_scene_resource();
+    scene_gpu_resource_lives_on_scene_resource();
+    scene_gpu_resource_is_created_once_per_scene_resource();
+    logical_instance_identity_is_shared_per_scene_resource();
     ownership_names_are_stable();
     return 0;
 }

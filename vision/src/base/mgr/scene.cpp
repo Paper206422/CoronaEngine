@@ -113,6 +113,7 @@ void Scene::init(const SceneDesc &scene_desc) {
 
 void Scene::prepare() noexcept {
     material_registry().remove_unused_elements();
+    register_instance_meshes();
     tidy_up();
     fill_instances();
     sensor()->prepare();
@@ -129,7 +130,9 @@ void Scene::update_runtime_object(const vision::IObjectConstructor *constructor)
 void Scene::tidy_up() noexcept {
     material_registry().tidy_up();
     medium_registry_->tidy_up();
-    geometry_.data()->tidy_up_meshes();
+    if (auto *data = geometry_.data()) {
+        data->tidy_up_meshes();
+    }
     light_manager().tidy_up();
     OC_INFO_FORMAT("This scene contains {} material types with {} material instances",
                    materials().topology_num(),
@@ -200,6 +203,31 @@ void Scene::add_shape(const SP<vision::ShapeGroup> &group, ShapeDesc desc) {
         }
         instances_.push_back(instance);
     });
+}
+
+void Scene::bind_geometry_gpu_resource(SP<GeometryGpuResource> resource) noexcept {
+    if (!resource) {
+        return;
+    }
+    geometry_.bind_gpu_resource(ocarina::move(resource));
+    register_instance_meshes();
+    fill_instances();
+}
+
+void Scene::register_instance_meshes() noexcept {
+    auto *data = geometry_.data();
+    if (!data) {
+        return;
+    }
+    for (auto &instance : instances_) {
+        if (!instance || !instance->mesh()) {
+            continue;
+        }
+        auto mesh = data->register_mesh(instance->mesh());
+        instance->set_mesh(ocarina::move(mesh));
+        instance->fill_mesh_id();
+    }
+    data->tidy_up_meshes();
 }
 
 void Scene::clear_shapes() noexcept {

@@ -34,8 +34,8 @@ struct VisionBuildResult {
 //     a PrincipledBSDF material mapped from the corresponding OpticsDevice.
 //   - Adds it to the Vision scene via a ShapeGroup.
 //
-// After this call, caller must invoke:
-//   pipeline->geometry()->build_accel() / upload()
+// After this call, caller must invoke Pipeline::prepare_geometry(), which
+// uploads the shared scene GPU buffers and builds the acceleration structure.
 //
 // Returns a VisionBuildResult describing how many instances were added and
 // whether any candidate objects were skipped due to missing mesh data.

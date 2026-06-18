@@ -7,8 +7,6 @@
 #include <utility>
 #include "base/scattering/material.h"
 #include "math/transform.h"
-#include "base/mgr/pipeline.h"
-#include "base/mgr/global.h"
 
 namespace vision {
 using namespace ocarina;
@@ -17,7 +15,7 @@ ShapeInstance::ShapeInstance(SP<vision::Mesh> mesh)
     : mesh_(ocarina::move(mesh)) {}
 
 ShapeInstance::ShapeInstance(vision::Mesh mesh)
-    : mesh_(Toolkit::geometry_data()->register_mesh(ocarina::move(mesh))) {}
+    : mesh_(make_shared<Mesh>(ocarina::move(mesh))) {}
 
 void ShapeInstance::fill_mesh_id() noexcept {
     handle_.mesh_id = mesh_->index();
@@ -85,9 +83,7 @@ Box3f ShapeInstance::compute_aabb() const noexcept {
     return box;
 }
 
-GPUMesh::GPUMesh(ocarina::uint vert_num, ocarina::uint tri_num) noexcept {
-    update_data(vert_num, tri_num);
-}
+GPUMesh::GPUMesh(ocarina::uint, ocarina::uint) noexcept {}
 
 GPUMesh::GPUMesh(vision::GPUMesh &&other) noexcept
     : triangle_buffer_(std::move(other.triangle_buffer_)),
@@ -101,16 +97,16 @@ GPUMesh &GPUMesh::operator=(vision::GPUMesh &&other) noexcept {
     return *this;
 }
 
-GPUMesh::GPUMesh(const vector<Vertex> &vert,
-                 const vector<Triangle> &triangles) noexcept
-    : GPUMesh(vert.size(), triangles.size()) {}
+GPUMesh::GPUMesh(const vector<Vertex> &,
+                 const vector<Triangle> &) noexcept
+    : GPUMesh() {}
 
-void GPUMesh::update_data(ocarina::uint vert_num, ocarina::uint tri_num) noexcept {
-    auto ppl = Global::instance().pipeline();
-    auto v_buffer = ppl->device().create_buffer<Vertex>(vert_num, "GPUMesh::vertex_buffer_");
-    auto t_buffer = ppl->device().create_buffer<Triangle>(tri_num, "GPUMesh::triangle_buffer_");
-    vertex_buffer_.set_bindless_array(ppl->bindless_array());
-    triangle_buffer_.set_bindless_array(ppl->bindless_array());
+void GPUMesh::update_data(Device &device, BindlessArray &bindless,
+                          ocarina::uint vert_num, ocarina::uint tri_num) noexcept {
+    auto v_buffer = device.create_buffer<Vertex>(vert_num, "GPUMesh::vertex_buffer_");
+    auto t_buffer = device.create_buffer<Triangle>(tri_num, "GPUMesh::triangle_buffer_");
+    vertex_buffer_.set_bindless_array(bindless);
+    triangle_buffer_.set_bindless_array(bindless);
     vertex_buffer_.update_buffer(std::move(v_buffer));
     triangle_buffer_.update_buffer(std::move(t_buffer));
 }
@@ -179,8 +175,8 @@ CommandBatch Mesh::upload() noexcept {
     return ret;
 }
 
-void Mesh::update_data() noexcept {
-    GPUMesh::update_data(vertices_.size(), triangles_.size());
+void Mesh::update_data(Device &device, BindlessArray &bindless) noexcept {
+    GPUMesh::update_data(device, bindless, vertices_.size(), triangles_.size());
 }
 
 Box3f Mesh::compute_aabb() const noexcept {

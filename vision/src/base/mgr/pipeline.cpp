@@ -27,9 +27,7 @@ Pipeline::Pipeline(const vision::PipelineDesc &desc)
     : Node(desc),
       device_(&Global::instance().device()),
       stream_(device().create_stream()),
-      bindless_array_(device().create_bindless_array()) {
-    scene_.geometry_.init(this);
-}
+      bindless_array_(device().create_bindless_array()) {}
 
 void Pipeline::initialize_(const vision::NodeDesc &node_desc) noexcept {
     const Desc &desc = static_cast<const Desc &>(node_desc);
@@ -139,6 +137,9 @@ void Pipeline::sync_output_denoise() noexcept {
 }
 
 void Pipeline::prepare() noexcept {
+    if (!scene_.geometry_.has_gpu_resource()) {
+        scene_.geometry_.init(device());
+    }
     renderer().frame_buffer()->prepare();
 }
 
@@ -228,14 +229,16 @@ void Pipeline::change_resolution(uint2 res) noexcept {
 void Pipeline::prepare_geometry() noexcept {
     scene_.update_geometry_instances();
     scene_.geometry_.reset_device_buffer();
-    scene_.geometry_.upload();
-    scene_.geometry_.build_accel();
+    scene_.geometry_.upload(stream());
+    scene_.geometry_.build_accel(stream());
+    scene_.geometry_.upload_bindless_array(stream());
 }
 
 void Pipeline::update_geometry() noexcept {
     scene_.update_geometry_instances();
-    scene_.geometry_.upload();
-    scene_.geometry_.update_accel();
+    scene_.geometry_.upload(stream());
+    scene_.geometry_.update_accel(stream());
+    scene_.geometry_.upload_bindless_array(stream());
 }
 
 void Pipeline::clear_geometry() noexcept {
