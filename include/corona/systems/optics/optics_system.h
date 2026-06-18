@@ -5,6 +5,7 @@
 #include <corona/kernel/event/i_event_bus.h>
 #include <corona/kernel/event/i_event_stream.h>
 #include <corona/kernel/system/system_base.h>
+#include <corona/shared_data_hub.h>
 
 #include <cstdint>
 #include <memory>
@@ -109,7 +110,9 @@ class OpticsSystem : public Kernel::SystemBase {
 
     /// 从磁盘 .json 导入一个 Vision 场景并带到可渲染状态（替换全局
     /// renderPipeline）。失败返回 false 且不改动现有 pipeline。
-    bool load_external_vision_scene(const std::string& scene_path);
+    bool load_external_vision_scene(const std::string& scene_path,
+                                    Corona::CameraVisionRenderMode mode);
+    void apply_vision_render_mode(Corona::CameraVisionRenderMode mode);
 
     /// 计算当前 SharedDataHub 场景的轻量签名，用于检测动态变化
     /// （几何拓扑 / transform / 材质参数 / materialColor / visible）。
@@ -131,6 +134,9 @@ class OpticsSystem : public Kernel::SystemBase {
     void sync_external_live_vision_transforms();
 
     std::string current_vision_scene_path_;
+    Corona::CameraVisionRenderMode current_vision_render_mode_{
+        Corona::CameraVisionRenderMode::PathTracing};
+    std::size_t last_vision_mode_conflict_signature_{0};
     std::unordered_map<std::uintptr_t, std::size_t> external_live_transform_signatures_;
 #endif  // CORONA_ENABLE_VISION
     struct ActorPickRequest {

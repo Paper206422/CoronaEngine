@@ -25,6 +25,7 @@ class FakeEngineCamera:
         self.height = 1080
         self.output_mode = "final_color"
         self.render_backend = "native"
+        self.vision_render_mode = "path_tracing"
         self.view_state = (False, 120, 120, 960, 540, 1.0)
         self.surface = 0
         self.handle = FakeEngineCamera._next_handle
@@ -60,6 +61,12 @@ class FakeEngineCamera:
 
     def set_render_backend(self, mode):
         self.render_backend = mode
+
+    def set_vision_render_mode(self, mode):
+        self.vision_render_mode = mode
+
+    def get_vision_render_mode(self):
+        return self.vision_render_mode
 
     def set_view_state(self, open_, x, y, width, height, move_speed):
         self.view_state = (bool(open_), int(x), int(y), int(width), int(height), float(move_speed))
@@ -141,9 +148,18 @@ class VisionRenderModePhase1Tests(unittest.TestCase):
             camera.set_vision_render_mode("SVGF")
 
             self.assertEqual(camera.get_vision_render_mode(), "svgf")
+            self.assertEqual(camera.engine_obj.get_vision_render_mode(), "svgf")
             self.assertEqual(camera.to_dict()["vision_render_mode"], "svgf")
             with self.assertRaises(ValueError):
                 camera.set_vision_render_mode("oidn")
+
+    def test_camera_constructor_syncs_vision_render_mode_to_engine(self):
+        fake_engine = self._fake_engine()
+        with patch.object(camera_module, "CoronaEngine", fake_engine):
+            camera = camera_module.Camera(render_backend="vision", vision_render_mode="SSAT")
+
+            self.assertEqual(camera.get_vision_render_mode(), "ssat")
+            self.assertEqual(camera.engine_obj.get_vision_render_mode(), "ssat")
 
     def test_scene_save_and_load_preserves_per_camera_vision_render_modes(self):
         fake_engine = self._fake_engine()

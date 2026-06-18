@@ -51,6 +51,9 @@ include(corona_cef)
 # Testing Support
 # ------------------------------------------------------------------------------
 include(CTest)
+if(BUILD_CORONA_TESTING)
+    enable_testing()
+endif()
 
 # ------------------------------------------------------------------------------
 # Subdirectories

@@ -29,8 +29,8 @@
 //#define CORONA_VISION_IMPORT_DEMO
 
 #ifdef CORONA_ENABLE_VISION
-#include "base/import/importer.h"
 #include "base/import/parameter_set.h"
+#include "base/import/json_util.h"
 #include "base/import/project_desc.h"
 #include "base/mgr/global.h"
 #include "base/mgr/pipeline.h"
@@ -42,6 +42,7 @@
 #include "vision/vision_geometry_adapter.h"
 #include "vision/vision_camera_adapter.h"
 #include "vision/vision_light_adapter.h"
+#include "vision/vision_render_mode_config.h"
 #include "vision/vision_zero_copy_bridge.h"
 #endif
 
@@ -306,6 +307,10 @@ void apply_pending_camera_state_updates() {
                 camera->render_backend = update.render_backend;
             }
             if (Corona::has_camera_state_field(
+                    update.fields, Corona::CameraStateUpdateField::VisionRenderMode)) {
+                camera->vision_render_mode = update.vision_render_mode;
+            }
+            if (Corona::has_camera_state_field(
                     update.fields, Corona::CameraStateUpdateField::ViewState)) {
                 camera->view_open = update.view_open;
                 camera->view_x = update.view_x;
@@ -568,6 +573,62 @@ std::unordered_set<std::uintptr_t> retainedVisionContexts;
     return scene.camera_handles.empty() ? 0 : scene.camera_handles.front();
 }
 
+struct VisionModeSelection {
+    bool has_visible_camera{false};
+    Corona::CameraVisionRenderMode mode{Corona::CameraVisionRenderMode::PathTracing};
+    std::uintptr_t selected_camera{0};
+    bool conflict{false};
+    std::size_t conflict_signature{0};
+    std::string conflict_summary;
+};
+
+[[nodiscard]] VisionModeSelection select_visible_vision_render_mode() {
+    VisionModeSelection selection;
+    std::hash<std::string> hash_string;
+    std::string signature_source;
+
+    for (const auto& scene : Corona::SharedDataHub::instance().scene_storage()) {
+        if (!scene.enabled) continue;
+        for (const auto camera_handle : scene.camera_handles) {
+            auto camera =
+                Corona::SharedDataHub::instance().camera_storage().try_acquire_read(camera_handle);
+            if (!camera || camera->render_backend != Corona::CameraRenderBackend::Vision ||
+                camera->surface == nullptr) {
+                continue;
+            }
+
+            const auto mode = camera->vision_render_mode;
+            if (!selection.has_visible_camera) {
+                selection.has_visible_camera = true;
+                selection.mode = mode;
+                selection.selected_camera = camera_handle;
+            } else if (mode != selection.mode) {
+                selection.conflict = true;
+            }
+
+            if (!signature_source.empty()) {
+                signature_source.push_back(';');
+            }
+            signature_source.append(std::to_string(camera_handle));
+            signature_source.push_back('=');
+            signature_source.append(
+                std::string(Corona::Systems::Vision::vision_render_mode_name(mode)));
+
+            if (!selection.conflict_summary.empty()) {
+                selection.conflict_summary.append(", ");
+            }
+            selection.conflict_summary.append("camera ");
+            selection.conflict_summary.append(std::to_string(camera_handle));
+            selection.conflict_summary.append("=");
+            selection.conflict_summary.append(
+                std::string(Corona::Systems::Vision::vision_render_mode_name(mode)));
+        }
+    }
+
+    selection.conflict_signature = hash_string(signature_source);
+    return selection;
+}
+
 void log_vision_pipeline_diagnostics(vision::Pipeline& pipeline,
                                      const std::string& label) {
     auto* fb = pipeline.frame_buffer();
@@ -623,26 +684,41 @@ void log_vision_pipeline_diagnostics(vision::Pipeline& pipeline,
 // Resolves relative texture/mesh references against the scene's own folder.
 // Returns an empty pointer if the file is missing or import fails so the caller
 // can skip without crashing.
-[[nodiscard]] auto import_vision_scene_from_file(const std::filesystem::path& scene_path)
+[[nodiscard]] auto import_vision_scene_from_file(const std::filesystem::path& scene_path,
+                                                Corona::CameraVisionRenderMode mode)
     -> ocarina::SP<vision::Pipeline> {
     std::error_code ec;
     if (!std::filesystem::exists(scene_path, ec)) {
         CFW_LOG_ERROR("OpticsSystem: Vision scene not found: {}", scene_path.string());
         return {};
     }
+
+    auto project_data = vision::create_json_from_file(scene_path);
+    Corona::Systems::Vision::configure_vision_scene_for_mode(project_data, mode);
+
     // Resolve relative texture/mesh references against the scene's own folder.
-    vision::Global::instance().set_scene_path(scene_path.parent_path());
-    auto pipeline = vision::Importer::import_scene(scene_path);
+    const auto scene_folder = scene_path.parent_path();
+    vision::Global::instance().set_scene_path(scene_folder);
+
+    vision::ProjectDesc project_desc;
+    project_desc.scene_path = scene_folder;
+    project_desc.init(project_data);
+
+    auto pipeline = vision::Node::create_shared<vision::Pipeline>(project_desc.pipeline_desc);
     if (!pipeline) {
-        CFW_LOG_ERROR("OpticsSystem: Vision import_scene returned null for {}",
+        CFW_LOG_ERROR("OpticsSystem: Vision pipeline creation returned null for {}",
                       scene_path.string());
         return {};
     }
+    pipeline->init_project(project_desc);
+    pipeline->init_postprocessor(project_desc.renderer_desc.denoiser_desc);
     pipeline->init();
     pipeline->prepare();
     // prepare() does not create FrameBuffer::view_texture_; the render path tone
     // maps into it and we later read it back, so create it explicitly here.
     pipeline->frame_buffer()->prepare_view_texture();
+    pipeline->set_output_denoise(
+        Corona::Systems::Vision::vision_render_mode_uses_denoise(mode));
     return pipeline;
 }
 
@@ -2010,7 +2086,8 @@ bool OpticsSystem::init_vision_lazy() {
         // Verification demo: load a known-good scene straight from disk instead of
         // building the Vision scene from CoronaEngine data. This isolates the
         // Vision render path so we can confirm it produces a picture at all.
-        renderPipeline = import_vision_scene_from_file(std::filesystem::path{kVisionDemoScenePath});
+        renderPipeline = import_vision_scene_from_file(
+            std::filesystem::path{kVisionDemoScenePath}, current_vision_render_mode_);
         if (!renderPipeline) {
             CFW_LOG_ERROR("OpticsSystem: Vision demo pipeline import failed");
             return false;
@@ -2029,7 +2106,11 @@ bool OpticsSystem::init_vision_lazy() {
             }
         }
         if (pending_external_scene) {
-            if (!load_external_vision_scene(*pending_external_scene)) {
+            const auto mode_selection = select_visible_vision_render_mode();
+            const auto requested_mode = mode_selection.has_visible_camera
+                                            ? mode_selection.mode
+                                            : current_vision_render_mode_;
+            if (!load_external_vision_scene(*pending_external_scene, requested_mode)) {
                 CFW_LOG_ERROR("OpticsSystem: failed to initialize Vision from external scene: {}",
                               *pending_external_scene);
                 return false;
@@ -2128,23 +2209,26 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
     if (!renderPipeline) return;
 
 #ifndef CORONA_VISION_IMPORT_DEMO
-    bool has_visible_vision_camera = false;
-    for (const auto& scene : SharedDataHub::instance().scene_storage()) {
-        if (!scene.enabled) continue;
-        for (const auto camera_handle : scene.camera_handles) {
-            auto camera =
-                SharedDataHub::instance().camera_storage().try_acquire_read(camera_handle);
-            if (camera && camera->render_backend == CameraRenderBackend::Vision &&
-                camera->surface != nullptr) {
-                has_visible_vision_camera = true;
-                break;
-            }
+    const auto mode_selection = select_visible_vision_render_mode();
+    if (mode_selection.has_visible_camera) {
+        if (mode_selection.conflict &&
+            mode_selection.conflict_signature != last_vision_mode_conflict_signature_) {
+            last_vision_mode_conflict_signature_ = mode_selection.conflict_signature;
+            CFW_LOG_WARNING(
+                "OpticsSystem: multiple visible Vision cameras request different "
+                "render modes ({}); Phase 2 uses one global pipeline, so camera {} "
+                "mode '{}' is used for all Vision views this frame",
+                mode_selection.conflict_summary,
+                mode_selection.selected_camera,
+                std::string(Vision::vision_render_mode_name(mode_selection.mode)));
+        } else if (!mode_selection.conflict) {
+            last_vision_mode_conflict_signature_ = 0;
         }
-        if (has_visible_vision_camera) break;
+        apply_vision_render_mode(mode_selection.mode);
     }
-    if (has_visible_vision_camera && vision_scene_source_ == VisionSceneSource::EngineBuilt) {
+    if (mode_selection.has_visible_camera && vision_scene_source_ == VisionSceneSource::EngineBuilt) {
         sync_vision_dynamic_scene();
-    } else if (has_visible_vision_camera &&
+    } else if (mode_selection.has_visible_camera &&
                vision_scene_source_ == VisionSceneSource::ExternalLive) {
         sync_external_live_vision_transforms();
     }
@@ -2303,8 +2387,12 @@ void OpticsSystem::apply_pending_vision_scene_load() {
     }
 
     const std::string& path = *request;
+    const auto mode_selection = select_visible_vision_render_mode();
+    const auto requested_mode = mode_selection.has_visible_camera
+                                    ? mode_selection.mode
+                                    : current_vision_render_mode_;
     if (!path.empty()) {
-        if (load_external_vision_scene(path)) {
+        if (load_external_vision_scene(path, requested_mode)) {
             const bool external_live = has_external_live_bindings_for_scene(path);
             vision_scene_source_ =
                 external_live ? VisionSceneSource::ExternalLive : VisionSceneSource::ExternalFile;
@@ -2343,6 +2431,8 @@ void OpticsSystem::apply_pending_vision_scene_load() {
         Vision::setup_vision_lights(scene, env);
         pipeline->prepare();
         pipeline->frame_buffer()->prepare_view_texture();
+        pipeline->set_output_denoise(
+            Vision::vision_render_mode_uses_denoise(requested_mode));
 
         for (auto sd_it = SharedDataHub::instance().scene_storage().cbegin();
              sd_it != SharedDataHub::instance().scene_storage().cend(); ++sd_it) {
@@ -2365,25 +2455,82 @@ void OpticsSystem::apply_pending_vision_scene_load() {
         renderPipeline = std::move(pipeline);
         vision_scene_source_ = VisionSceneSource::EngineBuilt;
         current_vision_scene_path_.clear();
+        current_vision_render_mode_ = requested_mode;
         external_live_transform_signatures_.clear();
         vision_applied_signature_ = compute_vision_scene_signature();
         vision_pending_signature_ = vision_applied_signature_;
         vision_stable_frames_ = 0;
         vision_rebuild_retries_ = 0;
+        if (requested_mode != CameraVisionRenderMode::PathTracing) {
+            CFW_LOG_WARNING(
+                "OpticsSystem: engine-built Vision scene can only toggle denoise in "
+                "Phase 2; requested mode '{}' does not change framebuffer or denoiser type",
+                std::string(Vision::vision_render_mode_name(requested_mode)));
+        }
         CFW_LOG_INFO("OpticsSystem: restored engine-built Vision scene");
     } catch (const std::exception& e) {
         CFW_LOG_ERROR("OpticsSystem: restoring engine-built Vision scene failed: {}", e.what());
     }
 }
 
-bool OpticsSystem::load_external_vision_scene(const std::string& scene_path) {
+void OpticsSystem::apply_vision_render_mode(CameraVisionRenderMode mode) {
+    if (!renderPipeline) {
+        return;
+    }
+
+    if (mode == current_vision_render_mode_) {
+        renderPipeline->set_output_denoise(Vision::vision_render_mode_uses_denoise(mode));
+        return;
+    }
+
+    if (mode == CameraVisionRenderMode::PathTracing) {
+        renderPipeline->set_output_denoise(false);
+        current_vision_render_mode_ = mode;
+        log_vision_pipeline_diagnostics(
+            *renderPipeline,
+            std::string("mode switch ") + std::string(Vision::vision_render_mode_name(mode)));
+        return;
+    }
+
+    if (current_vision_scene_path_.empty()) {
+        renderPipeline->set_output_denoise(true);
+        current_vision_render_mode_ = mode;
+        CFW_LOG_WARNING(
+            "OpticsSystem: requested Vision mode '{}' on engine-built scene; "
+            "Phase 2 only toggles denoise without changing framebuffer or denoiser type",
+            std::string(Vision::vision_render_mode_name(mode)));
+        log_vision_pipeline_diagnostics(
+            *renderPipeline,
+            std::string("mode switch ") + std::string(Vision::vision_render_mode_name(mode)));
+        return;
+    }
+
+    const auto source_path = current_vision_scene_path_;
+    const auto source_type = vision_scene_source_;
+    if (!load_external_vision_scene(source_path, mode)) {
+        CFW_LOG_WARNING(
+            "OpticsSystem: failed to switch external Vision scene '{}' to mode '{}'; "
+            "continuing with previous pipeline mode '{}'",
+            source_path,
+            std::string(Vision::vision_render_mode_name(mode)),
+            std::string(Vision::vision_render_mode_name(current_vision_render_mode_)));
+        return;
+    }
+    vision_scene_source_ = source_type;
+}
+
+bool OpticsSystem::load_external_vision_scene(const std::string& scene_path,
+                                             CameraVisionRenderMode mode) {
     try {
-        auto pipeline = import_vision_scene_from_file(std::filesystem::u8path(scene_path));
+        auto pipeline = import_vision_scene_from_file(std::filesystem::u8path(scene_path), mode);
         if (!pipeline) {
             CFW_LOG_ERROR("OpticsSystem: External Vision scene import failed: {}", scene_path);
             return false;
         }
-        log_vision_pipeline_diagnostics(*pipeline, "external import");
+        log_vision_pipeline_diagnostics(
+            *pipeline,
+            std::string("external import mode=") +
+                std::string(Vision::vision_render_mode_name(mode)));
         // Replace only after a successful import so a bad path leaves the current
         // scene intact.
         if (renderPipeline) {
@@ -2394,6 +2541,7 @@ bool OpticsSystem::load_external_vision_scene(const std::string& scene_path) {
         retainedVisionContexts.clear();
         renderPipeline = std::move(pipeline);
         current_vision_scene_path_ = scene_path;
+        current_vision_render_mode_ = mode;
         external_live_transform_signatures_.clear();
         return true;
     } catch (const std::exception& e) {

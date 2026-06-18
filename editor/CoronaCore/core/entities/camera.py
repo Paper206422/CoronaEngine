@@ -83,6 +83,8 @@ class Camera:
         self.engine_obj.set_size(width, height)
         self.engine_obj.set_output_mode(output_mode)
         self.engine_obj.set_render_backend(render_backend)
+        if hasattr(self.engine_obj, 'set_vision_render_mode'):
+            self.engine_obj.set_vision_render_mode(self.vision_render_mode)
         self._flush_view_state()
         # 持有强引用，避免 ImageEffects 被 GC 后底层句柄被释放
         self._image_effects_ref = None
@@ -158,6 +160,8 @@ class Camera:
 
     def set_vision_render_mode(self, mode: str):
         self.vision_render_mode = normalize_vision_render_mode(mode)
+        if hasattr(self.engine_obj, 'set_vision_render_mode'):
+            self.engine_obj.set_vision_render_mode(self.vision_render_mode)
 
     def get_vision_render_mode(self) -> str:
         return self.vision_render_mode

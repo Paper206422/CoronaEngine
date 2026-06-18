@@ -65,6 +65,7 @@ bool Pipeline::create_view_context(uint64_t view_id, uint2 resolution) noexcept 
         scene_.sensor()->update_device_data();
         renderer().prepare(scene_);
         frame_buffer()->prepare_view_texture();
+        sync_output_denoise();
         compile();
         upload_bindless_array();
         invalidate();

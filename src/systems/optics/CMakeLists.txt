@@ -14,6 +14,8 @@ corona_add_system(optics
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_camera_adapter.h>
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_light_adapter.cpp>
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_light_adapter.h>
+        $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_render_mode_config.cpp>
+        $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_render_mode_config.h>
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_zero_copy_bridge.cpp>
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_zero_copy_bridge.h>
     DEPENDENCIES
@@ -33,6 +35,27 @@ corona_add_system(optics
 # sufficient.
 if(CORONA_BUILD_VISION)
     target_link_libraries(corona_optics_system PRIVATE vision-all_libs)
+endif()
+
+if((BUILD_CORONA_TESTING OR BUILD_TESTING) AND CORONA_BUILD_VISION)
+    add_executable(corona_vision_render_mode_config_tests
+        tests/test_vision_render_mode_config.cpp
+    )
+    target_include_directories(corona_vision_render_mode_config_tests
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/vision/src
+    )
+    target_link_libraries(corona_vision_render_mode_config_tests
+        PRIVATE
+            corona::system::optics
+            vision-all_libs
+    )
+    add_test(NAME VisionRenderModeConfigTests
+             COMMAND corona_vision_render_mode_config_tests)
+    set_tests_properties(VisionRenderModeConfigTests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
 endif()
 
 # ------------------------------------------------------------------------------
