@@ -244,6 +244,111 @@ class ActorAliasRenameTests(unittest.TestCase):
         self.assertFalse(actor.network_remote)
         self.assertFalse(actor._suppress_network_broadcast)
 
+    def test_apply_actor_sync_snapshot_reports_unchanged_on_repeat_snapshot(self):
+        scene = FakeScene([])
+
+        def fake_actor_factory(route, source_index, actor_type, parent_scene, actor_data):
+            actor = FakeActor(
+                actor_data.get("name", Path(route).stem),
+                guid=actor_data.get("actor_guid"),
+                route=route,
+            )
+            geometry = actor_data.get("geometry", {})
+            actor.position = list(geometry.get("position", actor.position))
+            actor.rotation = list(geometry.get("rotation", actor.rotation))
+            actor.scale = list(geometry.get("scale", actor.scale))
+            actor.visible = actor_data.get("visible", actor.visible)
+            actor.follow_camera = actor_data.get("follow_camera", actor.follow_camera)
+            return actor
+
+        snapshot = {
+            "actors": [
+                {
+                    "actor_guid": f"actor-{index}",
+                    "name": f"Actor {index}",
+                    "actor_type": "model",
+                    "path": f"Resource/model_{index}.obj",
+                    "model": f"Resource/model_{index}.obj",
+                    "model_dependencies": [],
+                    "visible": True,
+                    "follow_camera": False,
+                    "geometry": {
+                        "position": [float(index), 0.0, 0.0],
+                        "rotation": [0.0, 0.0, 0.0],
+                        "scale": [1.0, 1.0, 1.0],
+                    },
+                }
+                for index in range(3)
+            ],
+        }
+
+        with (
+            patch.object(scene_tools_main, "scene_manager", FakeSceneManager(scene)),
+            patch.object(scene_tools_main, "Actor", side_effect=fake_actor_factory),
+        ):
+            first = scene_tools_main.SceneTools.apply_actor_sync_snapshot_internal(
+                "Demo.scene", snapshot)
+            second = scene_tools_main.SceneTools.apply_actor_sync_snapshot_internal(
+                "Demo.scene", snapshot)
+
+        self.assertEqual(first["status"], "success")
+        self.assertEqual(len(first["created"]), 3)
+        self.assertEqual(len(first["updated"]), 0)
+        self.assertEqual(first.get("unchanged"), [])
+        self.assertEqual(second["status"], "success")
+        self.assertEqual(len(second["created"]), 0)
+        self.assertEqual(len(second["updated"]), 0)
+        self.assertEqual(len(second["unchanged"]), 3)
+
+    def test_get_actor_sync_snapshot_uses_network_sync_policy(self):
+        normal = FakeActor("chair", guid="actor-chair", route="Resource/chair.obj")
+        config_actor = FakeActor("config", guid="actor-config", route="Resource/config.actor")
+        config_actor.actor_type = "actor"
+        internal = FakeActor("__six_view_tmp", guid="actor-internal", route="Resource/tmp.obj")
+        framework = FakeActor("__room_box", guid="actor-room", route="Resource/room.obj")
+        scene = FakeScene([normal, config_actor, internal, framework])
+
+        with patch.object(scene_tools_main, "scene_manager", FakeSceneManager(scene)):
+            snapshot = scene_tools_main.SceneTools.get_actor_sync_snapshot("Demo.scene")
+
+        self.assertEqual(snapshot["status"], "success")
+        self.assertEqual(
+            [actor["actor_guid"] for actor in snapshot["actors"]],
+            ["actor-chair", "actor-room"],
+        )
+
+    def test_apply_actor_sync_snapshot_warns_and_skips_filtered_actor(self):
+        scene = FakeScene([])
+        snapshot = {
+            "actors": [
+                {
+                    "actor_guid": "actor-config",
+                    "name": "Config Actor",
+                    "actor_type": "actor",
+                    "path": "Resource/config.actor",
+                    "model": "Resource/config.actor",
+                    "model_dependencies": [],
+                    "visible": True,
+                    "follow_camera": False,
+                    "geometry": {
+                        "position": [0.0, 0.0, 0.0],
+                        "rotation": [0.0, 0.0, 0.0],
+                        "scale": [1.0, 1.0, 1.0],
+                    },
+                },
+            ],
+        }
+
+        with patch.object(scene_tools_main, "scene_manager", FakeSceneManager(scene)):
+            result = scene_tools_main.SceneTools.apply_actor_sync_snapshot_internal(
+                "Demo.scene", snapshot)
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["created"], [])
+        self.assertEqual(scene.get_actors(), [])
+        self.assertEqual(result["warnings"][0]["code"], "actor_type_actor")
+        self.assertEqual(result["warnings"][0]["actor_guid"], "actor-config")
+
 
 if __name__ == "__main__":
     unittest.main()

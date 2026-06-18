@@ -83,37 +83,70 @@ def is_internal_actor_sync_name(value: object) -> bool:
 
 def actor_data_is_syncable(actor_data: dict | None) -> bool:
     """Defensive frontend-facing data filter mirrored from the Python policy."""
+    return actor_data_sync_block_reason(actor_data) is None
+
+
+def actor_data_sync_block_reason(actor_data: dict | None) -> str | None:
     if not isinstance(actor_data, dict):
-        return False
+        return "invalid_actor_data"
     if actor_data.get("_suppress_network_broadcast"):
-        return False
+        return "suppressed"
+    if actor_data.get("actor_type", "") == "actor":
+        return "actor_type_actor"
+    if not isinstance(actor_data.get("geometry"), dict):
+        return "missing_geometry"
     if is_internal_actor_sync_name(actor_data.get("name")):
-        return False
+        return "internal_actor_name"
     if is_internal_sync_name(actor_data.get("scene")):
-        return False
+        return "internal_scene_name"
     if not (actor_data.get("path") or actor_data.get("model")):
-        return False
-    return True
+        return "missing_model_path"
+    return None
 
 
 def actor_is_syncable(actor: object) -> bool:
     """Return True if an Actor is eligible for network create sync."""
+    return actor_sync_block_reason(actor) is None
+
+
+def actor_sync_block_reason(actor: object) -> str | None:
     if getattr(actor, "_suppress_network_broadcast", False):
-        return False
+        return "suppressed"
     if getattr(actor, "actor_type", "") == "actor":
-        return False
+        return "actor_type_actor"
     if not hasattr(actor, "_geometry"):
-        return False
+        return "missing_geometry"
     if is_internal_actor_sync_name(getattr(actor, "name", "")):
-        return False
+        return "internal_actor_name"
 
     parent = getattr(actor, "parent", None)
     if parent is None:
-        return False
+        return "missing_parent_scene"
     scene_route = getattr(parent, "route", "") or getattr(parent, "name", "")
     if is_internal_sync_name(scene_route):
-        return False
-    return True
+        return "internal_scene_name"
+    return None
+
+
+def _log_filtered_actor_create(reason: str, actor: object, actor_data: dict | None = None) -> None:
+    data = actor_data if isinstance(actor_data, dict) else {}
+    parent = getattr(actor, "parent", None)
+    scene = (
+        data.get("scene")
+        or getattr(parent, "route", "")
+        or getattr(parent, "name", "")
+    )
+    logger.warning(
+        "Actor create network sync filtered: reason=%s actor='%s' type='%s' "
+        "guid='%s' scene='%s' path='%s' model='%s'",
+        reason,
+        data.get("name") or getattr(actor, "name", ""),
+        data.get("actor_type") or getattr(actor, "actor_type", ""),
+        data.get("actor_guid") or getattr(actor, "actor_guid", ""),
+        scene,
+        data.get("path") or getattr(actor, "route", ""),
+        data.get("model") or getattr(actor, "model_path", ""),
+    )
 
 
 def actor_is_still_in_scene(actor: object) -> bool:
@@ -138,7 +171,9 @@ def publish_actor_created(
     emit: EmitActorCreate,
 ) -> None:
     """Publish, queue, or drop an Actor create event according to the sync policy."""
-    if not actor_is_syncable(actor):
+    reason = actor_sync_block_reason(actor)
+    if reason is not None:
+        _log_filtered_actor_create(reason, actor)
         return
 
     transaction = _active_transaction.get()
@@ -268,7 +303,24 @@ def _flush_actor_creates(entries: list[_QueuedActorCreate]) -> None:
     seen: set[str] = set()
     for entry in entries:
         actor = entry.actor_ref()
-        if actor is None or not actor_is_still_in_scene(actor):
+        if actor is None:
+            logger.debug("Deferred actor create network sync skipped: actor reference expired")
+            continue
+        reason = actor_sync_block_reason(actor)
+        if reason is not None:
+            logger.info(
+                "Deferred actor create network sync filtered during flush: reason=%s actor='%s'",
+                reason,
+                getattr(actor, "name", ""),
+            )
+            _log_filtered_actor_create(reason, actor)
+            continue
+        if not actor_is_still_in_scene(actor):
+            logger.info(
+                "Deferred actor create network sync skipped: actor left scene actor='%s' guid='%s'",
+                getattr(actor, "name", ""),
+                getattr(actor, "actor_guid", ""),
+            )
             continue
         actor_guid = str(getattr(actor, "actor_guid", "") or id(actor))
         if actor_guid in seen:
@@ -285,7 +337,9 @@ def _emit_actor_create(
     if prepare is not None:
         prepare(actor)
     actor_data = actor.to_dict()
-    if not actor_data_is_syncable(actor_data):
+    reason = actor_data_sync_block_reason(actor_data)
+    if reason is not None:
+        _log_filtered_actor_create(reason, actor, actor_data)
         return
     emit(actor_data)
 

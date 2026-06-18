@@ -1281,7 +1281,9 @@ void NetworkSystem::broadcast_actor_state_update(const std::string& actor_guid,
 }
 
 bool NetworkSystem::has_pending_transfers() const {
-    return !impl_->pending_actor_creates.empty();
+    return !impl_->pending_actor_creates.empty() ||
+           !impl_->incoming_transfers.empty() ||
+           !impl_->pending_file_transfer_groups.empty();
 }
 
 void NetworkSystem::set_sync_paused(bool paused) {

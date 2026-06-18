@@ -1,5 +1,7 @@
 <template>
-  <div class="flex-1 min-h-0 w-full rounded-lg overflow-hidden relative bg-[#282828]/90 flex flex-col text-white font-sans">
+  <div
+    class="flex-1 min-h-0 w-full rounded-lg overflow-hidden relative bg-[#282828]/90 flex flex-col text-white font-sans"
+  >
     <DockTitleBar
       v-if="!isDocked"
       title="网络协作"
@@ -54,9 +56,7 @@
           <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
           会话运行中 — {{ roleLabel }} — 端口 {{ port }}
         </div>
-        <div v-if="sessionActive && localIp" class="text-gray-400">
-          本机 IP：{{ localIp }}
-        </div>
+        <div v-if="sessionActive && localIp" class="text-gray-400">本机 IP：{{ localIp }}</div>
         <div v-if="sessionActive && sessionRole === 'client' && hostAddress" class="text-gray-400">
           房主：{{ hostAddress }}:{{ hostPort }}
         </div>
@@ -103,7 +103,9 @@
         >
           加入房间
         </button>
-        <div v-if="connectStatus === 'connecting'" class="text-yellow-400 text-xs">连接请求已发送，等待握手...</div>
+        <div v-if="connectStatus === 'connecting'" class="text-yellow-400 text-xs">
+          连接请求已发送，等待握手...
+        </div>
         <div v-else-if="connectStatus === 'connected'" class="text-green-400 text-xs">已连接</div>
         <div v-else-if="connectStatus" class="text-red-400 text-xs">{{ connectStatus }}</div>
       </div>
@@ -196,6 +198,8 @@ const ownershipClaimTimes = new Map();
 const currentSceneName = ref('Scene/default.scene');
 const snapshotRequestedScenes = new Set();
 const remoteRegisteredActorIdentities = new Set();
+const lastBroadcastSnapshotHashes = new Map();
+const snapshotActorCreateKeys = new Set();
 
 const roleLabel = computed(() => {
   if (sessionRole.value === 'host') return '房主';
@@ -232,6 +236,8 @@ function resetSessionInfo() {
   connectionAttemptStartedAt.value = 0;
   snapshotRequestedScenes.clear();
   remoteRegisteredActorIdentities.clear();
+  lastBroadcastSnapshotHashes.clear();
+  snapshotActorCreateKeys.clear();
 }
 
 async function ensureProjectRoot() {
@@ -299,9 +305,10 @@ async function pollPeers() {
             id: 'handshake confirmed',
           });
         }
-      } else while (peers.value.length > count) {
-        peers.value.pop();
-      }
+      } else
+        while (peers.value.length > count) {
+          peers.value.pop();
+        }
       if (connectStatus.value === 'connecting') {
         if (count > 0) {
           connectStatus.value = 'connected';
@@ -318,7 +325,7 @@ async function pollPeers() {
         await requestSceneSnapshotOnce(currentSceneName.value);
       }
       if (count > 0 && sessionRole.value === 'host') {
-        await broadcastCurrentSceneSnapshot(currentSceneName.value, false);
+        await broadcastCurrentSceneSnapshot(currentSceneName.value, false, false);
       }
     }
 
@@ -333,16 +340,21 @@ async function pollPeers() {
           pending.actor_data = pending.actor_data || {};
           pending.actor_data.actor_guid = pending.actor_guid || '';
           pending.actor_data._suppress_network_broadcast = true;
-          const created = await Bridge.callCEF('SceneTools', 'create_actor_internal',
-            [pending.scene_name, pending.model_path, 'model', pending.actor_data]
-          );
+          const created = await Bridge.callCEF('SceneTools', 'create_actor_internal', [
+            pending.scene_name,
+            pending.model_path,
+            'model',
+            pending.actor_data,
+          ]);
           const createdData = unwrapCefResult(created);
           await registerActorIdentityFromData(createdData?.actor || createdData, false);
         } finally {
           await networkService.setSyncPaused(false);
         }
       }
-    } catch (_) { /* best effort — actor creation polling is secondary */ }
+    } catch (_) {
+      /* best effort — actor creation polling is secondary */
+    }
 
     try {
       for (let i = 0; i < PENDING_POLL_BATCH_LIMIT; i += 1) {
@@ -350,10 +362,12 @@ async function pollPeers() {
         if (!pendingRequest || !pendingRequest.has_pending) break;
         if (sessionRole.value === 'host') {
           const sceneName = pendingRequest.scene_name || currentSceneName.value;
-          await broadcastCurrentSceneSnapshot(sceneName, true);
+          await broadcastCurrentSceneSnapshot(sceneName, true, true);
         }
       }
-    } catch (_) { /* best effort — snapshot request polling is secondary */ }
+    } catch (_) {
+      /* best effort — snapshot request polling is secondary */
+    }
 
     try {
       for (let i = 0; i < PENDING_POLL_BATCH_LIMIT; i += 1) {
@@ -361,10 +375,12 @@ async function pollPeers() {
         if (!pendingSnapshot || !pendingSnapshot.has_pending) break;
         await applyRemoteSceneSnapshot(
           pendingSnapshot.scene_name || currentSceneName.value,
-          pendingSnapshot.snapshot_json,
+          pendingSnapshot.snapshot_json
         );
       }
-    } catch (_) { /* best effort — snapshot polling is secondary */ }
+    } catch (_) {
+      /* best effort — snapshot polling is secondary */
+    }
 
     try {
       for (let i = 0; i < PENDING_POLL_BATCH_LIMIT; i += 1) {
@@ -386,10 +402,14 @@ async function pollPeers() {
         const updatedData = unwrapCefResult(updated);
         if (updatedData?.status !== 'error') {
           remoteActorLog.value = `远程 Actor 状态已更新: ${actorData.name || actorData.actor_guid || 'unknown'}`;
-          setTimeout(() => { remoteActorLog.value = ''; }, 3000);
+          setTimeout(() => {
+            remoteActorLog.value = '';
+          }, 3000);
         }
       }
-    } catch (_) { /* best effort — state sync is secondary */ }
+    } catch (_) {
+      /* best effort — state sync is secondary */
+    }
 
     try {
       for (let i = 0; i < PENDING_POLL_BATCH_LIMIT; i += 1) {
@@ -409,10 +429,14 @@ async function pollPeers() {
         const updatedData = unwrapCefResult(updated);
         if (updatedData?.status !== 'error') {
           remoteActorLog.value = `远程 Actor 已更新: ${pendingTransform.actor_guid || 'unknown'}`;
-          setTimeout(() => { remoteActorLog.value = ''; }, 3000);
+          setTimeout(() => {
+            remoteActorLog.value = '';
+          }, 3000);
         }
       }
-    } catch (_) { /* best effort — transform sync is demo-grade */ }
+    } catch (_) {
+      /* best effort — transform sync is demo-grade */
+    }
 
     try {
       for (let i = 0; i < PENDING_POLL_BATCH_LIMIT; i += 1) {
@@ -426,10 +450,14 @@ async function pollPeers() {
         const deletedData = unwrapCefResult(deleted);
         if (deletedData?.status !== 'error') {
           remoteActorLog.value = `远程 Actor 已删除: ${pendingDelete.actor_name || pendingDelete.actor_guid || 'unknown'}`;
-          setTimeout(() => { remoteActorLog.value = ''; }, 3000);
+          setTimeout(() => {
+            remoteActorLog.value = '';
+          }, 3000);
         }
       }
-    } catch (_) { /* best effort — actor delete polling is secondary */ }
+    } catch (_) {
+      /* best effort — actor delete polling is secondary */
+    }
   } catch (e) {
     // ignore polling errors
   }
@@ -480,14 +508,31 @@ function hashString(str) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const ch = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + ch;
+    hash = (hash << 5) - hash + ch;
     hash |= 0;
   }
   return hash >>> 0;
 }
 
+function stableStringify(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function lastPathPart(value) {
-  return String(value || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || '';
+  return (
+    String(value || '')
+      .replace(/\\/g, '/')
+      .split('/')
+      .filter(Boolean)
+      .pop() || ''
+  );
 }
 
 const AI_SCENE_FRAMEWORK_SYNC_NAMES = new Set([
@@ -503,9 +548,13 @@ const AI_SCENE_FRAMEWORK_SYNC_PREFIXES = ['__shell_'];
 function isAiSceneFrameworkSyncName(value) {
   const text = String(value || '').trim();
   const leaf = lastPathPart(text);
-  return AI_SCENE_FRAMEWORK_SYNC_NAMES.has(text)
-    || AI_SCENE_FRAMEWORK_SYNC_NAMES.has(leaf)
-    || AI_SCENE_FRAMEWORK_SYNC_PREFIXES.some((prefix) => text.startsWith(prefix) || leaf.startsWith(prefix));
+  return (
+    AI_SCENE_FRAMEWORK_SYNC_NAMES.has(text) ||
+    AI_SCENE_FRAMEWORK_SYNC_NAMES.has(leaf) ||
+    AI_SCENE_FRAMEWORK_SYNC_PREFIXES.some(
+      (prefix) => text.startsWith(prefix) || leaf.startsWith(prefix)
+    )
+  );
 }
 
 function isInternalSyncName(value) {
@@ -520,6 +569,8 @@ function isInternalActorSyncName(value) {
 function isActorSyncable(actorData) {
   if (!actorData) return false;
   if (actorData._suppress_network_broadcast) return false;
+  if (actorData.actor_type === 'actor') return false;
+  if (!actorData.geometry || typeof actorData.geometry !== 'object') return false;
   if (isInternalActorSyncName(actorData.name)) return false;
   if (isInternalSyncName(actorData.scene)) return false;
   return Boolean(actorData.path || actorData.model);
@@ -544,25 +595,29 @@ async function getActorSnapshot(sceneName) {
   return unwrapCefResult(raw);
 }
 
-async function broadcastCurrentSceneSnapshot(sceneName, includeActorCreates) {
+async function broadcastCurrentSceneSnapshot(sceneName, includeActorCreates, force = false) {
   const targetScene = rememberSceneName(sceneName);
   const snapshot = await getActorSnapshot(targetScene);
   if (!snapshot || snapshot.status === 'error') return;
   const actors = Array.isArray(snapshot.actors) ? snapshot.actors : [];
   if (includeActorCreates) {
+    snapshotActorCreateKeys.clear();
     for (const actor of actors) {
       if (!isActorSyncable(actor)) continue;
       const actorGuid = actor.actor_guid || '';
       const modelPath = actor.path || actor.model || '';
       if (!actorGuid || !modelPath) continue;
-      await networkService.broadcastActorCreate(
-        actorGuid,
-        targetScene,
-        modelPath,
-        { ...actor, scene: targetScene },
-      ).catch(() => {});
+      const snapshotCreateKey = `${targetScene}:${actorGuid}:${modelPath}`;
+      if (snapshotActorCreateKeys.has(snapshotCreateKey)) continue;
+      snapshotActorCreateKeys.add(snapshotCreateKey);
+      await networkService
+        .broadcastActorCreate(actorGuid, targetScene, modelPath, { ...actor, scene: targetScene })
+        .catch(() => {});
     }
   }
+  const snapshotHash = hashString(stableStringify(snapshot));
+  if (!force && lastBroadcastSnapshotHashes.get(targetScene) === snapshotHash) return;
+  lastBroadcastSnapshotHashes.set(targetScene, snapshotHash);
   await networkService.broadcastSceneSnapshot(targetScene, snapshot).catch(() => {});
 }
 
@@ -598,16 +653,15 @@ async function applyRemoteSceneSnapshot(sceneName, snapshotPayload) {
       snapshot,
     ]);
     const appliedData = unwrapCefResult(applied);
-    const changedActors = [
-      ...(appliedData?.created || []),
-      ...(appliedData?.updated || []),
-    ];
+    const changedActors = [...(appliedData?.created || []), ...(appliedData?.updated || [])];
     for (const actorData of changedActors) {
       await registerActorIdentityFromData(actorData, false);
     }
     if (changedActors.length > 0) {
       remoteActorLog.value = `远程场景快照已同步: ${changedActors.length} 个 Actor`;
-      setTimeout(() => { remoteActorLog.value = ''; }, 3000);
+      setTimeout(() => {
+        remoteActorLog.value = '';
+      }, 3000);
     }
   } finally {
     await networkService.setSyncPaused(false);
@@ -615,19 +669,35 @@ async function applyRemoteSceneSnapshot(sceneName, snapshotPayload) {
 }
 
 async function registerActorIdentityFromData(actorData, locallyOwned = true) {
-  if (!sessionActive.value || !actorData) return;
+  if (!sessionActive.value || !actorData) return false;
   const actorGuid = actorData.actor_guid || '';
   const actorHandle = actorData.handle || '';
-  if (!actorGuid || !actorHandle) return;
+  if (!actorGuid || !actorHandle) return false;
   const identityKey = `${actorGuid}:${actorHandle}:${locallyOwned ? 'local' : 'remote'}`;
-  if (!locallyOwned && remoteRegisteredActorIdentities.has(identityKey)) return;
+  if (!locallyOwned && remoteRegisteredActorIdentities.has(identityKey)) return true;
   try {
-    await networkService.registerActorIdentity(actorGuid, actorHandle, locallyOwned);
+    const registered = await networkService.registerActorIdentity(
+      actorGuid,
+      actorHandle,
+      locallyOwned
+    );
+    if (registered?.ok !== true) {
+      remoteActorLog.value = `Actor 身份注册失败: ${actorData.name || actorGuid}`;
+      setTimeout(() => {
+        remoteActorLog.value = '';
+      }, 3000);
+      return false;
+    }
     if (!locallyOwned) {
       remoteRegisteredActorIdentities.add(identityKey);
     }
+    return true;
   } catch (_) {
-    /* best effort — identity mapping is an optimization anchor */
+    remoteActorLog.value = `Actor 身份注册失败: ${actorData.name || actorGuid}`;
+    setTimeout(() => {
+      remoteActorLog.value = '';
+    }, 3000);
+    return false;
   }
 }
 
@@ -646,7 +716,8 @@ onMounted(() => {
     if (!modelPath) return;
     // Get scene name from the actor's parent scene if available
     const sceneName = rememberSceneName(actorData.scene || 'Scene/default.scene');
-    const actorGuid = actorData.actor_guid ||
+    const actorGuid =
+      actorData.actor_guid ||
       `actor-${hashString(`${sceneName}|${modelPath}|${actorData.name || ''}`)}`;
     actorData.actor_guid = actorGuid;
     registerActorIdentityFromData(actorData);
@@ -702,10 +773,14 @@ onMounted(() => {
       fileStatus.value = { type: 'transferring', path: model_path, progress };
     } else if (status === 'complete') {
       fileStatus.value = { type: 'success', path: model_path };
-      setTimeout(() => { fileStatus.value = null; }, 5000);
+      setTimeout(() => {
+        fileStatus.value = null;
+      }, 5000);
     } else if (status === 'error') {
       fileStatus.value = { type: 'error', path: model_path };
-      setTimeout(() => { fileStatus.value = null; }, 5000);
+      setTimeout(() => {
+        fileStatus.value = null;
+      }, 5000);
     }
   });
 
@@ -715,7 +790,9 @@ onMounted(() => {
     // The actor data is available for UI update.
     registerActorIdentityFromData(actorData);
     remoteActorLog.value = `远程 Actor 已创建: ${actorData.name || 'unknown'}`;
-    setTimeout(() => { remoteActorLog.value = ''; }, 5000);
+    setTimeout(() => {
+      remoteActorLog.value = '';
+    }, 5000);
   });
 });
 

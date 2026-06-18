@@ -570,6 +570,77 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
         self.assertEqual(events[0][0], "actor-sync-broadcast")
         self.assertEqual(events[0][1][0]["name"], "__room_box")
 
+    def test_actor_data_policy_reports_all_snapshot_block_reasons(self):
+        base = {
+            "name": "chair",
+            "actor_guid": "actor-chair",
+            "actor_type": "model",
+            "scene": "Scene/main.scene",
+            "path": "Resource/chair.obj",
+            "model": "Resource/chair.obj",
+            "geometry": {
+                "position": [0, 0, 0],
+                "rotation": [0, 0, 0],
+                "scale": [1, 1, 1],
+            },
+        }
+
+        self.assertIsNone(network_sync_policy.actor_data_sync_block_reason(base))
+        self.assertEqual(
+            network_sync_policy.actor_data_sync_block_reason(
+                {**base, "actor_type": "actor"}),
+            "actor_type_actor",
+        )
+        data_without_geometry = dict(base)
+        data_without_geometry.pop("geometry")
+        self.assertEqual(
+            network_sync_policy.actor_data_sync_block_reason(data_without_geometry),
+            "missing_geometry",
+        )
+        self.assertEqual(
+            network_sync_policy.actor_data_sync_block_reason(
+                {**base, "name": "__six_view_tmp_actor"}),
+            "internal_actor_name",
+        )
+        self.assertEqual(
+            network_sync_policy.actor_data_sync_block_reason(
+                {**base, "scene": "__preview_scene"}),
+            "internal_scene_name",
+        )
+        self.assertEqual(
+            network_sync_policy.actor_data_sync_block_reason(
+                {**base, "path": "", "model": ""}),
+            "missing_model_path",
+        )
+        self.assertEqual(
+            network_sync_policy.actor_data_sync_block_reason(
+                {**base, "_suppress_network_broadcast": True}),
+            "suppressed",
+        )
+
+    def test_actor_data_policy_keeps_ai_framework_names_syncable(self):
+        base = {
+            "actor_guid": "actor-framework",
+            "actor_type": "model",
+            "scene": "Scene/main.scene",
+            "path": "Resource/framework.obj",
+            "model": "Resource/framework.obj",
+            "geometry": {
+                "position": [0, 0, 0],
+                "rotation": [0, 0, 0],
+                "scale": [1, 1, 1],
+            },
+        }
+
+        self.assertIsNone(network_sync_policy.actor_data_sync_block_reason({
+            **base,
+            "name": "__room_box",
+        }))
+        self.assertIsNone(network_sync_policy.actor_data_sync_block_reason({
+            **base,
+            "name": "__shell_wall_01",
+        }))
+
     def test_suppressed_actor_does_not_broadcast(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_root = Path(tmp)
@@ -635,6 +706,65 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
         self.assertEqual(events[0][0], "actor-sync-broadcast")
         self.assertEqual(events[0][1][0]["actor_guid"], kept.actor_guid)
         self.assertEqual(events[0][1][0]["name"], "chair")
+
+    def test_filtered_actor_create_logs_diagnostic_reason(self):
+        events = []
+
+        class SyncableActorWithBadPayload:
+            name = "missing-path"
+            actor_type = "model"
+            _geometry = object()
+            _suppress_network_broadcast = False
+            parent = SimpleNamespace(route="Scene/main.scene")
+
+            def to_dict(self):
+                return {
+                    "name": self.name,
+                    "actor_type": self.actor_type,
+                    "actor_guid": "actor-missing-path",
+                    "scene": "Scene/main.scene",
+                    "path": "",
+                    "model": "",
+                    "geometry": {
+                        "position": [0, 0, 0],
+                        "rotation": [0, 0, 0],
+                        "scale": [1, 1, 1],
+                    },
+                }
+
+        with self.assertLogs(network_sync_policy.logger, level="WARNING") as captured:
+            network_sync_policy.publish_actor_created(
+                SyncableActorWithBadPayload(),
+                prepare=None,
+                emit=lambda actor_data: events.append(actor_data),
+            )
+
+        self.assertEqual(events, [])
+        self.assertTrue(any("missing_model_path" in line for line in captured.output))
+        self.assertTrue(any("actor-missing-path" in line for line in captured.output))
+
+    def test_actor_level_filter_log_uses_actor_path_fallbacks(self):
+        class ActorWithoutGeometry:
+            name = "config-actor"
+            actor_type = "actor"
+            actor_guid = "actor-config"
+            route = "Resource/config.actor"
+            model_path = "Resource/config_model.obj"
+            _suppress_network_broadcast = False
+            parent = SimpleNamespace(route="Scene/main.scene")
+
+        with self.assertLogs(network_sync_policy.logger, level="WARNING") as captured:
+            network_sync_policy.publish_actor_created(
+                ActorWithoutGeometry(),
+                prepare=None,
+                emit=lambda actor_data: None,
+            )
+
+        joined = "\n".join(captured.output)
+        self.assertIn("actor_type_actor", joined)
+        self.assertIn("Resource/config.actor", joined)
+        self.assertIn("Resource/config_model.obj", joined)
+        self.assertIn("Scene/main.scene", joined)
 
     def test_deferred_mode_discards_events_on_failure(self):
         events = []

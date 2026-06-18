@@ -3,6 +3,7 @@ import math
 import os
 
 from CoronaCore.core.components import Optics
+from CoronaCore.core import network_sync_policy
 from CoronaCore.core.corona_editor import CoronaEditor
 from CoronaPlugin.core.corona_plugin_base import PluginBase
 from CoronaCore.core.entities import Actor
@@ -164,6 +165,47 @@ class SceneTools(PluginBase):
         }
 
     @staticmethod
+    def _canonical_actor_sync_state(actor_data) -> dict:
+        data = actor_data if isinstance(actor_data, dict) else {}
+        geometry = data.get("geometry") if isinstance(data.get("geometry"), dict) else {}
+
+        def list_or_default(value, default):
+            return list(value) if value is not None else list(default)
+
+        return {
+            "actor_guid": data.get("actor_guid", ""),
+            "name": data.get("name", ""),
+            "actor_type": data.get("actor_type", "model"),
+            "path": data.get("path") or data.get("model") or "",
+            "model": data.get("model") or data.get("path") or "",
+            "model_dependencies": list(data.get("model_dependencies") or []),
+            "visible": data.get("visible", True),
+            "follow_camera": data.get("follow_camera", False),
+            "geometry": {
+                "position": list_or_default(geometry.get("position"), [0.0, 0.0, 0.0]),
+                "rotation": list_or_default(geometry.get("rotation"), [0.0, 0.0, 0.0]),
+                "scale": list_or_default(geometry.get("scale"), [1.0, 1.0, 1.0]),
+            },
+        }
+
+    @staticmethod
+    def _actor_sync_states_equal(local_actor, remote_actor_data) -> bool:
+        local_state = SceneTools._canonical_actor_sync_state(
+            SceneTools._actor_sync_state(local_actor))
+        remote_state = SceneTools._canonical_actor_sync_state(remote_actor_data)
+        return local_state == remote_state
+
+    @staticmethod
+    def _actor_snapshot_block_reason(actor_data) -> str | None:
+        if not isinstance(actor_data, dict):
+            return network_sync_policy.actor_data_sync_block_reason(actor_data)
+        policy_data = dict(actor_data)
+        # The receiver adds this flag to prevent rebroadcast loops; it should not
+        # make an otherwise valid host snapshot actor ineligible for apply.
+        policy_data.pop("_suppress_network_broadcast", None)
+        return network_sync_policy.actor_data_sync_block_reason(policy_data)
+
+    @staticmethod
     def _safe_actor_call(actor, method_name: str, default=None):
         if actor is None or not hasattr(actor, method_name):
             return default
@@ -202,9 +244,10 @@ class SceneTools(PluginBase):
             actors = []
             for actor in scene.get_actors():
                 actor_state = SceneTools._actor_sync_state(actor)
+                actor_state["scene"] = actor_state.get("scene") or scene_name
                 if not actor_state.get("actor_guid"):
                     continue
-                if not (actor_state.get("path") or actor_state.get("model")):
+                if SceneTools._actor_snapshot_block_reason(actor_state) is not None:
                     continue
                 actors.append(actor_state)
             return {"status": "success", "scene": scene_name, "actors": actors}
@@ -275,6 +318,7 @@ class SceneTools(PluginBase):
                 actors = []
             created = []
             updated = []
+            unchanged = []
             warnings = []
             for actor_data in actors:
                 if not isinstance(actor_data, dict):
@@ -282,8 +326,18 @@ class SceneTools(PluginBase):
                 actor_guid = actor_data.get("actor_guid", "")
                 if not actor_guid:
                     continue
+                block_reason = SceneTools._actor_snapshot_block_reason(actor_data)
+                if block_reason is not None:
+                    warnings.append({"status": "warning",
+                                     "code": block_reason,
+                                     "actor_guid": actor_guid,
+                                     "actor": actor_data.get("name", "")})
+                    continue
                 existing = SceneTools._find_actor_by_guid(scene, actor_guid)
                 if existing is not None:
+                    if SceneTools._actor_sync_states_equal(existing, actor_data):
+                        unchanged.append(SceneTools._actor_sync_state(existing))
+                        continue
                     result = SceneTools.apply_actor_state_internal(
                         scene_name, actor_guid, actor_data)
                     if result.get("status") == "success":
@@ -316,6 +370,7 @@ class SceneTools(PluginBase):
                 "scene": scene_name,
                 "created": created,
                 "updated": updated,
+                "unchanged": unchanged,
                 "warnings": warnings,
             }
         except Exception as exc:
