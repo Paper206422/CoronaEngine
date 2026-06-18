@@ -166,6 +166,12 @@ class SeedPlan:
         self.status = SeedPlanStatus.EXECUTING
         self.updated_at = time.time()
 
+    def mark_completed(self) -> None:
+        if self.status not in {SeedPlanStatus.CONFIRMED, SeedPlanStatus.EXECUTING, SeedPlanStatus.COMPLETED}:
+            raise ValueError(f"SeedPlan {self.plan_id} cannot complete from {self.status}")
+        self.status = SeedPlanStatus.COMPLETED
+        self.updated_at = time.time()
+
     def pause_execution(self) -> None:
         if self.status not in {SeedPlanStatus.CONFIRMED, SeedPlanStatus.EXECUTING, SeedPlanStatus.PAUSED}:
             raise ValueError(f"SeedPlan {self.plan_id} cannot pause from {self.status}")

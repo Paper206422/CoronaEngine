@@ -138,6 +138,36 @@ class FakeGate:
         return fn(*args, **kwargs)
 
 
+class FakeSceneActor:
+    def __init__(self, name, position=None, rotation=None, scale=None):
+        self.name = name
+        self._position = list(position or [0.0, 0.0, 0.0])
+        self._rotation = list(rotation or [0.0, 0.0, 0.0])
+        self._scale = list(scale or [1.0, 1.0, 1.0])
+        self.color = None
+
+    def get_position(self):
+        return list(self._position)
+
+    def set_position(self, value):
+        self._position = list(value)
+
+    def get_rotation(self):
+        return list(self._rotation)
+
+    def set_rotation(self, value):
+        self._rotation = list(value)
+
+    def get_scale(self):
+        return list(self._scale)
+
+    def set_scale(self, value):
+        self._scale = list(value)
+
+    def set_color(self, value):
+        self.color = list(value)
+
+
 class TargetedHostFakeEngine(FakeEngine):
     def __init__(self, triggers):
         super().__init__(triggers)
@@ -208,6 +238,47 @@ def test_regular_role_agent_reply():
     assert "agent-reply" in result.text
     assert result.discussion_state.pending_intents
     print("[OK] regular role agent reply goes through orchestrator")
+
+
+def test_confirm_start_uses_active_coordinator_plan_instead_of_role_agent_gate():
+    scheduler = FakeScheduler()
+    coordinator = InteractionCoordinator(scheduler=scheduler)
+    coordinator.ingest_message(ChatMessage(
+        room_id="r1",
+        sender_id="host-a",
+        sender_name="房主",
+        is_host=True,
+        text="最终简化方案：温暖神秘室外夜集，中央宽通道，两侧摊位，一侧休息区，灯火温暖，不要太恐怖",
+    ))
+    plan = coordinator.propose_seed_plan("r1")
+    coordinator.confirm_seed_plan(plan.plan_id, "host-a")
+    engine = FakeEngine([{
+        **_trigger("@长者 确认开始", "长者"),
+        "room_id": "r1",
+        "sender_id": "host-a",
+        "sender_name": "房主",
+        "is_host": True,
+        "sender_type": "host",
+    }])
+
+    def failing_agent_factory():
+        def _agent(persona, messages):
+            raise AssertionError("role agent should not run when confirmed Coordinator plan exists")
+        return _agent
+
+    worker = LANChatAgentWorker(
+        corona_engine=engine,
+        agent_factory=failing_agent_factory,
+        interaction_coordinator=coordinator,
+        async_agent_execution=False,
+    )
+
+    assert worker.process_once() is True
+    assert scheduler.submitted, "confirmed start must enqueue Coordinator SeedPlan"
+    assert "最终简化方案" in scheduler.submitted[-1]["prompt"]
+    assert engine.replies
+    assert "SeedPlan" in engine.replies[-1][2]
+    print("[OK] confirm start uses active Coordinator plan instead of RoleAgent planning gate")
 
 
 def test_current_mentioned_agent_identity_overrides_history_mentions():
@@ -1009,7 +1080,7 @@ def test_worker_routes_agent_status_query_to_coordinator_without_model_agent():
 
     engine = FakeEngine([
         {
-            **_trigger("@商人 查看生成情况，到哪步了", "商人"),
+            **_trigger("@商人 现在情况是什么样，生成计划是什么", "商人"),
             "room_id": "room-status",
             "sender_id": "host-a",
             "sender_name": "房主",
@@ -1035,6 +1106,144 @@ def test_worker_routes_agent_status_query_to_coordinator_without_model_agent():
     assert not any(item[3] == "gm_proposal" for item in engine.system_messages if len(item) > 3)
     assert any(item.event_type == "status_query" for item in coordinator.events[before_events:])
     print("[OK] worker routes @Agent status query to Coordinator without model agent/proposal")
+
+
+def test_worker_does_not_crash_when_coordinator_blocks_start_generation():
+    coordinator = InteractionCoordinator()
+    coordinator.ingest_message(ChatMessage(
+        room_id="room-blocked-start",
+        sender_id="host-a",
+        sender_name="房主",
+        text="我想做一个集市，但是用户A和用户B对入口位置有冲突",
+        is_host=True,
+    ))
+    coordinator.propose_seed_plan("room-blocked-start")
+    worker = LANChatAgentWorker(
+        corona_engine=FakeEngine([]),
+        agent_factory=_agent_factory,
+        interaction_coordinator=coordinator,
+        async_agent_execution=False,
+    )
+
+    payload = worker._prepare_confirmed_action_payload({  # noqa: SLF001 - covers crash guard for confirmed model payloads
+        "action_type": "start_generation",
+        "status": "confirmed",
+        "intent_text": "按刚才方案开始生成",
+    }, {
+        **_trigger("@长者 确认开始", "长者"),
+        "room_id": "room-blocked-start",
+        "sender_id": "host-a",
+        "sender_name": "房主",
+        "is_host": True,
+    })
+
+    assert payload["action_type"] == "discussion_only"
+    assert payload["coordinator_blocked"] is True
+    assert payload["execution"] == "coordinator_confirmation_blocked"
+    assert "冲突" in payload["reason"]
+    print("[OK] blocked Coordinator confirmation no longer crashes Worker start payload preparation")
+
+
+def test_worker_routes_completed_layout_adjustment_to_coordinator_without_model_agent():
+    executor = FakeHostActionExecutor()
+    coordinator = InteractionCoordinator()
+    coordinator.ingest_message(ChatMessage(
+        room_id="room-adjust",
+        sender_id="host-a",
+        sender_name="房主",
+        text="做一个温暖的夜晚幻想集市",
+        is_host=True,
+    ))
+    plan = coordinator.propose_seed_plan("room-adjust")
+    coordinator.confirm_seed_plan(plan.plan_id, "host-a")
+    plan.status = SeedPlanStatus.COMPLETED
+    before_events = len(coordinator.events)
+
+    def forbidden_agent_factory():
+        def _agent(persona, messages):
+            raise AssertionError("completed layout adjustment should not call role model agent")
+        return _agent
+
+    engine = FakeEngine([
+        {
+            **_trigger("@长者 感觉布局不是很合理呀，调整一下", "长者"),
+            "room_id": "room-adjust",
+            "sender_id": "host-a",
+            "sender_name": "房主",
+            "sender_type": "host",
+            "is_host": True,
+            "agent_id": "elder",
+            "agent_name": "长者",
+        },
+    ])
+    worker = LANChatAgentWorker(
+        corona_engine=engine,
+        agent_factory=forbidden_agent_factory,
+        host_action_executor=executor,
+        interaction_coordinator=coordinator,
+        async_agent_execution=False,
+    )
+    assert worker.process_once() is True
+
+    pending = coordinator.pending_interventions(plan.plan_id)
+    assert not executor.payloads
+    assert engine.replies
+    assert "最终调整" in engine.replies[-1][2]
+    assert pending[-1].apply_policy == "final_adjustment"
+    assert any(item.event_type == "final_adjustment_routed" for item in coordinator.events[before_events:])
+    print("[OK] worker routes completed layout adjustment to Coordinator without model agent")
+
+
+def test_worker_executes_completed_boundary_adjustment_without_model_agent():
+    executor = FakeHostActionExecutor()
+    coordinator = InteractionCoordinator()
+    coordinator.ingest_message(ChatMessage(
+        room_id="room-boundary-adjust",
+        sender_id="host-a",
+        sender_name="房主",
+        text="做一个温暖的夜晚幻想集市",
+        is_host=True,
+    ))
+    plan = coordinator.propose_seed_plan("room-boundary-adjust")
+    coordinator.confirm_seed_plan(plan.plan_id, "host-a")
+    plan.status = SeedPlanStatus.COMPLETED
+    boundary = FakeSceneActor("__terrain_boundary", scale=[2.0, 1.2, 2.0])
+
+    def forbidden_agent_factory():
+        def _agent(persona, messages):
+            raise AssertionError("completed boundary adjustment should use deterministic low-risk path")
+        return _agent
+
+    engine = FakeEngine([
+        {
+            **_trigger("@商人 你理解错了，我说的是 _terrain_boundary，换成更幻想集市风的低矮木栏/藤蔓围栏", "商人"),
+            "room_id": "room-boundary-adjust",
+            "sender_id": "host-a",
+            "sender_name": "房主",
+            "sender_type": "host",
+            "is_host": True,
+            "agent_id": "merchant",
+            "agent_name": "商人",
+        },
+    ])
+    engine.get_scene_actors = lambda: [boundary]
+    worker = LANChatAgentWorker(
+        corona_engine=engine,
+        agent_factory=forbidden_agent_factory,
+        host_action_executor=executor,
+        interaction_coordinator=coordinator,
+        async_agent_execution=False,
+    )
+    assert worker.process_once() is True
+
+    pending = coordinator.pending_interventions(plan.plan_id)
+    assert not executor.payloads
+    assert boundary.get_scale()[1] == 0.55
+    assert boundary.color == [0.34, 0.45, 0.18]
+    assert "已执行低风险最终调整" in engine.replies[-1][2]
+    assert pending[-1].target_hint == "__terrain_boundary"
+    assert pending[-1].apply_policy == "final_adjustment"
+    print("[OK] completed terrain boundary adjustment executes deterministic low-risk path")
 
 
 def test_worker_acknowledges_conflict_resolution_rejection_without_host_execution():
@@ -2540,7 +2749,10 @@ def test_worker_configured_composer_scheduler_runs_confirmed_seed_plan_context()
     assert kwargs["session_id"].startswith(f"exec-{kwargs['plan_id']}-")
     assert kwargs["session_id"] != kwargs["room_id"]
     coordinator = kwargs["interaction_coordinator"]
-    assert coordinator.events[-1].event_type == "batch_intervention_window_open"
+    event_types = [item.event_type for item in coordinator.events]
+    assert "batch_intervention_window_open" in event_types
+    assert "generation_completed" in event_types
+    assert coordinator.active_plan_for_room(kwargs["room_id"]).status.value == "completed"
     assert "第一批已完成" in coordinator.memory_summary(room_id=kwargs["room_id"], plan_id=kwargs["plan_id"])["summary_text"]
     progress_disclosures = [
         item for item in engine.system_messages
@@ -2911,6 +3123,7 @@ def test_host_action_executor_serializes_parallel_confirmed_actions():
 
 if __name__ == "__main__":
     test_regular_role_agent_reply()
+    test_confirm_start_uses_active_coordinator_plan_instead_of_role_agent_gate()
     test_current_mentioned_agent_identity_overrides_history_mentions()
     test_gm_proposal_for_conflict()
     test_gm_summary_does_not_create_proposal()
@@ -2945,6 +3158,9 @@ if __name__ == "__main__":
     test_worker_broadcasts_confirmed_gm_action()
     test_worker_acknowledges_final_adjustment_confirmation_without_host_execution()
     test_worker_routes_agent_status_query_to_coordinator_without_model_agent()
+    test_worker_does_not_crash_when_coordinator_blocks_start_generation()
+    test_worker_routes_completed_layout_adjustment_to_coordinator_without_model_agent()
+    test_worker_executes_completed_boundary_adjustment_without_model_agent()
     test_worker_acknowledges_conflict_resolution_rejection_without_host_execution()
     test_worker_rejects_coordinator_confirmation_without_sender_identity()
     test_worker_rejects_coordinator_confirmation_from_non_host_role()

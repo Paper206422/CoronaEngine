@@ -221,6 +221,94 @@ def test_completed_generation_add_routes_to_post_generation_add():
     print("[OK] completed generation add request routes to post-generation append batch")
 
 
+def test_completed_generation_modify_routes_to_final_adjustment():
+    coordinator = InteractionCoordinator(scheduler=FakeScheduler())
+    coordinator.ingest_message(ChatMessage(room_id="room-a", sender_id="host-a", is_host=True, text="夜晚幻想集市"))
+    plan = coordinator.propose_seed_plan("room-a")
+    coordinator.confirm_seed_plan(plan.plan_id, "host-a")
+    plan.status = SeedPlanStatus.COMPLETED
+
+    event = coordinator.ingest_message(ChatMessage(
+        room_id="room-a",
+        sender_id="host-a",
+        is_host=True,
+        text="@长者 感觉布局不是很合理呀，调整一下",
+    ))
+    pending = coordinator.pending_interventions(plan.plan_id)
+
+    assert event.event_type == "final_adjustment_routed"
+    assert event.payload["apply_policy"] == "final_adjustment"
+    assert pending[-1].apply_policy == "final_adjustment"
+    assert coordinator.active_plan_for_room("room-a").plan_id == plan.plan_id
+    assert "布局" in pending[-1].content
+    print("[OK] completed generation modify request routes to final adjustment")
+
+
+def test_completed_generation_boundary_alias_routes_to_final_adjustment():
+    coordinator = InteractionCoordinator(scheduler=FakeScheduler())
+    coordinator.ingest_message(ChatMessage(room_id="room-a", sender_id="host-a", is_host=True, text="夜晚幻想集市"))
+    plan = coordinator.propose_seed_plan("room-a")
+    coordinator.confirm_seed_plan(plan.plan_id, "host-a")
+    plan.status = SeedPlanStatus.COMPLETED
+
+    event = coordinator.ingest_message(ChatMessage(
+        room_id="room-a",
+        sender_id="host-a",
+        is_host=True,
+        text="@商人 这个栅栏有点奇怪，换成低矮藤蔓围栏",
+    ))
+    pending = coordinator.pending_interventions(plan.plan_id)
+
+    assert event.event_type == "final_adjustment_routed"
+    assert pending[-1].actor_id == "__terrain_boundary"
+    assert pending[-1].target_hint == "__terrain_boundary"
+    assert pending[-1].apply_policy == "final_adjustment"
+    print("[OK] completed generation boundary alias routes to terrain final adjustment")
+
+
+def test_generation_add_target_hint_strips_followup_verbs_and_mentions():
+    coordinator = InteractionCoordinator(scheduler=FakeScheduler())
+    coordinator.ingest_message(ChatMessage(room_id="room-a", sender_id="host-a", is_host=True, text="温暖神秘夜晚集市"))
+    plan = coordinator.propose_seed_plan("room-a")
+    coordinator.confirm_seed_plan(plan.plan_id, "host-a")
+    coordinator.execute_confirmed_plan(plan.plan_id)
+
+    event = coordinator.ingest_message(ChatMessage(
+        room_id="room-a",
+        sender_id="host-a",
+        is_host=True,
+        text="@长者 后面再加入一个天使雕像",
+    ))
+    pending = coordinator.pending_interventions(plan.plan_id)
+
+    assert event.event_type == "intervention_routed"
+    assert event.payload["target_hint"] == "天使雕像"
+    assert pending[-1].target_hint == "天使雕像"
+    assert "入一个" not in pending[-1].target_hint
+    print("[OK] follow-up add target hint strips mention and verbs")
+
+
+def test_execute_confirmed_plan_payload_uses_full_contract_prompt():
+    scheduler = FakeScheduler()
+    coordinator = InteractionCoordinator(scheduler=scheduler)
+    coordinator.ingest_message(ChatMessage(room_id="room-a", sender_id="host-a", is_host=True, text="做一个有点神秘感的室外集市，不要太恐怖，适合几个人逛"))
+    coordinator.ingest_message(ChatMessage(room_id="room-a", sender_id="host-a", is_host=True, text="希望它更温暖一点，有灯光和休息区，不要全是暗黑风"))
+    coordinator.ingest_message(ChatMessage(room_id="room-a", sender_id="host-a", is_host=True, text="最终简化方案：夜色神秘，灯火温暖，可逛可坐，中央宽通道，两侧摊位，一侧休息区"))
+    plan = coordinator.propose_seed_plan("room-a")
+    coordinator.confirm_seed_plan(plan.plan_id, "host-a")
+
+    coordinator.execute_confirmed_plan(plan.plan_id)
+    payload = scheduler.submitted[-1]
+    prompt = payload["prompt"]
+
+    assert "最终简化方案" in prompt
+    assert "灯火温暖" in prompt
+    assert "too horror" in prompt
+    assert "boundary_spec" in prompt
+    assert payload["intent_text"] == prompt
+    print("[OK] confirmed generation payload carries full SeedPlan contract prompt")
+
+
 def test_system_actor_aliases_are_canonicalized_for_terrain_boundary():
     coordinator = InteractionCoordinator(scheduler=FakeScheduler())
     coordinator.ingest_message(ChatMessage(room_id="room-a", sender_id="host-a", is_host=True, text="夜晚幻想集市"))
@@ -612,7 +700,7 @@ def test_next_batch_intervention_updates_queued_generation_job():
     assert update["priority"] == 2
     assert update["payload_updates"]["intervention_revision"] == 2
     assert update["payload_updates"]["latest_intervention"]["apply_policy"] == "next_batch"
-    assert update["payload_updates"]["latest_intervention"]["target_hint"] == "一个天使雕塑"
+    assert update["payload_updates"]["latest_intervention"]["target_hint"] == "天使雕塑"
     assert update["payload_updates"]["pending_interventions"][0]["priority"] == 2
     assert update["payload_updates"]["pending_interventions"][1]["priority"] == 1
     assert "天使雕塑" in update["payload_updates"]["latest_intervention"]["content"]
@@ -1917,12 +2005,50 @@ def test_coordinator_generation_job_refs_are_bounded_for_future_updates():
     print("[OK] Coordinator generation job refs are bounded for future updates")
 
 
+def test_generation_job_done_marks_seed_plan_completed_for_status_query():
+    scheduler = FakeScheduler()
+    coordinator = InteractionCoordinator(scheduler=scheduler)
+    plan = coordinator.create_or_update_seed_plan(ChatMessage(
+        room_id="room-a",
+        sender_id="host-a",
+        is_host=True,
+        text="做一个温暖的夜晚幻想集市",
+    ))
+    plan.propose()
+    coordinator.confirm_seed_plan(plan.plan_id, "host-a")
+    ref = coordinator.execute_confirmed_plan(plan.plan_id)
+
+    event = coordinator.ingest_generation_job_status({
+        "job_id": ref.job_id,
+        "room_id": "room-a",
+        "plan_id": plan.plan_id,
+        "session_id": ref.session_id,
+        "status": "done",
+    })
+    status_event = coordinator.ingest_message(ChatMessage(
+        room_id="room-a",
+        sender_id="host-a",
+        is_host=True,
+        text="@GM 现在生成到哪里了",
+    ))
+
+    assert event.event_type == "generation_completed"
+    assert coordinator.active_plan_for_room("room-a").status == SeedPlanStatus.COMPLETED
+    assert "已完成" in status_event.message
+    assert "正在生成" not in status_event.message
+    print("[OK] generation job done marks SeedPlan completed for status query")
+
+
 if __name__ == "__main__":
     test_chat_updates_seed_plan_without_generation()
     test_confirmed_seed_plan_executes_through_scheduler()
     test_confirmed_seed_plan_creates_scene_design_contract_with_negative_preferences()
     test_status_query_does_not_create_intervention_or_generation_job()
     test_completed_generation_add_routes_to_post_generation_add()
+    test_completed_generation_modify_routes_to_final_adjustment()
+    test_completed_generation_boundary_alias_routes_to_final_adjustment()
+    test_generation_add_target_hint_strips_followup_verbs_and_mentions()
+    test_execute_confirmed_plan_payload_uses_full_contract_prompt()
     test_system_actor_aliases_are_canonicalized_for_terrain_boundary()
     test_seed_plan_confirmation_requires_non_empty_host_identity()
     test_gm_conflict_resolution_requires_host_confirmation_before_plan_confirm()
@@ -1965,3 +2091,4 @@ if __name__ == "__main__":
     test_coordinator_resolved_proposal_histories_are_bounded_without_dropping_pending()
     test_coordinator_resolved_final_adjustment_conflicts_are_bounded()
     test_coordinator_generation_job_refs_are_bounded_for_future_updates()
+    test_generation_job_done_marks_seed_plan_completed_for_status_query()

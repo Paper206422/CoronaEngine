@@ -93,6 +93,25 @@ def test_scheduler_logs_safe_job_lifecycle_ids_without_payload_leaks():
     print("[OK] GenerationScheduler logs safe lifecycle ids without payload leaks")
 
 
+def test_scene_generation_without_stage_handler_fails_instead_of_fake_done():
+    scheduler = GenerationScheduler(stage_order=("prepare",), auto_start=True)
+    try:
+        submitted = scheduler.submit({
+            "room_id": "room-a",
+            "session_id": "exec-missing-handler",
+            "plan_id": "seed-missing-handler",
+            "job_type": "scene_generation",
+        })
+        final = scheduler.wait(submitted["job_id"], timeout=2.0)
+    finally:
+        scheduler.shutdown()
+
+    assert final["status"] == "failed"
+    assert "stage handler missing" in final["error"]
+    assert final["result"].get("completed_stages") is None
+    print("[OK] scene_generation without stage handler fails instead of fake done")
+
+
 def test_scheduler_cancel_before_submit_stops_download_and_import():
     calls = []
 
@@ -1110,6 +1129,7 @@ def test_scheduler_accepts_per_job_stage_handlers():
 if __name__ == "__main__":
     test_scheduler_runs_all_stages_in_order()
     test_scheduler_logs_safe_job_lifecycle_ids_without_payload_leaks()
+    test_scene_generation_without_stage_handler_fails_instead_of_fake_done()
     test_scheduler_cancel_before_submit_stops_download_and_import()
     test_scheduler_pause_session_blocks_until_resume()
     test_scheduler_cancel_paused_job_without_resume_releases_queue()

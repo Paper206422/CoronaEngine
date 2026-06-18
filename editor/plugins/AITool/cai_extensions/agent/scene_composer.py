@@ -1045,19 +1045,35 @@ def apply_scene_semantic_terrain_profile(zone, scene_text: str, scene_type: str 
                 "openness": 0.65,
             },
         )
-    if not _has_aspect(zone, "boundary"):
-        boundary = dict(profile.boundary_spec)
-        if boundary.get("type") in {"low_decorative_boundary", "camp_boundary"}:
+    boundary = dict(profile.boundary_spec)
+    if boundary.get("type") in {"low_decorative_boundary", "camp_boundary"}:
+        existing_boundary = _aspect(zone, "boundary")
+        should_override_generic = (
+            profile.scene_key == "fantasy_night_market"
+            and existing_boundary is not None
+            and str(getattr(existing_boundary, "params", {}).get("kind") or "").lower() in {"", "wall", "fence"}
+            and str(getattr(existing_boundary, "params", {}).get("material") or "").lower() in {"", "stone", "wood"}
+        )
+        boundary_params = {
+            "kind": boundary.get("kind", "fence"),
+            "material": boundary.get("material", "wood"),
+            "height": boundary.get("height", 0.8),
+            "style": boundary.get("style", ""),
+            "coverage": boundary.get("coverage", "partial"),
+            "shape": boundary.get("shape", ""),
+        }
+        if existing_boundary is not None and should_override_generic:
+            existing_boundary.params.update(boundary_params)
+            logger.info(
+                "[SceneComposer] semantic terrain profile overrides generic boundary: scene=%s params=%s",
+                profile.scene_key,
+                boundary_params,
+            )
+        elif not _has_aspect(zone, "boundary"):
             _add_legacy_aspect(
                 zone,
                 "boundary",
-                {
-                    "kind": boundary.get("kind", "fence"),
-                    "material": boundary.get("material", "wood"),
-                    "height": boundary.get("height", 0.8),
-                    "style": boundary.get("style", ""),
-                    "coverage": boundary.get("coverage", "partial"),
-                },
+                boundary_params,
             )
 
 

@@ -60,6 +60,8 @@ def test_role_voice_injection_keeps_persona_visible():
     assert "【你的角色】山贼" in system
     assert "【偏好物件】" in system
     assert "【布局偏好】" in system
+    assert "【视野边界】" in system
+    assert "不要凭角色口吻臆造执行结果" in system
     assert "始终以该角色的口吻回复" in system
 
 

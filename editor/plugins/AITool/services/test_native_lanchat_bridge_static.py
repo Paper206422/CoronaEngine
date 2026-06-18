@@ -115,9 +115,43 @@ def test_lanchat_host_only_disclosure_has_native_targeted_api() -> None:
     )
 
 
+def test_lanchat_worker_is_started_with_scene_composer_factory() -> None:
+    _assert_contains(
+        "editor/plugins/AITool/main.py",
+        "def _create_lanchat_scene_composer",
+        "SceneComposer",
+        "composer_factory=_create_lanchat_scene_composer",
+    )
+
+
+def test_network_host_periodic_snapshot_does_not_rebroadcast_actor_creates() -> None:
+    source = _read("editor/Frontend/src/views/sidebar/Network.vue")
+    expected = (
+        "if (count > 0 && sessionRole.value === 'host') {\n"
+        "        await broadcastCurrentSceneSnapshot(currentSceneName.value, false);"
+    )
+    assert expected in source, "host polling must not rebroadcast actor create every 2 seconds"
+    assert "await broadcastCurrentSceneSnapshot(sceneName, true);" in source, (
+        "host must still send actor creates when a client explicitly requests a full snapshot"
+    )
+
+
+def test_lanchat_room_panel_exposes_validation_agent_bundle() -> None:
+    _assert_contains(
+        "editor/Frontend/src/views/sidebar/lanchat/RoomPanel.vue",
+        "roleTemplateBundles",
+        "night_market_validation",
+        "夜市验证组",
+        "addRoleTemplateBundle",
+    )
+
+
 if __name__ == "__main__":
     test_lanchat_room_event_bridge_is_pollable_from_python_worker()
     test_lanchat_plain_chat_coordinator_bridge_contract_is_intact()
     test_lanchat_cef_event_callback_remains_registered()
     test_lanchat_host_only_disclosure_has_native_targeted_api()
+    test_lanchat_worker_is_started_with_scene_composer_factory()
+    test_network_host_periodic_snapshot_does_not_rebroadcast_actor_creates()
+    test_lanchat_room_panel_exposes_validation_agent_bundle()
     print("[OK] LANChat native bridge static contracts")

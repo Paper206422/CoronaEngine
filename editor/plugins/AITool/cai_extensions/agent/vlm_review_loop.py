@@ -95,6 +95,8 @@ class VlmReviewReport:
     skipped: List[str] = field(default_factory=list)       # 截图/审查失败被跳过的
     timed_out: List[str] = field(default_factory=list)      # 截图超时（卡死源兜底命中）
     confidence_threshold: float = 0.55
+    status: str = "completed"                              # completed | disabled | skipped | unavailable
+    reason: str = ""
 
     def actionable(self) -> List[VlmAdvice]:
         """返回有可执行修正建议的条目（供 FinalReview 选择性采纳）。"""
@@ -104,6 +106,12 @@ class VlmReviewReport:
         ]
 
     def to_user_text(self) -> str:
+        if self.status == "disabled":
+            reason = _safe_user_text(self.reason, fallback="当前配置关闭。")
+            return f"VLM 外审未执行：{reason}；本轮以 AABB 几何检查和最终调整建议为准。"
+        if self.status in {"skipped", "unavailable"} and self.reason:
+            reason = _safe_user_text(self.reason, fallback="审查条件不满足。")
+            return f"VLM 外审未完成：{reason}；本轮以 AABB 几何检查为准。"
         act = self.actionable()
         if not act:
             if self.timed_out or self.skipped:

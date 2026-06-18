@@ -10,6 +10,7 @@ from collections import deque
 from typing import Any, Callable
 
 from .interaction_coordinator import ChatMessage, InteractionCoordinator
+from .seed_plan import SeedPlanStatus
 from .lanchat_agent_orchestrator import LanChatAgentOrchestrator
 from .lanchat_host_action_executor import LanChatHostActionExecutor
 from .generation_scheduler import GenerationScheduler
@@ -195,6 +196,16 @@ class LANChatAgentWorker:
             room_id = str(message.get("room_id") or "default")
             self._remember_room_id(room_id)
             metadata = self._coordinator_sync_metadata(message, source=source)
+            active = coordinator.active_plan_for_room(room_id)
+            if (
+                source == "lanchat_history_snapshot"
+                and active is not None
+                and active.status == SeedPlanStatus.COMPLETED
+                and not coordinator._is_status_query(text)
+                and coordinator._intent_type(text) != "add"
+                and not coordinator._is_post_generation_adjustment(text)
+            ):
+                return False
             coordinator.ingest_message(ChatMessage(
                 room_id=room_id,
                 sender_id=str(message.get("sender_id") or message.get("from") or ""),
@@ -324,6 +335,12 @@ class LANChatAgentWorker:
         status_reply = self._handle_coordinator_status_query(trigger)
         if status_reply is not None:
             return bool(self._send_final_reply(agent_id, agent_name, status_reply, trigger))
+        generation_start_reply = self._handle_coordinator_generation_start(trigger)
+        if generation_start_reply is not None:
+            return bool(self._send_final_reply("gm-system", "GM", generation_start_reply, trigger))
+        completed_intervention_reply = self._handle_coordinator_completed_intervention(trigger)
+        if completed_intervention_reply is not None:
+            return bool(self._send_final_reply(agent_id, agent_name, completed_intervention_reply, trigger))
 
         try:
             from .agent_progress_context import agent_progress_sink
@@ -533,6 +550,283 @@ class LANChatAgentWorker:
         except Exception as exc:  # noqa: BLE001
             self._logger.debug("Coordinator status query skipped: %s", exc)
             return None
+
+    def _handle_coordinator_generation_start(self, trigger: dict[str, Any]) -> str | None:
+        text = str(trigger.get("text") or "").strip()
+        if not text:
+            return None
+        message_kind = str(trigger.get("message_kind") or "chat").strip().lower()
+        if message_kind not in {"", "chat"}:
+            return None
+        if not self._is_generation_start_text(text):
+            return None
+        try:
+            coordinator = self._get_interaction_coordinator()
+            room_id = str(trigger.get("room_id") or "default")
+            plan = coordinator.active_plan_for_room(room_id)
+            if plan is None:
+                return None
+            if plan.status == SeedPlanStatus.CONFIRMED:
+                disclosure_start = len(coordinator.disclosure_events)
+                ref = coordinator.execute_confirmed_plan(plan.plan_id)
+                emitted = self._emit_new_disclosure_events(coordinator, disclosure_start)
+                self._start_coordinator_disclosure_watch(coordinator, disclosure_start + emitted)
+                self._emit_generation_scheduler_disclosure()
+                return f"【执行结果】SeedPlan {plan.plan_id} 已进入生成队列：{ref.job_id} ({ref.status})"
+            if plan.status == SeedPlanStatus.EXECUTING:
+                latest_status = coordinator._latest_generation_job_status(plan.plan_id)
+                return coordinator._status_query_message(plan, "", latest_status)
+            return None
+        except Exception as exc:  # noqa: BLE001
+            self._logger.debug("Coordinator generation start skipped: %s", exc)
+            return None
+
+    @staticmethod
+    def _is_generation_start_text(text: str) -> bool:
+        raw = str(text or "")
+        return any(word in raw for word in (
+            "确认开始", "直接生成", "开始生成", "开始执行", "执行生成",
+            "按照方案执行生成", "按方案执行生成", "就按方案生成", "按这个方案生成",
+            "按照方案生成", "开始搭建", "开始布置",
+        ))
+
+    def _handle_coordinator_completed_intervention(self, trigger: dict[str, Any]) -> str | None:
+        text = str(trigger.get("text") or "").strip()
+        if not text:
+            return None
+        message_kind = str(trigger.get("message_kind") or "chat").strip().lower()
+        if message_kind not in {"", "chat"}:
+            return None
+        try:
+            coordinator = self._get_interaction_coordinator()
+            room_id = str(trigger.get("room_id") or "default")
+            plan = coordinator.active_plan_for_room(room_id)
+            if plan is None or plan.status != SeedPlanStatus.COMPLETED:
+                return None
+            is_status_query = getattr(coordinator, "_is_status_query", None)
+            if callable(is_status_query) and is_status_query(text):
+                return None
+            is_post_adjustment = getattr(coordinator, "_is_post_generation_adjustment", None)
+            intent_type = coordinator._intent_type(text)
+            if intent_type != "add" and (not callable(is_post_adjustment) or not is_post_adjustment(text)):
+                return None
+            disclosure_start = len(coordinator.disclosure_events)
+            event = coordinator.ingest_message(ChatMessage(
+                room_id=room_id,
+                sender_id=str(trigger.get("sender_id") or trigger.get("from") or ""),
+                sender_name=str(trigger.get("sender_name") or trigger.get("from") or ""),
+                text=text,
+                is_host=bool(trigger.get("is_host") or str(trigger.get("sender_type") or "").lower() == "host"),
+                agent_id=str(trigger.get("agent_id") or ""),
+                agent_name=str(trigger.get("agent_name") or ""),
+                metadata=self._coordinator_sync_metadata(trigger, source="lanchat_agent_completed_intervention"),
+            ))
+            self._emit_new_disclosure_events(coordinator, disclosure_start)
+            if getattr(event, "event_type", "") in {"post_generation_add_routed", "final_adjustment_routed"}:
+                executed = self._try_execute_completed_final_adjustment(event, trigger)
+                if executed:
+                    base = str(getattr(event, "message", "") or "已记录该调整。").strip()
+                    return f"{base}\n{executed}" if base else executed
+                return str(getattr(event, "message", "") or "已记录该调整。")
+            return None
+        except Exception as exc:  # noqa: BLE001
+            self._logger.debug("Coordinator completed intervention skipped: %s", exc)
+            return None
+
+    def _try_execute_completed_final_adjustment(self, event: Any, trigger: dict[str, Any]) -> str:
+        if getattr(event, "event_type", "") != "final_adjustment_routed":
+            return ""
+        text = str(trigger.get("text") or "").strip()
+        if not text:
+            return ""
+        payload = getattr(event, "payload", None)
+        payload = payload if isinstance(payload, dict) else {}
+        target_hint = str(
+            payload.get("actor_id")
+            or payload.get("target_actor_id")
+            or payload.get("target_hint")
+            or ""
+        ).strip()
+        actor = self._pick_completed_adjustment_actor(text, target_hint)
+        if actor is None:
+            return ""
+        changes = self._apply_completed_adjustment_to_actor(actor, text)
+        if not changes:
+            return ""
+        name = str(getattr(actor, "name", "") or target_hint or "目标物体")
+        return f"已执行低风险最终调整：{name}，{'；'.join(changes)}。"
+
+    def _pick_completed_adjustment_actor(self, text: str, target_hint: str = "") -> Any | None:
+        actors = self._current_scene_actors()
+        if not actors:
+            return None
+        try:
+            from .terrain_component_resolver import canonical_actor_id
+        except Exception:  # noqa: BLE001
+            canonical_actor_id = lambda value: str(value or "").strip()  # type: ignore
+        text_value = str(text or "")
+        canonical_target = str(canonical_actor_id(target_hint) or "").strip()
+        if canonical_target == "__terrain_boundary" or self._looks_like_boundary_adjustment(text_value):
+            for actor in actors:
+                name = str(getattr(actor, "name", "") or "")
+                if str(canonical_actor_id(name) or "") == "__terrain_boundary":
+                    return actor
+        target_values = {target_hint, canonical_target}
+        target_values = {str(item).strip() for item in target_values if str(item or "").strip()}
+        for actor in actors:
+            name = str(getattr(actor, "name", "") or "")
+            display = self._completed_adjustment_display_name(name)
+            canonical = str(canonical_actor_id(name) or "").strip()
+            candidates = {name, display, canonical}
+            if target_values & {item for item in candidates if item}:
+                return actor
+            if any(item and item in text_value for item in candidates):
+                return actor
+        return None
+
+    def _current_scene_actors(self) -> list[Any]:
+        getter = getattr(self._corona_engine, "get_scene_actors", None)
+        if callable(getter):
+            try:
+                actors = getter()
+                return list(actors or [])
+            except Exception as exc:  # noqa: BLE001
+                self._logger.debug("Failed to read scene actors from engine helper: %s", exc)
+        try:
+            from CoronaCore.core.managers import scene_manager
+            scene = scene_manager.get("")
+            if scene is None:
+                routes = scene_manager.list_all()
+                scene = scene_manager.get(routes[0]) if routes else None
+            if scene is None:
+                return []
+            get_actors = getattr(scene, "get_actors", None)
+            return list(get_actors() or []) if callable(get_actors) else []
+        except Exception as exc:  # noqa: BLE001
+            self._logger.debug("Failed to read scene actors for completed adjustment: %s", exc)
+            return []
+
+    @staticmethod
+    def _completed_adjustment_display_name(name: str) -> str:
+        display = str(name or "")
+        for prefix in ("__shell_", "__asset_"):
+            if display.startswith(prefix):
+                return display[len(prefix):]
+        return display
+
+    @staticmethod
+    def _looks_like_boundary_adjustment(text: str) -> bool:
+        return any(token in str(text or "") for token in (
+            "_terrain_boundary",
+            "__terrain_boundary",
+            "terrain_boundary",
+            "地形边界",
+            "场地边界",
+            "边界",
+            "栅栏",
+            "围栏",
+        ))
+
+    def _apply_completed_adjustment_to_actor(self, actor: Any, text: str) -> list[str]:
+        try:
+            from .terrain_component_resolver import canonical_actor_id
+        except Exception:  # noqa: BLE001
+            canonical_actor_id = lambda value: str(value or "").strip()  # type: ignore
+        name = str(getattr(actor, "name", "") or "")
+        canonical = str(canonical_actor_id(name) or "").strip()
+        changes: list[str] = []
+        raw = str(text or "")
+        if canonical == "__terrain_boundary":
+            changes.extend(self._apply_completed_boundary_adjustment(actor, raw))
+        scale_factor = self._completed_adjustment_scale_factor(raw)
+        if scale_factor is not None and canonical != "__terrain_boundary":
+            try:
+                current = [float(v) for v in actor.get_scale()]
+                while len(current) < 3:
+                    current.append(1.0)
+                new_scale = [round(max(0.02, value * scale_factor), 4) for value in current[:3]]
+                actor.set_scale(new_scale)
+                changes.append(f"缩放调整为 {new_scale}")
+            except Exception as exc:  # noqa: BLE001
+                self._logger.debug("Completed final adjustment scale failed: %s", exc)
+        if any(word in raw for word in ("贴地", "落地", "悬空", "穿模", "接地")):
+            try:
+                current = [float(v) for v in actor.get_position()]
+                while len(current) < 3:
+                    current.append(0.0)
+                if current[1] < 0.0 or any(word in raw for word in ("贴地", "落地", "接地")):
+                    current[1] = max(0.0, current[1])
+                    actor.set_position([round(v, 4) for v in current[:3]])
+                    changes.append("已校正贴地高度")
+            except Exception as exc:  # noqa: BLE001
+                self._logger.debug("Completed final adjustment grounding failed: %s", exc)
+        return changes
+
+    def _apply_completed_boundary_adjustment(self, actor: Any, text: str) -> list[str]:
+        changes: list[str] = []
+        if any(word in text for word in ("低矮", "矮一点", "太高", "别太高", "奇怪", "不自然", "藤蔓", "木栏", "围栏", "栅栏")):
+            try:
+                current = [float(v) for v in actor.get_scale()]
+                while len(current) < 3:
+                    current.append(1.0)
+                new_scale = [
+                    round(max(0.02, current[0]), 4),
+                    round(min(max(0.02, current[1]), 0.55), 4),
+                    round(max(0.02, current[2]), 4),
+                ]
+                actor.set_scale(new_scale)
+                changes.append(f"边界高度调整为 {new_scale}")
+            except Exception as exc:  # noqa: BLE001
+                self._logger.debug("Completed boundary scale adjustment failed: %s", exc)
+        if any(word in text for word in ("藤蔓", "木栏", "木质", "温暖", "自然")):
+            rgb = [0.34, 0.45, 0.18] if "藤蔓" in text else [0.42, 0.25, 0.12]
+            if self._try_completed_actor_color(actor, rgb):
+                changes.append("边界颜色调整为自然木藤色")
+        return changes
+
+    @staticmethod
+    def _completed_adjustment_scale_factor(text: str) -> float | None:
+        numeric = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*倍", str(text or ""))
+        if numeric and any(word in text for word in ("放大", "变大", "扩大")):
+            return max(0.05, float(numeric.group(1)))
+        if numeric and any(word in text for word in ("缩小", "变小")):
+            return max(0.05, 1.0 / max(0.05, float(numeric.group(1))))
+        if "一半" in text and any(word in text for word in ("缩小", "变小")):
+            return 0.5
+        if any(word in text for word in ("大一点", "变大", "放大")):
+            return 1.35
+        if any(word in text for word in ("小一点", "变小", "缩小")):
+            return 0.75
+        return None
+
+    @staticmethod
+    def _try_completed_actor_color(actor: Any, rgb: list[float]) -> bool:
+        candidates = [
+            getattr(actor, "set_color", None),
+            getattr(actor, "set_diffuse", None),
+        ]
+        optics = getattr(actor, "_optics", None)
+        if optics is not None:
+            candidates.extend([
+                getattr(optics, "set_color", None),
+                getattr(optics, "set_diffuse", None),
+                getattr(optics, "set_base_color", None),
+            ])
+        for setter in candidates:
+            if not callable(setter):
+                continue
+            try:
+                setter(rgb)
+                return True
+            except TypeError:
+                try:
+                    setter(float(rgb[0]), float(rgb[1]), float(rgb[2]))
+                    return True
+                except Exception:
+                    continue
+            except Exception:
+                continue
+        return False
 
     @staticmethod
     def _gm_pace_action_from_trigger(trigger: dict[str, Any]) -> str:
@@ -1184,14 +1478,31 @@ class LANChatAgentWorker:
         if plan.status.value == "draft":
             plan.propose()
         confirmed = coordinator.confirm_seed_plan(plan.plan_id, host_id)
+        confirmed_payload = confirmed.payload if isinstance(getattr(confirmed, "payload", None), dict) else {}
+        seed_plan = confirmed_payload.get("seed_plan")
+        if not getattr(confirmed, "ok", False) or not confirmed_payload.get("plan_id") or not seed_plan:
+            structured = dict(payload)
+            structured.update({
+                "action_type": "discussion_only",
+                "execution": "coordinator_confirmation_blocked",
+                "room_id": room_id,
+                "plan_id": plan.plan_id,
+                "requires_host_confirm": False,
+                "status": "confirmed",
+                "coordinator_blocked": True,
+                "reason": str(getattr(confirmed, "message", "") or "SeedPlan 暂不能确认执行。"),
+                "seed_plan_status": str(getattr(plan.status, "value", plan.status)),
+            })
+            structured.setdefault("intent_text", intent_text)
+            return structured
         structured = dict(payload)
         structured.update({
             "action_type": "start_generation",
             "execution": "coordinator_structured",
-            "plan_id": confirmed.payload["plan_id"],
-            "plan_version": confirmed.payload["plan_version"],
+            "plan_id": confirmed_payload["plan_id"],
+            "plan_version": confirmed_payload["plan_version"],
             "room_id": room_id,
-            "seed_plan": confirmed.payload["seed_plan"],
+            "seed_plan": seed_plan,
             "requires_host_confirm": False,
             "status": "confirmed",
         })

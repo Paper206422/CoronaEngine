@@ -39,6 +39,12 @@ except Exception:
     _CoronaEngine = None
 
 
+def _create_lanchat_scene_composer():
+    from .cai_extensions.agent.scene_composer import SceneComposer
+
+    return SceneComposer(scene_name="lanchat_scene")
+
+
 @PluginBase.register_web("AITool")
 class AITool(PluginBase):
     _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="AI_")
@@ -60,6 +66,7 @@ class AITool(PluginBase):
     )
     _lanchat_agent_worker = LANChatAgentWorker(
         corona_engine=_CoronaEngine,
+        composer_factory=_create_lanchat_scene_composer,
         async_agent_execution=True,
     )
     _request_states = _request_service.states

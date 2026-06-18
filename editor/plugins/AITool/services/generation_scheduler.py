@@ -565,6 +565,7 @@ class GenerationScheduler:
                 self._set_status_locked(job, GenerationJobStatus.FAILED, error=str(exc))
         finally:
             job._done_event.set()
+            self._notify_terminal_job(job)
 
     async def _run_stage_handler(self, stage: str, job: GenerationJob) -> Any:
         job_handlers = job.runtime_context.get("stage_handlers")
@@ -573,12 +574,28 @@ class GenerationScheduler:
         else:
             handler = self._stage_handlers.get(stage)
         if handler is None:
+            if str(job.payload.get("job_type") or "") == "scene_generation":
+                raise RuntimeError(f"scene_generation stage handler missing: {stage}")
             await asyncio.sleep(0)
             return {"completed_stages": [*job.result.get("completed_stages", []), stage]}
         value = handler(job)
         if inspect.isawaitable(value):
             value = await value
         return value
+
+    def _notify_terminal_job(self, job: GenerationJob) -> None:
+        if job.status not in TERMINAL_STATUSES:
+            return
+        coordinator = job.runtime_context.get("interaction_coordinator")
+        handler = job.runtime_context.get("on_job_complete")
+        if not callable(handler) and coordinator is not None:
+            handler = getattr(coordinator, "ingest_generation_job_status", None)
+        if not callable(handler):
+            return
+        try:
+            handler(job.as_dict())
+        except Exception as exc:  # noqa: BLE001
+            self._logger.debug("Generation job terminal callback failed: %s", exc)
 
     async def _wait_if_paused(self, job: GenerationJob) -> None:
         while True:

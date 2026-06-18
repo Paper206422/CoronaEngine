@@ -17,6 +17,55 @@ from .test_cases import get_test_case
 logger = logging.getLogger(__name__)
 
 
+_SEARCH_CONFIG_ERROR_MARKERS = (
+    "Invalid Token",
+    "request id",
+    "401",
+    "Unauthorized",
+    "api_key",
+    "API Key",
+    "未配置",
+    "无效的 URL",
+)
+
+
+def _is_search_config_error(text: Any) -> bool:
+    message = str(text or "")
+    return any(marker in message for marker in _SEARCH_CONFIG_ERROR_MARKERS)
+
+
+def _safe_search_error(text: Any) -> str:
+    if _is_search_config_error(text):
+        return "图搜/embedding 配置不可用（凭据或服务配置错误），已跳过检索并转入生成。"
+    return str(text or "检索异常")
+
+
+def _requires_image_search(task: Dict[str, Any]) -> bool:
+    image_url = str(task.get("image_url", "") or "")
+    if image_url.startswith("__text_to_3d__:") or image_url.startswith("__local_model__:"):
+        return False
+    if task.get("local_model_cached") and task.get("model_path"):
+        return False
+    return True
+
+
+def _build_search_fast_fail_result(task: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "item_name": task.get("item_name", "未知"),
+        "object_id": task.get("object_id", ""),
+        "task_index": task.get("task_index", 0),
+        "input_image_url": task.get("image_url", ""),
+        "task_object_id": task.get("task_object_id", task.get("object_id", "")),
+        "source": "pending_generation",
+        "search_status": "search_unavailable_fatal",
+        "search_error": reason,
+    }
+    image_prompt = task.get("image_prompt", "")
+    if image_prompt:
+        result["image_prompt"] = image_prompt
+    return result
+
+
 def _build_mock_retrieve_outputs(
     state: ModelRetrievalWorkflowState,
     tasks: List[Dict[str, Any]],
@@ -105,7 +154,9 @@ def retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, An
     # 本地模型库（最高优先级）：按名命中即复用，跳过图搜 + 混元3D 生成。
     # 放最顶 → 连"文生图失败降级成 __text_to_3d__"、图搜工具不可用的任务也能被库接住。
     # source="retrieval" 复用现有路由进 model_results，混元3D 不被调用。
-    cached_dir = lookup_model(name)
+    cached_dir = str(task.get("model_path", "") or "") if task.get("local_model_cached") else ""
+    if not cached_dir:
+        cached_dir = lookup_model(name)
     if cached_dir:
         result.update(
             {
@@ -116,6 +167,16 @@ def retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, An
             }
         )
         logger.info("[Workflow][retrieve] %s 命中本地模型库，跳过生成: %s", name, cached_dir)
+        return result
+
+    if isinstance(image_url, str) and image_url.startswith("__local_model__:"):
+        result.update(
+            {
+                "source": "pending_generation",
+                "search_status": "local_library_miss",
+            }
+        )
+        logger.info("[Workflow][retrieve] %s 本地模型标记失效，转生成队列", name)
         return result
 
     # text_to_3d 任务（文生图失败降级而来）：image_url 是文字标记，不能拿去图搜，
@@ -166,7 +227,8 @@ def retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, An
                 {
                     "source": "pending_generation",
                     "search_status": "error",
-                    "search_error": error_msg or "检索异常",
+                    "search_error": _safe_search_error(error_msg or "检索异常"),
+                    "search_error_raw": error_msg or "检索异常",
                 }
             )
             return result
@@ -227,7 +289,8 @@ def retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, An
             {
                 "source": "pending_generation",
                 "search_status": "error",
-                "search_error": str(e),
+                "search_error": _safe_search_error(e),
+                "search_error_raw": str(e),
                 "search_elapsed_seconds": round(elapsed, 3),
             }
         )
@@ -275,13 +338,52 @@ def retrieve_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
         for index, task in enumerate(tasks, start=1)
     ]
 
-    max_workers = min(len(indexed_tasks), SEARCH_MAX_WORKERS) or 1
+    completed_count = 0
+
+    def _record(retrieved: Dict[str, Any]) -> None:
+        nonlocal completed_count
+        if retrieved.get("source") == "retrieval":
+            retrieval_results.append(retrieved)
+        else:
+            pending_generation.append(retrieved)
+        completed_count += 1
+        publish_node_progress(
+            state,
+            retrieved,
+            node_name="retrieve",
+            done_count=completed_count,
+            total_count=len(indexed_tasks),
+        )
+
+    remaining_tasks = indexed_tasks
+    if search_tool:
+        for index, task in enumerate(indexed_tasks):
+            retrieved = retrieve_single_item(task, search_tool)
+            _record(retrieved)
+            remaining_tasks = indexed_tasks[index + 1:]
+
+            if not _requires_image_search(task):
+                continue
+
+            search_error = retrieved.get("search_error_raw", "") or retrieved.get("search_error", "")
+            if _is_search_config_error(search_error):
+                reason = _safe_search_error(search_error)
+                logger.warning(
+                    "[Workflow][retrieve] 图搜/embedding 配置错误，剩余 %s 个任务跳过检索直接生成: %s",
+                    len(remaining_tasks),
+                    reason,
+                )
+                for pending_task in remaining_tasks:
+                    _record(_build_search_fast_fail_result(pending_task, reason))
+                remaining_tasks = []
+            break
+
+    max_workers = min(len(remaining_tasks), SEARCH_MAX_WORKERS) or 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(retrieve_single_item, task, search_tool): task
-            for task in indexed_tasks
+            for task in remaining_tasks
         }
-        completed_count = 0
         for future in concurrent.futures.as_completed(futures):
             task = futures[future]
             try:
@@ -307,19 +409,7 @@ def retrieve_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
                     "search_error": str(e),
                 }
 
-            if retrieved.get("source") == "retrieval":
-                retrieval_results.append(retrieved)
-            else:
-                pending_generation.append(retrieved)
-
-            completed_count += 1
-            publish_node_progress(
-                state,
-                retrieved,
-                node_name="retrieve",
-                done_count=completed_count,
-                total_count=len(indexed_tasks),
-            )
+            _record(retrieved)
 
     logger.info(
         "[Workflow][retrieve] 完成: 检索命中 %s, 待生成 %s",

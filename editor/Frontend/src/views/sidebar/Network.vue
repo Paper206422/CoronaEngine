@@ -316,7 +316,7 @@ async function pollPeers() {
         await requestSceneSnapshotOnce(currentSceneName.value);
       }
       if (count > 0 && sessionRole.value === 'host') {
-        await broadcastCurrentSceneSnapshot(currentSceneName.value, true);
+        await broadcastCurrentSceneSnapshot(currentSceneName.value, false);
       }
     }
 

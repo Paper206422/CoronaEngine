@@ -17,6 +17,28 @@ from .test_cases import get_test_case
 logger = logging.getLogger(__name__)
 
 
+def _lookup_cached_model(item_name: str) -> str:
+    """Best-effort local model lookup used before image retry to avoid slow calls."""
+    try:
+        from .local_model_library import lookup_model
+
+        return str(lookup_model(item_name) or "")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Workflow][dispatch] 本地模型库查询失败（降级未命中）: %s", e)
+        return ""
+
+
+def _lookup_cached_image(item_name: str) -> str:
+    """Best-effort local image lookup used before image compensation."""
+    try:
+        from .local_model_library import lookup_image
+
+        return str(lookup_image(item_name) or "")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Workflow][dispatch] 本地图片库查询失败（降级未命中）: %s", e)
+        return ""
+
+
 def _image_retry_max_workers(count: int) -> int:
     try:
         configured = int(os.getenv("CORONA_IMAGE_RETRY_MAX_WORKERS", "3") or "3")
@@ -168,15 +190,36 @@ def dispatch_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
     if not approved:
         return {"error": "无可处理的设计元素（第一步输出为空）"}
 
-    tasks: List[Dict[str, str]] = []
+    tasks: List[Dict[str, Any]] = []
     failed_elements: List[Dict[str, str]] = []
     for idx, elem in enumerate(approved, start=1):
         name = elem.get("item_name", "")
-        image_url = generated_images.get(name, "")
+        object_id = normalize_object_id(name, idx)
+
+        cached_model = _lookup_cached_model(name)
+        if cached_model:
+            cached_image = generated_images.get(name, "") or _lookup_cached_image(name)
+            tasks.append(
+                {
+                    "item_name": name,
+                    "object_id": object_id,
+                    "image_url": cached_image or f"__local_model__:{name}",
+                    "image_prompt": elem.get("image_prompt", ""),
+                    "local_model_cached": True,
+                    "model_path": cached_model,
+                }
+            )
+            logger.info(
+                "[Workflow][dispatch] %s 命中本地模型库，跳过图片补偿: %s",
+                name,
+                cached_model,
+            )
+            continue
+
+        image_url = generated_images.get(name, "") or _lookup_cached_image(name)
         if not image_url:
             failed_elements.append(elem)
             continue
-        object_id = normalize_object_id(name, idx)
         tasks.append(
             {
                 "item_name": name,

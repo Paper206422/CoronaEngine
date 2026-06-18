@@ -289,7 +289,10 @@ class InteractionCoordinator:
 
     _ADD_WORDS = ("添加", "新增", "补", "加一个", "放入", "插入")
     _REMOVE_WORDS = ("删除", "移除", "去掉", "不要")
-    _REPAIR_WORDS = ("穿模", "重叠", "悬空", "不贴地", "比例不对", "太大", "太小", "修", "问题")
+    _REPAIR_WORDS = (
+        "穿模", "重叠", "悬空", "不贴地", "比例不对", "太大", "太小",
+        "修", "问题", "不合理", "奇怪", "布局", "摆放", "动线", "挡路",
+    )
     _WRONG_PLAN_WORDS = ("执行错", "方案错", "不是这个方案", "正儿八经", "重来")
     _STYLE_WORDS = ("风格", "统一", "更暗", "更亮", "暗黑", "集市")
 
@@ -364,6 +367,20 @@ class InteractionCoordinator:
                 intervention=decision.payload,
             )
             return self._record("post_generation_add_routed", decision.message, decision.payload)
+        if active and active.status == SeedPlanStatus.COMPLETED and self._is_post_generation_adjustment(msg.text):
+            request = self._intervention_from_message(msg, active)
+            request.apply_policy = "final_adjustment"
+            if request.intent_type == "status_query":
+                return self._handle_status_query(msg, active)
+            decision = self.ingest_intervention(request)
+            self._record_disclosures(
+                room_id=msg.room_id,
+                stage="final_adjustment",
+                progress=100,
+                plan=active.as_dict(),
+                intervention=decision.payload,
+            )
+            return self._record("final_adjustment_routed", decision.message, decision.payload)
 
         plan = self.create_or_update_seed_plan(msg)
         if active is not None and active.status == SeedPlanStatus.CLARIFYING:
@@ -734,7 +751,8 @@ class InteractionCoordinator:
             "plan_version": plan.version,
             "room_id": plan.room_id,
             "source_user_id": host_id,
-            "intent_text": plan.intent_summary,
+            "intent_text": self._execution_prompt_for_plan(plan, contract.as_dict()),
+            "plan_summary": plan.intent_summary,
             "seed_plan": plan.as_dict(),
             "scene_design_contract": contract.as_dict(),
             "requires_host_confirm": False,
@@ -771,6 +789,8 @@ class InteractionCoordinator:
             "plan_version": plan.version,
             "room_id": plan.room_id,
             "session_id": execution_session_id,
+            "prompt": self._execution_prompt_for_plan(plan, self.scene_design_contract(plan.plan_id)),
+            "intent_text": self._execution_prompt_for_plan(plan, self.scene_design_contract(plan.plan_id)),
             "seed_plan": plan.as_dict(),
             "scene_design_contract": self.scene_design_contract(plan.plan_id),
             "_runtime_context": {"interaction_coordinator": self},
@@ -1215,6 +1235,89 @@ class InteractionCoordinator:
         refs.append(ref)
         if len(refs) > MAX_GENERATION_JOB_REFS_PER_PLAN:
             del refs[:len(refs) - MAX_GENERATION_JOB_REFS_PER_PLAN]
+
+    def ingest_generation_job_status(self, job: dict[str, Any]) -> CoordinatorEvent:
+        plan_id = str(job.get("plan_id") or "").strip()
+        plan = self._plans.get(plan_id)
+        if plan is None:
+            return self._record(
+                "generation_job_status_rejected",
+                "生成任务状态所属方案不存在，已拒收。",
+                {"job": _sanitize_control_payload(job), "reject_reason": "unknown_plan"},
+            )
+        if str(job.get("room_id") or plan.room_id) != str(plan.room_id):
+            return self._record(
+                "generation_job_status_rejected",
+                "生成任务状态房间与方案不匹配，已拒收。",
+                {"job": _sanitize_control_payload(job), "reject_reason": "room_mismatch"},
+            )
+        if not self._generation_session_matches(plan_id, str(job.get("session_id") or "")):
+            return self._record(
+                "generation_job_status_rejected",
+                "生成任务状态所属执行会话已过期，已拒收。",
+                {"job": _sanitize_control_payload(job), "reject_reason": "session_mismatch"},
+            )
+
+        status = str(job.get("status") or "").strip().lower()
+        refs = self._generation_jobs_by_plan.setdefault(plan_id, [])
+        job_id = str(job.get("job_id") or "").strip()
+        existing = next((ref for ref in reversed(refs) if ref.job_id == job_id), None)
+        if existing is not None:
+            existing.status = status or existing.status
+            existing.session_id = str(job.get("session_id") or existing.session_id)
+            existing.payload = _sanitize_control_payload(job)
+        else:
+            refs.append(GenerationJobRef(
+                job_id=job_id or f"job-{uuid.uuid4().hex[:12]}",
+                plan_id=plan_id,
+                status=status or "unknown",
+                session_id=str(job.get("session_id") or ""),
+                payload=_sanitize_control_payload(job),
+            ))
+            if len(refs) > MAX_GENERATION_JOB_REFS_PER_PLAN:
+                del refs[:len(refs) - MAX_GENERATION_JOB_REFS_PER_PLAN]
+
+        progress = 100 if status in {"done", "completed"} else 0
+        if status in {"done", "completed"}:
+            plan.mark_completed()
+            self._active_generation_session_by_plan.pop(plan_id, None)
+            stage = "completed"
+            message = "主生成任务已完成，可以继续追加生成或做最终调整。"
+            event_type = "generation_completed"
+        elif status in {"failed", "cancelled", "abandoned"}:
+            stage = "failed" if status == "failed" else "cancelled"
+            message = "生成任务已结束但未完成，请查看资源状态或重新发起。"
+            event_type = "generation_terminal"
+        else:
+            stage = "executing"
+            message = "生成任务状态已更新。"
+            event_type = "generation_status_updated"
+
+        self._record_memory(
+            room_id=plan.room_id,
+            plan_id=plan_id,
+            batch_id=str(job.get("batch_id") or ""),
+            entry_type=event_type,
+            text=message,
+            visibility="shared",
+            metadata={
+                "job_id": job_id,
+                "status": status,
+                "current_stage": str(job.get("current_stage") or ""),
+            },
+        )
+        self._record_disclosures(
+            room_id=plan.room_id,
+            stage=stage,
+            progress=progress,
+            plan=plan.as_dict(),
+            intervention={
+                "intent_type": "generation_job_status",
+                "apply_policy": "read_only",
+                "status_message": message,
+            },
+        )
+        return self._record(event_type, message, {"job": _sanitize_control_payload(job), "plan": plan.as_dict()})
 
     def _generation_session_matches(self, plan_id: str, session_id: str) -> bool:
         incoming = str(session_id or "").strip()
@@ -1801,10 +1904,10 @@ class InteractionCoordinator:
     def _target_hint(self, text: str, actor_id: str = "") -> str:
         if actor_id:
             return canonical_actor_id(actor_id)
-        cleaned = re.sub(r"@\S+\s*", "", str(text or "")).strip()
+        cleaned = self._clean_target_text(str(text or ""))
         patterns = (
             r"(?:删除|移除|去掉|不要)\s*[:：]?\s*(?P<target>[^，。；,.]{1,24})",
-            r"(?:新增|增加|添加|补)\s*[:：]?\s*(?P<target>[^，。；,.]{1,24})",
+            r"(?:后面|后续|接下来|之后)?\s*(?:再)?(?:新增|增加|添加|补|加入|加)\s*[:：]?(?P<target>[^，。；,.]{1,24})",
             r"(?:调整|修改|缩小|放大|移动)\s*[:：]?\s*(?P<target>[^，。；,.]{1,24})",
             r"(?:问题|报错|异常)\s*[:：]?\s*(?P<target>[^，。；,.]{1,24})",
             r"(?:说明|备注)\s*[:：]?\s*(?P<target>[^，。；,.]{1,24})",
@@ -1812,7 +1915,7 @@ class InteractionCoordinator:
         for pattern in patterns:
             match = re.search(pattern, cleaned)
             if match:
-                target = match.group("target").strip()
+                target = self._normalize_target_hint(match.group("target"))
                 return canonical_actor_id(target[:24])
         return ""
 
@@ -1869,6 +1972,17 @@ class InteractionCoordinator:
         if any(word in text for word in ("最后", "最终", "收尾")):
             return "final_adjustment"
         return "next_batch"
+
+    def _is_post_generation_adjustment(self, text: str) -> bool:
+        if self._is_status_query(text):
+            return False
+        intent_type = self._intent_type(text)
+        if intent_type in {"remove", "repair", "style_adjust", "wrong_plan"}:
+            return True
+        return any(word in str(text or "") for word in (
+            "调整", "修改", "移动", "挪", "换成", "替换", "缩小", "放大",
+            "布局", "摆放", "动线", "不合理", "奇怪", "挡路", "贴地",
+        ))
 
     def _route_for_intervention(self, request: InterventionRequest) -> str:
         return self._apply_policy(request.content, request.intent_type)
@@ -2079,7 +2193,9 @@ class InteractionCoordinator:
         return any(word in raw for word in (
             "到哪步", "到哪一步", "到哪里", "生成到哪里", "生成情况", "查看生成情况",
             "现在的生成计划", "当前生成计划", "进度", "为什么不执行", "怎么还不执行",
-            "执行了吗", "开始了吗",
+            "执行了吗", "开始了吗", "现在的生成方案", "当前生成方案", "生成方案是什么",
+            "了解现在的生成方案", "我们开始生成了吗", "现在情况", "什么情况",
+            "情况是什么", "生成计划是什么", "为什么执行生成计划", "现在生成到哪里",
         ))
 
     def _handle_status_query(self, message: ChatMessage, plan: SeedPlan | None) -> CoordinatorEvent:
@@ -2131,6 +2247,58 @@ class InteractionCoordinator:
         if plan.status == SeedPlanStatus.COMPLETED:
             return "当前主生成已完成，可以继续追加生成或做最终调整。"
         return f"当前方案状态：{plan.status.value}。"
+
+    @staticmethod
+    def _clean_target_text(text: str) -> str:
+        cleaned = re.sub(r"@\S+\s*", "", str(text or "")).strip()
+        return cleaned.strip(" “‘”\"'，。；;,.")
+
+    @classmethod
+    def _normalize_target_hint(cls, value: str) -> str:
+        target = cls._clean_target_text(value)
+        target = re.sub(
+            r"^(?:后面|后续|接下来|之后|再|新增|增加|添加|加入|加|补|一个|一只|一座|一盏|一张|一把)+",
+            "",
+            target,
+        ).strip()
+        target = re.sub(r"^(?:个|只|座|盏|张|把)", "", target).strip()
+        target = re.sub(r"(?:要|得|需要|应该|放在|摆在).*$", "", target).strip()
+        if target in {"一下", "一下吧", "一点", "一些", "一下子", "这个", "它"}:
+            return ""
+        return target or cls._clean_target_text(value)
+
+    @staticmethod
+    def _execution_prompt_for_plan(plan: SeedPlan, contract: dict[str, Any] | None = None) -> str:
+        contract = dict(contract or {})
+        parts: list[str] = []
+        if plan.intent_summary:
+            parts.append("## 已确认多人方案")
+            parts.append(plan.intent_summary)
+        if plan.style_constraints:
+            parts.append("## 风格约束")
+            parts.extend(f"- {item}" for item in plan.style_constraints[-8:])
+        if plan.spatial_constraints:
+            parts.append("## 空间约束")
+            parts.extend(f"- {item}" for item in plan.spatial_constraints[-8:])
+        if plan.asset_constraints:
+            parts.append("## 资产约束")
+            parts.extend(f"- {item}" for item in plan.asset_constraints[-8:])
+        if plan.placement_constraints:
+            parts.append("## 摆放/地形约束")
+            parts.extend(f"- {item}" for item in plan.placement_constraints[-8:])
+        style_prompt = str(contract.get("asset_style_prompt") or "").strip()
+        if style_prompt:
+            parts.append("## 长周期场景风格合同")
+            parts.append(style_prompt)
+        terrain_spec = contract.get("terrain_spec")
+        boundary_spec = contract.get("boundary_spec")
+        if terrain_spec or boundary_spec:
+            parts.append("## 地形与边界约束")
+            if terrain_spec:
+                parts.append(f"terrain_spec={terrain_spec}")
+            if boundary_spec:
+                parts.append(f"boundary_spec={boundary_spec}")
+        return "\n".join(parts).strip() or plan.intent_summary
 
     def _update_scene_contract_for_intervention(
         self,

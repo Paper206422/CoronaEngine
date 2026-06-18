@@ -1175,12 +1175,20 @@ def _run_vlm_advisory_review(imported: List[str], engine_gate: Any, composer: An
     """Run the optional VLM outer loop; failures are advisory-only."""
     try:
         from .model_reviewer import _capture_single_model, _vlm_review_model
-        from .vlm_review_loop import review_models_async
+        from .vlm_review_loop import VlmReviewReport, review_models_async
     except Exception as exc:  # noqa: BLE001
         logger.debug("[ProgressiveWorkflow] VLM 外回路不可用，跳过: %s", exc)
-        return None
+        return _vlm_skip_report("unavailable", f"VLM 外回路依赖不可用：{exc}")
 
     max_targets = _vlm_max_targets()
+    if max_targets <= 0:
+        reason = (
+            "F5 演示模式默认关闭 VLM，以避免截图/审查拖慢主链路"
+            if os.getenv("CORONA_F5_DEMO_MODE") and "PROGRESSIVE_VLM_MAX_TARGETS" not in os.environ
+            else "PROGRESSIVE_VLM_MAX_TARGETS=0"
+        )
+        logger.info("[ProgressiveWorkflow] VLM 外回路未执行: %s", reason)
+        return VlmReviewReport(status="disabled", reason=reason)
     target_provider = getattr(composer, "vlm_target_provider", None) if composer is not None else None
     if callable(target_provider):
         try:
@@ -1203,7 +1211,8 @@ def _run_vlm_advisory_review(imported: List[str], engine_gate: Any, composer: An
             for actor_id in imported[:max(0, max_targets)]
         ]
     if not targets:
-        return None
+        logger.info("[ProgressiveWorkflow] VLM 外回路未执行: no imported targets")
+        return VlmReviewReport(status="skipped", reason="没有可审查的已导入目标。")
     capture_fn = getattr(composer, "vlm_capture_fn", None) if composer is not None else None
     review_fn = getattr(composer, "vlm_review_fn", None) if composer is not None else None
     if not callable(capture_fn):
@@ -1219,7 +1228,7 @@ def _run_vlm_advisory_review(imported: List[str], engine_gate: Any, composer: An
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[ProgressiveWorkflow] VLM 外回路异常，已跳过: %s", exc)
-        return None
+        return VlmReviewReport(status="unavailable", reason=f"VLM 外回路异常：{exc}")
 
 
 def _vlm_max_targets() -> int:
@@ -1233,6 +1242,24 @@ def _vlm_max_targets() -> int:
         return max(0, int(os.getenv("PROGRESSIVE_VLM_MAX_TARGETS", default_targets) or default_targets))
     except Exception:
         return int(default_targets)
+
+
+def _vlm_skip_report(status: str, reason: str) -> Any:
+    try:
+        from .vlm_review_loop import VlmReviewReport
+        return VlmReviewReport(status=status, reason=str(reason or ""))
+    except Exception:  # noqa: BLE001
+        from types import SimpleNamespace
+        text = f"VLM 外审未完成：{reason}；本轮以 AABB 几何检查为准。"
+        return SimpleNamespace(
+            advices=[],
+            skipped=[],
+            timed_out=[],
+            status=status,
+            reason=str(reason or ""),
+            actionable=lambda: [],
+            to_user_text=lambda: text,
+        )
 
 
 def _serialize_operation_log(entries: List[Any]) -> List[Dict[str, Any]]:
@@ -1511,6 +1538,8 @@ def _emit_vlm_review_results(
     session_id: str = "",
 ) -> None:
     if vlm_report is None or interaction_coordinator is None or not plan_id:
+        return
+    if str(getattr(vlm_report, "status", "") or "") in {"disabled", "skipped"}:
         return
     ingest = getattr(interaction_coordinator, "ingest_review_result", None)
     if not callable(ingest):

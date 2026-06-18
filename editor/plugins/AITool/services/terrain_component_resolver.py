@@ -48,7 +48,10 @@ class TerrainComponentResolver:
     def derive(self, text: str = "", *, scene_type: str = "") -> TerrainComponentProfile:
         raw = str(text or "")
         lower = raw.lower()
-        if ("\u5e7b\u60f3" in raw and "\u96c6\u5e02" in raw) or "fantasy night market" in lower:
+        is_market = "\u96c6\u5e02" in raw or "market" in lower
+        is_night = "\u591c" in raw or "night" in lower
+        is_fantasy_like = any(word in raw for word in ("\u5e7b\u60f3", "\u795e\u79d8", "\u706f\u7b3c", "\u706f\u5149", "\u6e29\u6696")) or "fantasy" in lower
+        if (is_market and (is_night or is_fantasy_like)) or "fantasy night market" in lower:
             return TerrainComponentProfile(
                 scene_key="fantasy_night_market",
                 terrain_spec={
@@ -64,6 +67,7 @@ class TerrainComponentResolver:
                     "style": "vine_wood_lantern",
                     "height": 0.55,
                     "coverage": "partial",
+                    "shape": "open_front_market_path",
                     "avoid": ["tall ranch fence", "grassland yurt fence"],
                 },
             )

@@ -304,15 +304,27 @@ class LanChatSceneRuntime:
 
     @staticmethod
     def _extract_requested_items(text: str) -> list[str]:
-        value = str(text or "")
-        value = re.sub(r"^(补充|增加|再加)[:：]?", "", value).strip()
+        value = re.sub(r"@\S+\s*", "", str(text or "")).strip()
+        value = re.sub(
+            r"^(?:后面|后续|接下来|之后)?\s*(?:再)?(?:补充|增加|新增|添加|加入|加|再加)\s*[:：]?",
+            "",
+            value,
+        ).strip()
         chunks = re.split(r"[、，,和以及;；\s]+", value)
         out: list[str] = []
         for chunk in chunks:
-            item = chunk.strip()
-            if 1 < len(item) <= 12 and not any(word in item for word in ("补充", "增加", "再加", "需要", "想要")):
+            item = LanChatSceneRuntime._normalize_requested_item(chunk)
+            if 1 < len(item) <= 12 and not any(word in item for word in ("补充", "增加", "新增", "添加", "加入", "再加", "需要", "想要")):
                 out.append(item)
         return out[:6]
+
+    @staticmethod
+    def _normalize_requested_item(value: str) -> str:
+        item = str(value or "").strip(" “‘”\"'，。；;,.")
+        item = re.sub(r"^(?:后面|后续|接下来|之后|再|新增|增加|添加|加入|加|补|一个|一只|一座|一盏|一张|一把)+", "", item).strip()
+        item = re.sub(r"^(?:个|只|座|盏|张|把)", "", item).strip()
+        item = re.sub(r"(?:要|得|需要|应该|放在|摆在).*$", "", item).strip()
+        return item
 
     @classmethod
     def _seed_items_from_text(cls, text: str) -> list[str]:

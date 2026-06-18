@@ -451,6 +451,33 @@ def test_f5_demo_mode_disables_vlm_by_default():
     print("[OK] F5 demo mode disables VLM by default but explicit target count wins")
 
 
+def test_f5_demo_mode_reports_vlm_disabled_in_final_text():
+    old_demo = os.environ.get("CORONA_F5_DEMO_MODE")
+    old_targets = os.environ.get("PROGRESSIVE_VLM_MAX_TARGETS")
+    try:
+        os.environ["CORONA_F5_DEMO_MODE"] = "1"
+        os.environ.pop("PROGRESSIVE_VLM_MAX_TARGETS", None)
+        report = _run_vlm_advisory_review(["入口拱门"], FakeEngineGate(), composer=SimpleNamespace())
+    finally:
+        if old_demo is None:
+            os.environ.pop("CORONA_F5_DEMO_MODE", None)
+        else:
+            os.environ["CORONA_F5_DEMO_MODE"] = old_demo
+        if old_targets is None:
+            os.environ.pop("PROGRESSIVE_VLM_MAX_TARGETS", None)
+        else:
+            os.environ["PROGRESSIVE_VLM_MAX_TARGETS"] = old_targets
+
+    assert report is not None
+    assert report.status == "disabled"
+    assert "F5" in report.reason
+    text = _merge_final_and_vlm_review_text("最终检查完成。", report.to_user_text())
+    assert "VLM/外观检查" in text
+    assert "未执行" in text
+    assert "AABB" in text
+    print("[OK] F5 demo mode reports VLM disabled in final report text")
+
+
 def test_aabb_review_issues_flow_to_coordinator_review_result():
     coordinator = FakeCoordinator()
     _emit_aabb_review_results(
@@ -995,6 +1022,32 @@ def test_fantasy_market_terrain_profile_uses_low_decorative_boundary():
     print("[OK] fantasy market derives low decorative terrain boundary")
 
 
+def test_warm_mysterious_market_overrides_generic_stone_wall_boundary():
+    text = "有点神秘感的室外集市，不要太恐怖，更温暖一点，有灯光和休息区"
+    profile = TerrainComponentResolver().derive(text, scene_type="outdoor")
+    assert profile.scene_key == "fantasy_night_market"
+
+    zone = Zone(
+        zone_id="market",
+        name="market",
+        role="outdoor",
+        enclosure="terrain",
+        volume=Volume(center=[0.0, 0.0, 0.0], size=[18.0, 18.0, 0.0]),
+        aspects=[
+            ZoneAspect(capability="boundary", params={"kind": "wall", "material": "stone", "height": 0.8}),
+        ],
+    )
+    apply_scene_semantic_terrain_profile(zone, text, "outdoor")
+    boundary = [item for item in zone.aspects if item.capability == "boundary"][0]
+
+    assert boundary.params["kind"] == "fence"
+    assert boundary.params["material"] == "wood"
+    assert boundary.params["style"] == "vine_wood_lantern"
+    assert boundary.params["coverage"] == "partial"
+    assert boundary.params["height"] < 0.8
+    print("[OK] warm mysterious market overrides generic stone wall boundary")
+
+
 if __name__ == "__main__":
     test_zone_and_asset_routing()
     test_zone_and_door_aabb_helpers()
@@ -1008,6 +1061,7 @@ if __name__ == "__main__":
     test_progress_message_reports_resource_provider_unavailable()
     test_progressive_post_shell_framework_generates_floor_and_boundary()
     test_f5_demo_mode_disables_vlm_by_default()
+    test_f5_demo_mode_reports_vlm_disabled_in_final_text()
     test_aabb_review_issues_flow_to_coordinator_review_result()
     test_vlm_actionable_advice_flows_to_coordinator_review_result()
     test_vlm_review_uses_composer_hooks_under_engine_gate()
@@ -1023,4 +1077,5 @@ if __name__ == "__main__":
     test_pending_resource_queue_is_bounded_and_reports_overflow()
     test_pending_resource_request_reports_provider_unavailable_without_fake_path()
     test_fantasy_market_terrain_profile_uses_low_decorative_boundary()
+    test_warm_mysterious_market_overrides_generic_stone_wall_boundary()
     print("\n=== progressive mixed geometry ALL PASS ===")

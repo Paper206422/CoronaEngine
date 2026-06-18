@@ -104,6 +104,71 @@ def test_fatal_image_retry_error_stops_fanout():
     print("[OK] fatal image retry error stops fanout and lets workflow fall back to text-to-3D")
 
 
+def test_cached_local_model_skips_image_retry():
+    tool = FatalImageTool()
+    dispatch = _load_dispatch_module(tool)
+
+    retried_names: list[str] = []
+    dispatch._lookup_cached_model = lambda name: "E:/cache/models/lantern" if name == "灯笼" else ""
+    dispatch._lookup_cached_image = lambda _name: ""
+
+    def fake_retry(elements, _session_id):
+        retried_names.extend(elem.get("item_name", "") for elem in elements)
+        return {}
+
+    dispatch._retry_failed_images = fake_retry
+    result = dispatch.dispatch_node(
+        {
+            "session_id": "session-test",
+            "approved_elements": [
+                {"item_name": "灯笼", "image_prompt": "warm lantern"},
+                {"item_name": "天使雕像", "image_prompt": "warm fantasy angel statue"},
+            ],
+            "generated_images": {},
+        }
+    )
+
+    tasks = result["intermediate"]["retrieval_tasks"]
+    assert retried_names == ["天使雕像"]
+    assert tasks[0]["item_name"] == "灯笼"
+    assert tasks[0]["local_model_cached"] is True
+    assert tasks[0]["model_path"] == "E:/cache/models/lantern"
+    assert tasks[0]["image_url"] == "__local_model__:灯笼"
+    assert tasks[1]["item_name"] == "天使雕像"
+    assert tasks[1]["image_url"].startswith("__text_to_3d__:")
+    print("[OK] cached local models skip image retry and slow image compensation")
+
+
+def test_cached_image_skips_image_retry():
+    tool = FatalImageTool()
+    dispatch = _load_dispatch_module(tool)
+
+    dispatch._lookup_cached_model = lambda _name: ""
+    dispatch._lookup_cached_image = lambda name: "E:/cache/images/sign.png" if name == "导视牌" else ""
+
+    def fail_if_called(_elements, _session_id):
+        raise AssertionError("cached image should not enter image retry")
+
+    dispatch._retry_failed_images = fail_if_called
+    result = dispatch.dispatch_node(
+        {
+            "session_id": "session-test",
+            "approved_elements": [
+                {"item_name": "导视牌", "image_prompt": "market sign"},
+            ],
+            "generated_images": {},
+        }
+    )
+
+    tasks = result["intermediate"]["retrieval_tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["item_name"] == "导视牌"
+    assert tasks[0]["image_url"] == "E:/cache/images/sign.png"
+    print("[OK] cached images skip image retry")
+
+
 if __name__ == "__main__":
     test_fatal_image_retry_error_stops_fanout()
+    test_cached_local_model_skips_image_retry()
+    test_cached_image_skips_image_retry()
     print("\n=== dispatch image retry ALL PASS ===")

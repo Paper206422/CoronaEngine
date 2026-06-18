@@ -54,6 +54,11 @@ class RoleTemplate:
             parts.append(f"\n【布局偏好】{self.layout_bias}")
         if self.forbidden_bias:
             parts.append(f"\n【避免倾向】{', '.join(self.forbidden_bias[:8])}")
+        parts.append(
+            "\n【视野边界】只能依据当前可见聊天、系统进度和工具返回作答；"
+            "不确定生成进度、模型是否导入或场景物体状态时，先说明不确定并建议查询 GM/系统状态，"
+            "不要凭角色口吻臆造执行结果。"
+        )
         parts.append("\n始终以该角色的口吻回复，保持人设一致。")
         return "".join(parts)
 

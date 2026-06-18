@@ -251,18 +251,29 @@
 	          <div class="text-sm text-gray-200">添加 AI 助手</div>
 	          <div class="space-y-2">
 	            <div class="text-[11px] text-gray-400">快速模板</div>
-	            <div class="grid grid-cols-3 gap-1.5">
-	              <button
-	                v-for="role in roleTemplates"
-	                :key="role.key"
+		            <div class="grid grid-cols-3 gap-1.5">
+		              <button
+		                v-for="role in roleTemplates"
+		                :key="role.key"
 	                class="px-2 py-1 rounded bg-[#3a3a3a] text-xs text-gray-200 hover:bg-[#84A65B]/70"
 	                :title="role.hint"
 	                @click="selectRoleTemplate(role)"
 	              >
-	                {{ role.name }}
-	              </button>
-	            </div>
-	          </div>
+		                {{ role.name }}
+		              </button>
+		            </div>
+		            <div class="flex gap-1.5 pt-1">
+		              <button
+		                v-for="bundle in roleTemplateBundles"
+		                :key="bundle.key"
+		                class="flex-1 px-2 py-1 rounded bg-[#42543b] text-xs text-gray-100 hover:bg-[#84A65B]/80"
+		                :title="bundle.hint"
+		                @click="addRoleTemplateBundle(bundle)"
+		              >
+		                {{ bundle.name }}
+		              </button>
+		            </div>
+		          </div>
 	          <input v-model="agentForm.name" placeholder="助手名字（如 小策）" :class="inputCls" />
 	          <textarea
 	            v-model="agentForm.persona"
@@ -332,6 +343,15 @@ const roleTemplates = [
     name: '商人',
     persona: '商人',
     hint: '摊位、货物、展示、交易动线',
+  },
+];
+
+const roleTemplateBundles = [
+  {
+    key: 'night_market_validation',
+    name: '夜市验证组',
+    hint: '一键添加长者、商人、小女孩、山贼，适合今晚多人/多 Agent 验证',
+    roles: ['elder', 'merchant', 'little_girl', 'bandit'],
   },
 ];
 
@@ -477,6 +497,18 @@ async function onAddAgent() {
 function selectRoleTemplate(role) {
   agentForm.name = role.name;
   agentForm.persona = role.persona;
+}
+
+async function addRoleTemplateBundle(bundle) {
+  const keys = Array.isArray(bundle?.roles) ? bundle.roles : [];
+  for (const key of keys) {
+    const role = roleTemplates.find((item) => item.key === key);
+    if (!role) continue;
+    await lanchat.addAgent({ name: role.name, persona: role.persona });
+  }
+  agentForm.name = '';
+  agentForm.persona = '';
+  showAddAgent.value = false;
 }
 
 async function onRemoveAgent(agentId) {
