@@ -87,6 +87,14 @@ class OpticsSystem : public Kernel::SystemBase {
                                     uint32_t height,
                                     uint64_t frame_index);
     void evict_idle_native_view_resources(uint64_t frame_index);
+    /// 确保给定相机拥有 per-camera 的 UI visibility/depth 图（必要时创建/扩缩），
+    /// 并把 hardware_->uiVisibilityImage/uiDepthImage 绑定到它们。Native 与 Vision
+    /// 两条路径共用此入口，保证 UI overlay 资源单一来源。不修改 gbufferSize。
+    void ensure_ui_view_resources(std::uintptr_t camera_handle,
+                                  uint32_t width,
+                                  uint32_t height,
+                                  uint64_t frame_index);
+    void evict_idle_ui_view_resources(uint64_t frame_index);
     void optics_pipeline(float frame_count, uint64_t frame_index);
     void process_pending_screenshots(std::uintptr_t camera_handle, HardwareImage& render_target);
 #ifdef CORONA_ENABLE_VISION
@@ -171,6 +179,20 @@ class OpticsSystem : public Kernel::SystemBase {
     /// 应对“任意多个、自由开关”的视口生命周期，避免长期累积泄漏。
     void evict_idle_surface_targets(uint64_t frame_index);
 
+    /// 在 background 上渲染 follow-camera UI actor + 可选柱镜 warp + composite。
+    /// 仅在 hardware_->executor 上“记录”pass，不 commit。有 follow-camera 实例时
+    /// 返回 &target.composite_output，否则返回 &background；调用方负责 commit + publish。
+    /// 前置条件：调用方已设 hardware_->gbufferSize={w,h}、已 ensure_ui_view_resources
+    /// 绑定 uiVisibility/uiDepth，且 background 的生产 pass 已在同一 executor 上记录。
+    HardwareImage* compose_surface_ui_overlay(std::uintptr_t camera_handle,
+                                              const CameraDevice& camera,
+                                              const SceneDevice& scene,
+                                              SurfaceRenderTarget& target,
+                                              HardwareImage& background,
+                                              ViewportUiMode mode,
+                                              const ViewportUiCalibration& calibration,
+                                              uint64_t frame_index);
+
     std::unordered_map<void*, SurfaceRenderTarget> surface_targets_;
     /// 空闲多少帧后回收一个 surface 目标（约 2s @120fps）。
     static constexpr uint64_t kSurfaceTargetIdleEvictFrames = 240;
@@ -189,6 +211,12 @@ class OpticsSystem : public Kernel::SystemBase {
     std::unordered_map<std::uintptr_t, std::unique_ptr<NativeViewResources>>
         native_view_resources_;
     static constexpr uint64_t kNativeViewIdleEvictFrames = 240;
+
+    /// per-camera 的 UI overlay visibility/depth 中间产物，Native 与 Vision 共用。
+    struct UiViewResources;
+    std::unordered_map<std::uintptr_t, std::unique_ptr<UiViewResources>>
+        ui_view_resources_;
+    static constexpr uint64_t kUiViewIdleEvictFrames = 240;
 
     std::unique_ptr<Hardware> hardware_;
 

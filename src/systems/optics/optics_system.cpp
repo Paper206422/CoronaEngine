@@ -662,10 +662,17 @@ namespace Corona::Systems {
 struct OpticsSystem::NativeViewResources {
     HardwareImage visibility;
     HardwareImage depth;
-    HardwareImage ui_visibility;
-    HardwareImage ui_depth;
     std::optional<RasterizerPipeline<visibility_vert_glsl, visibility_frag_glsl>>
         visibility_pipeline;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint64_t last_used_frame = 0;
+};
+
+// per-camera UI overlay 中间产物（Native 与 Vision 共用，单一分配来源）。
+struct OpticsSystem::UiViewResources {
+    HardwareImage ui_visibility;  ///< RGBA32_UINT StorageImage
+    HardwareImage ui_depth;       ///< D32_FLOAT DepthImage
     uint32_t width = 0;
     uint32_t height = 0;
     uint64_t last_used_frame = 0;
@@ -767,10 +774,6 @@ void OpticsSystem::bind_native_view_resources(std::uintptr_t camera_handle,
                                              ImageUsage::StorageImage);
         resources.depth = HardwareImage(width, height, ImageFormat::D32_FLOAT,
                                         ImageUsage::DepthImage);
-        resources.ui_visibility = HardwareImage(width, height, ImageFormat::RGBA32_UINT,
-                                                ImageUsage::StorageImage);
-        resources.ui_depth = HardwareImage(width, height, ImageFormat::D32_FLOAT,
-                                           ImageUsage::DepthImage);
         resources.visibility_pipeline.emplace();
         resources.visibility_pipeline->visibilityData = resources.visibility;
         resources.visibility_pipeline->setDepthImage(resources.depth);
@@ -783,6 +786,36 @@ void OpticsSystem::bind_native_view_resources(std::uintptr_t camera_handle,
     hardware_->gbufferSize.y = height;
     hardware_->visibilityImage = resources.visibility;
     hardware_->depthImage = resources.depth;
+
+    // UI visibility/depth 由共享 helper 统一分配并绑定（Native 与 Vision 同源）。
+    ensure_ui_view_resources(camera_handle, width, height, frame_index);
+}
+
+void OpticsSystem::ensure_ui_view_resources(std::uintptr_t camera_handle,
+                                            uint32_t width,
+                                            uint32_t height,
+                                            uint64_t frame_index) {
+    width = std::max(width, 1u);
+    height = std::max(height, 1u);
+
+    auto& resources_ptr = ui_view_resources_[camera_handle];
+    if (!resources_ptr) {
+        resources_ptr = std::make_unique<UiViewResources>();
+    }
+    auto& resources = *resources_ptr;
+    if (resources.width != width || resources.height != height ||
+        !resources.ui_visibility || !resources.ui_depth) {
+        hardware_->executor.waitForDeferredResources();
+        resources.ui_visibility = HardwareImage(width, height, ImageFormat::RGBA32_UINT,
+                                                ImageUsage::StorageImage);
+        resources.ui_depth = HardwareImage(width, height, ImageFormat::D32_FLOAT,
+                                           ImageUsage::DepthImage);
+        resources.width = width;
+        resources.height = height;
+    }
+    resources.last_used_frame = frame_index;
+
+    // 不修改 gbufferSize（调用方负责）。仅绑定共享句柄到本相机的 UI 图。
     hardware_->uiVisibilityImage = resources.ui_visibility;
     hardware_->uiDepthImage = resources.ui_depth;
 }
@@ -795,6 +828,20 @@ void OpticsSystem::evict_idle_native_view_resources(uint64_t frame_index) {
             (frame_index - resources.last_used_frame) > kNativeViewIdleEvictFrames;
         if (idle) {
             it = native_view_resources_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void OpticsSystem::evict_idle_ui_view_resources(uint64_t frame_index) {
+    for (auto it = ui_view_resources_.begin(); it != ui_view_resources_.end();) {
+        const auto& resources = *it->second;
+        const bool idle =
+            frame_index > resources.last_used_frame &&
+            (frame_index - resources.last_used_frame) > kUiViewIdleEvictFrames;
+        if (idle) {
+            it = ui_view_resources_.erase(it);
         } else {
             ++it;
         }
@@ -983,10 +1030,7 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
     auto& lighting = *hardware_->lightingPipeline;
     auto& sky = *hardware_->skyPipeline;
     auto& tonemap = *hardware_->tonemapPipeline;
-    auto& opticsOverlay = *hardware_->opticsOverlayPipeline;
-    auto& opticsUiWarp = *hardware_->opticsUiWarpPipeline;
-    auto& opticsComposite = *hardware_->opticsCompositePipeline;
-    auto& uiVisibility = *hardware_->uiVisibilityPipeline;
+    // UI overlay/warp/composite 管线现由 compose_surface_ui_overlay() 内部使用。
 
     for (auto scene_it = SharedDataHub::instance().scene_storage().cbegin();
          scene_it != SharedDataHub::instance().scene_storage().cend(); ++scene_it) {
@@ -1035,7 +1079,6 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                 auto& transform_storage = SharedDataHub::instance().model_transform_storage();
 
                 RenderInstanceBatch sceneBatch;
-                RenderInstanceBatch uiBatch;
 
                 auto collect_actor_instances_for_pass =
                     [&](auto& target_visibility,
@@ -1363,121 +1406,15 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                 }
 
                 if (!is_debug_mode) {
-                    const ktm::fmat4x4 camera_basis = make_camera_basis_matrix(*camera);
-                    constexpr float kFollowCameraOrthoHeight = 2.0f;
-                    constexpr float kFollowCameraNear = -1000.0f;
-                    constexpr float kFollowCameraFar = 1000.0f;
-                    const float ortho_width = kFollowCameraOrthoHeight * camera->aspect;
-                    const ktm::fmat4x4 ortho_proj =
-                        make_orthographic_lh(ortho_width,
-                                             kFollowCameraOrthoHeight,
-                                             kFollowCameraNear,
-                                             kFollowCameraFar);
-
-                    hardware_->vpUniformBufferObjects.viewProjMatrix =
-                        multiply_ktm_mat4(ortho_proj, camera->compute_view_matrix());
-                    hardware_->uiVpUniformBuffer.copyFromData(&hardware_->vpUniformBufferObjects,
-                                                              sizeof(hardware_->vpUniformBufferObjects));
-                    const uint32_t uiVpDescriptor =
-                        hardware_->uiVpUniformBuffer.storeDescriptor();
-
-                    uiVisibility.visibilityData = hardware_->uiVisibilityImage;
-                    uiVisibility.setDepthImage(hardware_->uiDepthImage);
-
-                    const bool has_follow_camera_instances =
-                        collect_actor_instances_for_pass(uiVisibility,
-                                                         uiVpDescriptor,
-                                                         true,
-                                                         &camera_basis,
-                                                         uiBatch);
-                    const auto viewport_ui_state =
+                    const auto ui_state =
                         SharedDataHub::instance().viewport_ui_state(cam_handle);
-                    const bool stereo_ui =
-                        viewport_ui_state.mode == ViewportUiMode::Stereo3D;
-                    const auto ui_instance_count =
-                        static_cast<std::uint32_t>(uiBatch.instances.size());
-                    auto& ui_log_state = ui_pass_log_states_[cam_handle];
-                    if (!ui_log_state.has_state ||
-                        ui_log_state.has_follow_camera_instances != has_follow_camera_instances ||
-                        ui_log_state.stereo_ui != stereo_ui ||
-                        ui_log_state.instance_count != ui_instance_count ||
-                        ui_log_state.width != hardware_->gbufferSize.x ||
-                        ui_log_state.height != hardware_->gbufferSize.y) {
-                        ui_log_state = UiPassLogState{
-                            .has_state = true,
-                            .has_follow_camera_instances = has_follow_camera_instances,
-                            .stereo_ui = stereo_ui,
-                            .instance_count = ui_instance_count,
-                            .width = hardware_->gbufferSize.x,
-                            .height = hardware_->gbufferSize.y,
-                        };
-                        CFW_LOG_INFO("Optics UI pass: camera={} mode={} follow_camera_instances={} output={}x{} warp={}",
-                                     cam_handle,
-                                     stereo_ui ? "stereo3d" : "flat2d",
-                                     ui_instance_count,
-                                     hardware_->gbufferSize.x,
-                                     hardware_->gbufferSize.y,
-                                     (stereo_ui && has_follow_camera_instances) ? "submitted" : "skipped");
-                    }
-                    if (has_follow_camera_instances) {
-                        upload_instance_tables(uiBatch,
-                                               hardware_->uiInstanceInfoBuffer,
-                                               hardware_->uiMaterialTableBuffer);
-
-                        const uint32_t overlayDescriptor = target.ui_overlay.storeDescriptor();
-                        opticsOverlay.pushConsts.gbufferSize = hardware_->gbufferSize;
-                        opticsOverlay.pushConsts.visibilityImageIndex =
-                            hardware_->uiVisibilityImage.storeDescriptor();
-                        opticsOverlay.pushConsts.instanceInfoBufferIndex =
-                            hardware_->uiInstanceInfoBuffer.storeDescriptor();
-                        opticsOverlay.pushConsts.materialTableBufferIndex =
-                            hardware_->uiMaterialTableBuffer.storeDescriptor();
-                        opticsOverlay.pushConsts.vpBufferIndex =
-                            uiVpDescriptor;
-                        opticsOverlay.pushConsts.outputImage = overlayDescriptor;
-
-                        uint32_t compositeOverlayDescriptor = overlayDescriptor;
-                        if (stereo_ui) {
-                            const auto& calibration = viewport_ui_state.calibration;
-                            opticsUiWarp.pushConsts.inputImage = overlayDescriptor;
-                            opticsUiWarp.pushConsts.outputImage =
-                                target.ui_warped_overlay.storeDescriptor();
-                            opticsUiWarp.pushConsts.outputWidth = hardware_->gbufferSize.x;
-                            opticsUiWarp.pushConsts.outputHeight = hardware_->gbufferSize.y;
-                            opticsUiWarp.pushConsts.lenticularPitch =
-                                calibration.lenticular_pitch;
-                            opticsUiWarp.pushConsts.slant =
-                                std::tan(calibration.slant_angle_radians);
-                            opticsUiWarp.pushConsts.phaseOffset =
-                                calibration.phase_offset;
-                            opticsUiWarp.pushConsts.parallaxScale =
-                                calibration.parallax_scale;
-                            opticsUiWarp.pushConsts.rgbSubpixelOffsets = ktm::fvec4(
-                                calibration.rgb_subpixel_offsets[0],
-                                calibration.rgb_subpixel_offsets[1],
-                                calibration.rgb_subpixel_offsets[2],
-                                0.0f);
-                            compositeOverlayDescriptor =
-                                target.ui_warped_overlay.storeDescriptor();
-                        }
-
-                        opticsComposite.pushConsts.bgImage = render_target.storeDescriptor();
-                        opticsComposite.pushConsts.fgImage = compositeOverlayDescriptor;
-                        opticsComposite.pushConsts.outputImage =
-                            target.composite_output.storeDescriptor();
-                        opticsComposite.pushConsts.outputWidth = hardware_->gbufferSize.x;
-                        opticsComposite.pushConsts.outputHeight = hardware_->gbufferSize.y;
-
-                        hardware_->executor << uiVisibility(hardware_->gbufferSize.x,
-                                                            hardware_->gbufferSize.y)
-                                            << opticsOverlay(dispatchX, dispatchY, 1);
-                        if (stereo_ui) {
-                            hardware_->executor << opticsUiWarp(dispatchX, dispatchY, 1);
-                        }
-                        hardware_->executor << opticsComposite(dispatchX, dispatchY, 1)
-                                            << hardware_->executor.commit();
-
-                        presented_target = &target.composite_output;
+                    presented_target = compose_surface_ui_overlay(
+                        cam_handle, *camera, scene, target, render_target,
+                        ui_state.mode, ui_state.calibration, frame_index);
+                    // 仅在真正发生合成时 commit，保持无 follow-actor 时的原有行为
+                    // （此时 render_target 已在上方 scene pass 提交）。
+                    if (presented_target == &target.composite_output) {
+                        hardware_->executor << hardware_->executor.commit();
                     }
                 }
 
@@ -1515,6 +1452,132 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
     // 回收长期空闲（相机解绑 / 视口关闭）的 surface 目标，约束动态开关下的显存占用。
     evict_idle_surface_targets(frame_index);
     evict_idle_native_view_resources(frame_index);
+    evict_idle_ui_view_resources(frame_index);
+}
+
+HardwareImage* OpticsSystem::compose_surface_ui_overlay(
+    std::uintptr_t camera_handle,
+    const CameraDevice& camera,
+    const SceneDevice& scene,
+    SurfaceRenderTarget& target,
+    HardwareImage& background,
+    ViewportUiMode mode,
+    const ViewportUiCalibration& calibration,
+    uint64_t frame_index) {
+    (void)frame_index;
+
+    auto& uiVisibility = *hardware_->uiVisibilityPipeline;
+    auto& opticsOverlay = *hardware_->opticsOverlayPipeline;
+    auto& opticsUiWarp = *hardware_->opticsUiWarpPipeline;
+    auto& opticsComposite = *hardware_->opticsCompositePipeline;
+
+    const uint32_t dispatchX = (hardware_->gbufferSize.x + 7u) / 8u;
+    const uint32_t dispatchY = (hardware_->gbufferSize.y + 7u) / 8u;
+
+    // follow-camera UI 使用正交投影：把跟随相机的 actor 以屏幕贴合方式光栅化。
+    const ktm::fmat4x4 camera_basis = make_camera_basis_matrix(camera);
+    constexpr float kFollowCameraOrthoHeight = 2.0f;
+    constexpr float kFollowCameraNear = -1000.0f;
+    constexpr float kFollowCameraFar = 1000.0f;
+    const float ortho_width = kFollowCameraOrthoHeight * camera.aspect;
+    const ktm::fmat4x4 ortho_proj =
+        make_orthographic_lh(ortho_width, kFollowCameraOrthoHeight,
+                             kFollowCameraNear, kFollowCameraFar);
+
+    hardware_->vpUniformBufferObjects.viewProjMatrix =
+        multiply_ktm_mat4(ortho_proj, camera.compute_view_matrix());
+    hardware_->uiVpUniformBuffer.copyFromData(&hardware_->vpUniformBufferObjects,
+                                              sizeof(hardware_->vpUniformBufferObjects));
+    const uint32_t uiVpDescriptor = hardware_->uiVpUniformBuffer.storeDescriptor();
+
+    uiVisibility.visibilityData = hardware_->uiVisibilityImage;
+    uiVisibility.setDepthImage(hardware_->uiDepthImage);
+
+    RenderInstanceBatch uiBatch;
+    const bool has_follow_camera_instances =
+        collect_actor_instances_for_visibility(scene, uiVisibility, uiVpDescriptor,
+                                               /*follow_camera_pass=*/true,
+                                               &camera_basis, uiBatch);
+
+    const bool stereo_ui = mode == ViewportUiMode::Stereo3D;
+    const auto ui_instance_count = static_cast<std::uint32_t>(uiBatch.instances.size());
+    auto& ui_log_state = ui_pass_log_states_[camera_handle];
+    if (!ui_log_state.has_state ||
+        ui_log_state.has_follow_camera_instances != has_follow_camera_instances ||
+        ui_log_state.stereo_ui != stereo_ui ||
+        ui_log_state.instance_count != ui_instance_count ||
+        ui_log_state.width != hardware_->gbufferSize.x ||
+        ui_log_state.height != hardware_->gbufferSize.y) {
+        ui_log_state = UiPassLogState{
+            .has_state = true,
+            .has_follow_camera_instances = has_follow_camera_instances,
+            .stereo_ui = stereo_ui,
+            .instance_count = ui_instance_count,
+            .width = hardware_->gbufferSize.x,
+            .height = hardware_->gbufferSize.y,
+        };
+        CFW_LOG_INFO("Optics UI pass: camera={} mode={} follow_camera_instances={} output={}x{} warp={}",
+                     camera_handle,
+                     stereo_ui ? "stereo3d" : "flat2d",
+                     ui_instance_count,
+                     hardware_->gbufferSize.x,
+                     hardware_->gbufferSize.y,
+                     (stereo_ui && has_follow_camera_instances) ? "submitted" : "skipped");
+    }
+
+    if (!has_follow_camera_instances) {
+        return &background;
+    }
+
+    upload_instance_tables(uiBatch,
+                           hardware_->uiInstanceInfoBuffer,
+                           hardware_->uiMaterialTableBuffer);
+
+    const uint32_t overlayDescriptor = target.ui_overlay.storeDescriptor();
+    opticsOverlay.pushConsts.gbufferSize = hardware_->gbufferSize;
+    opticsOverlay.pushConsts.visibilityImageIndex =
+        hardware_->uiVisibilityImage.storeDescriptor();
+    opticsOverlay.pushConsts.instanceInfoBufferIndex =
+        hardware_->uiInstanceInfoBuffer.storeDescriptor();
+    opticsOverlay.pushConsts.materialTableBufferIndex =
+        hardware_->uiMaterialTableBuffer.storeDescriptor();
+    opticsOverlay.pushConsts.vpBufferIndex = uiVpDescriptor;
+    opticsOverlay.pushConsts.outputImage = overlayDescriptor;
+
+    uint32_t compositeOverlayDescriptor = overlayDescriptor;
+    if (stereo_ui) {
+        opticsUiWarp.pushConsts.inputImage = overlayDescriptor;
+        opticsUiWarp.pushConsts.outputImage =
+            target.ui_warped_overlay.storeDescriptor();
+        opticsUiWarp.pushConsts.outputWidth = hardware_->gbufferSize.x;
+        opticsUiWarp.pushConsts.outputHeight = hardware_->gbufferSize.y;
+        opticsUiWarp.pushConsts.lenticularPitch = calibration.lenticular_pitch;
+        opticsUiWarp.pushConsts.slant = std::tan(calibration.slant_angle_radians);
+        opticsUiWarp.pushConsts.phaseOffset = calibration.phase_offset;
+        opticsUiWarp.pushConsts.parallaxScale = calibration.parallax_scale;
+        opticsUiWarp.pushConsts.rgbSubpixelOffsets = ktm::fvec4(
+            calibration.rgb_subpixel_offsets[0],
+            calibration.rgb_subpixel_offsets[1],
+            calibration.rgb_subpixel_offsets[2],
+            0.0f);
+        compositeOverlayDescriptor = target.ui_warped_overlay.storeDescriptor();
+    }
+
+    opticsComposite.pushConsts.bgImage = background.storeDescriptor();
+    opticsComposite.pushConsts.fgImage = compositeOverlayDescriptor;
+    opticsComposite.pushConsts.outputImage = target.composite_output.storeDescriptor();
+    opticsComposite.pushConsts.outputWidth = hardware_->gbufferSize.x;
+    opticsComposite.pushConsts.outputHeight = hardware_->gbufferSize.y;
+
+    hardware_->executor << uiVisibility(hardware_->gbufferSize.x, hardware_->gbufferSize.y)
+                        << opticsOverlay(dispatchX, dispatchY, 1);
+    if (stereo_ui) {
+        hardware_->executor << opticsUiWarp(dispatchX, dispatchY, 1);
+    }
+    hardware_->executor << opticsComposite(dispatchX, dispatchY, 1);
+    // 注意：此处不 commit，由调用方在合适时机统一提交。
+
+    return &target.composite_output;
 }
 
 namespace {
@@ -2287,16 +2350,27 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
 
                     const uint32_t dispatchX = (w + 7u) / 8u;
                     const uint32_t dispatchY = (h + 7u) / 8u;
-                    hardware_->executor << visionResolve(dispatchX, dispatchY, 1)
-                                        << hardware_->executor.commit();
+                    // 不在此 commit：UI overlay pass 紧随其后读 final_output 作为背景，
+                    // 整帧在同一 executor 上按程序序记录、末尾统一提交一次。
+                    hardware_->executor << visionResolve(dispatchX, dispatchY, 1);
                 }
 
-                process_pending_screenshots(cam_handle, target.final_output);
+                // 与 Native 共用的 UI overlay 层：gbufferSize 已在上方设为 {w,h}。
+                ensure_ui_view_resources(cam_handle, w, h, frame_index);
+                const auto ui_state =
+                    SharedDataHub::instance().viewport_ui_state(cam_handle);
+                HardwareImage* presented = compose_surface_ui_overlay(
+                    cam_handle, *camera, scene, target, target.final_output,
+                    ui_state.mode, ui_state.calibration, frame_index);
+
+                hardware_->executor << hardware_->executor.commit();
+
+                process_pending_screenshots(cam_handle, *presented);
 
                 if (auto image_device =
                         SharedDataHub::instance().image_storage().acquire_write(
                             target.image_handle)) {
-                    image_device->image = target.final_output;
+                    image_device->image = *presented;
                     image_device->executor = hardware_->executor;
                 }
 
