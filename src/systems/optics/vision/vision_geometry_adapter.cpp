@@ -226,11 +226,11 @@ VisionBuildResult build_vision_geometry(::vision::Scene& scene) {
                                                cpu_mesh.indices[triangle_index + 1]);
                     }
 
-                    // Create Vision Mesh and upload to Vision GPU device
+                    // Create Vision Mesh. Device upload is owned by the shared
+                    // scene GPU resource and runs in Pipeline::prepare_geometry().
                     auto mesh = std::make_shared<::vision::Mesh>(
                         std::move(vertices), std::move(triangles));
-                    mesh->upload_immediately();
-                    scene.geometry().data()->register_mesh(mesh);
+                    mesh = scene.geometry().data()->register_mesh(mesh);
 
                     // Create material and ShapeInstance
                     auto material = create_vision_material(*optics, mesh_dev);
@@ -259,7 +259,7 @@ VisionBuildResult build_vision_geometry(::vision::Scene& scene) {
 
     // Finalize: encode material/mesh IDs into instance handles and register with geometry.
     // BVH build + device upload are intentionally left to Pipeline::prepare_geometry(),
-    // which runs reset_device_buffer() + upload() + build_accel() during prepare();
+    // which runs reset_device_buffer() + upload(stream) + build_accel(stream) during prepare();
     // building here as well would just be a redundant full BVH rebuild.
     scene.fill_instances();
     scene.update_geometry_instances();

@@ -119,6 +119,10 @@ export const sceneService = {
     Bridge.callCEF('SceneTools', 'set_render_backend', [mode, sceneName, cameraId]),
   getRenderBackend: (sceneName = null, cameraId = null) =>
     Bridge.callCEF('SceneTools', 'get_render_backend', [sceneName, cameraId]),
+  setVisionRenderMode: (sceneName, cameraId = null, mode = 'path_tracing') =>
+    Bridge.callCEF('SceneTools', 'set_vision_render_mode', [sceneName, cameraId, mode]),
+  getVisionRenderMode: (sceneName, cameraId = null) =>
+    Bridge.callCEF('SceneTools', 'get_vision_render_mode', [sceneName, cameraId]),
   createCameraView: (sceneName, name = null) =>
     Bridge.callCEF('SceneTools', 'create_camera_view', [sceneName, name]),
   openCameraView: (sceneName, cameraId) =>

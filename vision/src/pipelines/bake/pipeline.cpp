@@ -25,9 +25,9 @@ void BakePipeline::init_postprocessor(const DenoiserDesc &desc) {
 
 void BakePipeline::prepare() noexcept {
     Pipeline::prepare();
-    scene_.prepare();
-    renderer_.prepare(scene_);
-    image_pool().prepare();
+    scene().prepare();
+    renderer_.prepare(scene());
+    image_pool().prepare(stream());
     preprocess();
     prepare_geometry();
     compile();
@@ -64,6 +64,9 @@ void BakePipeline::preprocess() noexcept {
 }
 
 void BakePipeline::compile() noexcept {
+    Global::SceneGpuContextScope scene_gpu_context{
+        scene().geometry().bindless_array(),
+        scene().geometry().gpu_resource()->device()};
     Pipeline::compile();
     compile_displayer();
 }

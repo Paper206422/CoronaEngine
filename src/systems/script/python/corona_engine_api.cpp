@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <iterator>
 #include <utility>
 
@@ -131,6 +132,33 @@ std::uintptr_t resolve_camera_handle(std::uintptr_t camera_handle) {
         }
     }
     return fallback;
+}
+
+Corona::CameraVisionRenderMode parse_vision_render_mode(const std::string& mode) {
+    std::string value = mode;
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    std::replace(value.begin(), value.end(), '-', '_');
+    if (value == "svgf" || value == "vision_svgf") {
+        return Corona::CameraVisionRenderMode::SVGF;
+    }
+    if (value == "ssat" || value == "vision_ssat") {
+        return Corona::CameraVisionRenderMode::SSAT;
+    }
+    return Corona::CameraVisionRenderMode::PathTracing;
+}
+
+std::string vision_render_mode_to_string(Corona::CameraVisionRenderMode mode) {
+    switch (mode) {
+        case Corona::CameraVisionRenderMode::SVGF:
+            return "svgf";
+        case Corona::CameraVisionRenderMode::SSAT:
+            return "ssat";
+        case Corona::CameraVisionRenderMode::PathTracing:
+        default:
+            return "path_tracing";
+    }
 }
 }
 
@@ -2180,6 +2208,14 @@ std::string Corona::API::Camera::get_render_backend() const {
     return Corona::API::get_render_backend(handle_);
 }
 
+void Corona::API::Camera::set_vision_render_mode(const std::string& mode) {
+    Corona::API::set_vision_render_mode(mode, handle_);
+}
+
+std::string Corona::API::Camera::get_vision_render_mode() const {
+    return Corona::API::get_vision_render_mode(handle_);
+}
+
 void Corona::API::Camera::set_view_state(bool open, int x, int y, int width, int height, float move_speed) {
     if (handle_ == 0) {
         CFW_LOG_WARNING("[Camera::set_view_state] Invalid camera handle");
@@ -2390,6 +2426,30 @@ std::string get_render_backend(std::uintptr_t camera_handle) {
         }
     }
     return "native";
+}
+
+void set_vision_render_mode(const std::string& mode, std::uintptr_t camera_handle) {
+    const auto resolved_handle = resolve_camera_handle(camera_handle);
+    if (resolved_handle == 0) {
+        CFW_LOG_WARNING("[set_vision_render_mode] No camera is available");
+        return;
+    }
+
+    CameraStateUpdateCommand command{};
+    command.camera_handle = resolved_handle;
+    command.fields = CameraStateUpdateField::VisionRenderMode;
+    command.vision_render_mode = parse_vision_render_mode(mode);
+    SharedDataHub::instance().enqueue_camera_state_update(command);
+}
+
+std::string get_vision_render_mode(std::uintptr_t camera_handle) {
+    const auto resolved_handle = resolve_camera_handle(camera_handle);
+    if (resolved_handle != 0) {
+        if (auto camera = SharedDataHub::instance().camera_storage().acquire_read(resolved_handle)) {
+            return vision_render_mode_to_string(camera->vision_render_mode);
+        }
+    }
+    return "path_tracing";
 }
 
 void load_vision_scene(const std::string& path) {

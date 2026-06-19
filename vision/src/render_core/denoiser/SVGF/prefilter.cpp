@@ -9,6 +9,7 @@ using Cfg = SVGFConfig;
 void Prefilter::prepare() noexcept {}
 
 void Prefilter::compile() noexcept {
+Pipeline *pipeline_ref = pipeline();
     
 auto soft_clamp_asinh = [](Float x, Float threshold, Float softness, Float retain) -> Float {
     Float safe_threshold = max(threshold, 0.1f);
@@ -27,7 +28,7 @@ auto compute_spatial_weight = [](Float history) -> Float {
     return 1.f - t * t * (3.f - 2.f * t);
 };
     
-    Kernel kernel = [&, soft_clamp_asinh, compute_spatial_weight](Var<PrefilterParam> param) {
+    Kernel kernel = [&, pipeline_ref, soft_clamp_asinh, compute_spatial_weight](Var<PrefilterParam> param) {
         Int2 screen_size = make_int2(dispatch_dim().xy());
         Int2 pixel = make_int2(dispatch_idx().xy());
         Uint idx = dispatch_id();
@@ -47,8 +48,8 @@ auto compute_spatial_weight = [](Float history) -> Float {
             Float output_variance_direct = temporal_var_direct;
             Float output_variance_indirect = temporal_var_indirect;
 
-            $if(!PixelStateUtils::is_emissive(center_hit)) {
-                Interaction it = pipeline()->geometry().compute_surface_interaction(center_hit, false);
+            $if(!PixelStateUtils::is_emissive(pipeline_ref, center_hit)) {
+                Interaction it = pipeline_ref->geometry().compute_surface_interaction(center_hit, false);
                 // Clamp center luminance for half precision safety
                 Float center_lum_direct = HalfSafeUtils::clamp_luminance(luminance(center_direct));
                 Float center_lum_indirect = HalfSafeUtils::clamp_luminance(luminance(center_indirect));
@@ -83,14 +84,15 @@ auto compute_spatial_weight = [](Float history) -> Float {
                             TriangleHitVar n_hit = param.visibility_buffer.read(p_idx);
                             Bool n_is_sky = PixelStateUtils::is_sky(n_hit);
                             
-                            Float boundary_weight = BoundaryUtils::compute_boundary_weight(center_hit, n_hit);
+                            Float boundary_weight = BoundaryUtils::compute_boundary_weight(
+                                pipeline_ref, center_hit, n_hit);
 
                             Float kernel_w = ocarina::select(dx == 0 && dy == 0, 0.25f,
                                              ocarina::select(dx == 0 || dy == 0, 0.125f, 0.0625f));
 
                             Float w_geo = 1.f;
                             $if(!n_is_sky) {
-                                Interaction n_it = pipeline()->geometry().compute_surface_interaction(n_hit, false);
+                                Interaction n_it = pipeline_ref->geometry().compute_surface_interaction(n_hit, false);
                                 w_geo = GeometryWeightUtils::compute_geometry_weight(
                                     it.pos, it.ng, n_it.pos, n_it.ng,
                                     Cfg::GeometryWeight::kPrefilterNormalPower,

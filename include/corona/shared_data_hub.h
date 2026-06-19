@@ -170,6 +170,12 @@ enum class CameraRenderBackend : uint8_t {
     Vision,
 };
 
+enum class CameraVisionRenderMode : uint8_t {
+    PathTracing,
+    SVGF,
+    SSAT,
+};
+
 struct CameraDevice {
     void* surface{};
     bool follows_default_surface{true};
@@ -185,6 +191,7 @@ struct CameraDevice {
     std::uint32_t height{1080};
     CameraOutputMode output_mode{CameraOutputMode::FinalColor};
     CameraRenderBackend render_backend{CameraRenderBackend::Native};
+    CameraVisionRenderMode vision_render_mode{CameraVisionRenderMode::PathTracing};
     bool view_open{false};
     int view_x{120};
     int view_y{120};
@@ -265,6 +272,7 @@ enum class CameraStateUpdateField : std::uint32_t {
     OutputMode = 1u << 2,
     RenderBackend = 1u << 3,
     ViewState = 1u << 4,
+    VisionRenderMode = 1u << 5,
 };
 
 constexpr CameraStateUpdateField operator|(CameraStateUpdateField lhs,
@@ -287,6 +295,7 @@ struct CameraStateUpdateCommand {
     std::uint32_t height{1};
     CameraOutputMode output_mode{CameraOutputMode::FinalColor};
     CameraRenderBackend render_backend{CameraRenderBackend::Native};
+    CameraVisionRenderMode vision_render_mode{CameraVisionRenderMode::PathTracing};
     bool view_open{false};
     int view_x{120};
     int view_y{120};

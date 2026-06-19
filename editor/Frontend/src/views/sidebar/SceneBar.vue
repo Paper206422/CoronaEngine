@@ -1478,6 +1478,14 @@ const OpenVisionScene = async () => {
     }
     await OnInitObjTree();
     await RefreshRenderBackendState();
+    const eventPayload = {
+      sceneId: currentSceneName.value,
+      cameraId: payload?.camera?.camera_id || payload?.camera?.id || null,
+      cameraName: payload?.camera?.name || null,
+      visionRenderMode: payload?.vision_render_mode || payload?.camera?.vision_render_mode || null,
+    };
+    coronaEventBus.emit('vision-scene-imported', eventPayload);
+    appService.crossTabBroadcast('vision-scene-imported', [eventPayload]).catch(() => {});
   } catch (e) {
     logError('Failed to open Vision scene', e);
   }

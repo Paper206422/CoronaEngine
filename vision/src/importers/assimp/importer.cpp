@@ -27,17 +27,25 @@ public:
     }
 
     [[nodiscard]] SP<Pipeline> read_file(const fs::path &fn) override {
+        return read_file(fn, {});
+    }
+
+    [[nodiscard]] SP<Pipeline> read_file(const fs::path &fn,
+                                         const ImportSceneOptions &options) override {
         PipelineDesc desc;
         desc.sub_type = "fixed";
         SP<Pipeline> ret = Node::create_shared<Pipeline>(desc);
         ProjectDesc project_desc;
         project_desc.init(DataWrap::object());
+        bind_shared_scene_resources(*ret, options);
         ret->init_project(project_desc);
         Scene &scene = ret->scene();
 
         parser_.load_scene(fn);
+        parser_.set_target_scene(&scene);
 
         auto shapes = parse_shapes();
+        parser_.set_target_scene(nullptr);
         std::for_each(shapes.begin(), shapes.end(), [&](const SP<ShapeGroup>& shape) {
             scene.add_shape(shape);
             scene.add_material(shape->instance(0).material());

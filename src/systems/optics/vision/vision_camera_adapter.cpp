@@ -3,6 +3,7 @@
 #ifdef CORONA_ENABLE_VISION
 
 #include <cmath>
+#include <cstdlib>
 
 #include <corona/shared_data_hub.h>
 
@@ -95,6 +96,14 @@ void sync_vision_camera(::vision::Pipeline& pipeline, const CameraDevice& camera
     sensor->update_device_data();
 
     if (invalidate) {
+        if (std::getenv("CORONA_VISION_CAMERA_LOG") != nullptr) {
+            OC_INFO_FORMAT("Vision camera invalidated frame_index={} resolution=({}, {}) "
+                           "fov={} yaw={} pitch={} position=({}, {}, {})",
+                           pipeline.frame_index(),
+                           requested_resolution.x, requested_resolution.y,
+                           camera.fov, yaw_deg, pitch_deg,
+                           position.x, position.y, position.z);
+        }
         pipeline.invalidate();
     }
 }

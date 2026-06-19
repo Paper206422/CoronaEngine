@@ -29,7 +29,8 @@ void Renderer::init(const RendererDesc &renderer_desc, Scene &scene) {
 void Renderer::prepare(Scene &scene) noexcept {
     sampler_->prepare();
     integrator_->prepare();
-    prepare_lights();
+    prepare_lights(scene);
+    spectrum()->set_scene_has_dispersive_materials(scene.material_registry().has_dispersive());
     spectrum()->prepare();
 }
 
@@ -37,8 +38,10 @@ void Renderer::tidy_up() noexcept {
 
 }
 
-void Renderer::prepare_lights() noexcept {
-    light_sampler_->prepare();
+void Renderer::prepare_lights(Scene &scene) noexcept {
+    OC_ASSERT(scene.geometry().has_gpu_resource());
+    light_sampler_->prepare(scene.geometry().bindless_array(),
+                            scene.geometry().gpu_resource()->device());
     auto &light = light_sampler_->lights();
     OC_INFO_FORMAT("This scene contains {} light types with {} light instances",
                    light.topology_num(),

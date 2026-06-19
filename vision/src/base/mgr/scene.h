@@ -17,6 +17,8 @@
 #include "UI/GUI.h"
 #include "hotfix/hotfix.h"
 #include "base/using.h"
+#include "image_pool.h"
+#include <cstdint>
 
 namespace vision {
 
@@ -70,30 +72,73 @@ public:
     }
 };
 
-class Scene : public GUI, public hotfix::Observer {
+class SceneData {
 private:
     Geometry geometry_;
+    ImagePool image_pool_;
     Box3f aabb_;
-    PolymorphicGUI<TSensor> sensors_{};
-    uint cur_sensor_index_{0};
-    TSensor *sensor_override_{nullptr};
     SP<Material> black_body_{};
     LightManager light_manager_{};
-    MaterialRegistry *material_registry_{&MaterialRegistry::instance()};
-    MediumRegistry *medium_registry_{&MediumRegistry::instance()};
+    MaterialRegistry material_registry_{};
+    MediumRegistry medium_registry_{};
     vector<SP<ShapeGroup>> groups_;
     vector<SP<ShapeInstance>> instances_;
     float min_radius_{};
+    bool initialized_{false};
+
+    friend class Scene;
+};
+
+class Scene : public GUI, public hotfix::Observer {
+private:
+    SP<SceneData> data_{make_shared<SceneData>()};
+    PolymorphicGUI<TSensor> sensors_{};
+    uint cur_sensor_index_{0};
+    TSensor *sensor_override_{nullptr};
     friend class Pipeline;
 
 public:
     Scene() = default;
+    explicit Scene(SP<SceneData> data) { bind_shared_data(ocarina::move(data)); }
+    void bind_shared_data(SP<SceneData> data) noexcept {
+        data_ = data ? ocarina::move(data) : make_shared<SceneData>();
+        sensor_override_ = nullptr;
+    }
+    [[nodiscard]] SP<SceneData> shared_data() noexcept { return data_; }
+    [[nodiscard]] SP<const SceneData> shared_data() const noexcept { return data_; }
+    [[nodiscard]] std::uintptr_t shared_data_identity() const noexcept {
+        return reinterpret_cast<std::uintptr_t>(data_.get());
+    }
+    [[nodiscard]] bool is_initialized() const noexcept { return data_->initialized_; }
     void init(const SceneDesc &scene_desc);
-    OC_MAKE_MEMBER_SETTER(min_radius)
+    void set_min_radius(float min_radius) noexcept { data_->min_radius_ = min_radius; }
     void prepare() noexcept;
     void update_runtime_object(const vision::IObjectConstructor *constructor) noexcept override;
 
-    VS_MAKE_GUI_ALL_FUNC(GUI, sensors_, light_manager_, material_registry_, medium_registry_)
+    void reset_status() noexcept override {
+        GUI::reset_status();
+        UI::reset_status(sensors_);
+        UI::reset_status(data_->light_manager_);
+        UI::reset_status(data_->material_registry_);
+        UI::reset_status(data_->medium_registry_);
+    }
+    bool has_changed() noexcept override {
+        bool ret = GUI::has_changed();
+        ret |= UI::has_changed(sensors_);
+        ret |= UI::has_changed(data_->light_manager_);
+        ret |= UI::has_changed(data_->material_registry_);
+        ret |= UI::has_changed(data_->medium_registry_);
+        return ret;
+    }
+    bool render_UI(Widgets *widgets) noexcept override {
+        widgets->use_window("scene data", [&] {
+            UI::render_UI(sensors_, widgets);
+            UI::render_UI(data_->light_manager_, widgets);
+            UI::render_UI(data_->material_registry_, widgets);
+            UI::render_UI(data_->medium_registry_, widgets);
+        });
+        return true;
+    }
 
     void update_resolution(uint2 res) noexcept { sensor()->update_resolution(res); }
 
@@ -109,22 +154,29 @@ public:
     void remove_sensor(const TSensor &s) noexcept {
         std::erase_if(sensors_, [&](const TSensor &elm) { return elm.get() == s.get(); });
     }
-    OC_MAKE_MEMBER_GETTER_SETTER(cur_sensor_index, )
+    [[nodiscard]] uint cur_sensor_index() const noexcept { return cur_sensor_index_; }
+    void set_cur_sensor_index(uint index) noexcept { cur_sensor_index_ = index; }
 
     // Geometry
-    OC_MAKE_MEMBER_GETTER(geometry, &)
-    void update_geometry_instances() noexcept { geometry_.update_instances(instances_); }
+    [[nodiscard]] Geometry &geometry() noexcept { return data_->geometry_; }
+    [[nodiscard]] const Geometry &geometry() const noexcept { return data_->geometry_; }
+    [[nodiscard]] ImagePool &image_pool() noexcept { return data_->image_pool_; }
+    [[nodiscard]] const ImagePool &image_pool() const noexcept { return data_->image_pool_; }
+    void bind_geometry_gpu_resource(SP<GeometryGpuResource> resource) noexcept;
+    void update_geometry_instances() noexcept { data_->geometry_.update_instances(data_->instances_); }
 
     // Shapes
-    OC_MAKE_MEMBER_GETTER(groups, &)
-    OC_MAKE_MEMBER_GETTER(instances, &)
+    [[nodiscard]] vector<SP<ShapeGroup>> &groups() noexcept { return data_->groups_; }
+    [[nodiscard]] const vector<SP<ShapeGroup>> &groups() const noexcept { return data_->groups_; }
+    [[nodiscard]] vector<SP<ShapeInstance>> &instances() noexcept { return data_->instances_; }
+    [[nodiscard]] const vector<SP<ShapeInstance>> &instances() const noexcept { return data_->instances_; }
     void load_shapes(const vector<ShapeDesc> &descs);
     void add_shape(const SP<ShapeGroup> &group, ShapeDesc desc = {});
     void clear_shapes() noexcept;
 
     // Materials
-    [[nodiscard]] const auto &material_registry() const noexcept { return *material_registry_; }
-    [[nodiscard]] auto &material_registry() noexcept { return *material_registry_; }
+    [[nodiscard]] const auto &material_registry() const noexcept { return data_->material_registry_; }
+    [[nodiscard]] auto &material_registry() noexcept { return data_->material_registry_; }
     [[nodiscard]] const auto &materials() const noexcept { return material_registry().elements(); }
     [[nodiscard]] auto &materials() noexcept { return material_registry().elements(); }
     void add_material(SP<Material> material) noexcept;
@@ -133,26 +185,28 @@ public:
     [[nodiscard]] SP<Material> obtain_black_body() noexcept;
 
     // Mediums
-    [[nodiscard]] const auto &medium_registry() const noexcept { return *medium_registry_; }
-    [[nodiscard]] auto &medium_registry() noexcept { return *medium_registry_; }
-    [[nodiscard]] const auto &mediums() const noexcept { return medium_registry_->elements(); }
-    [[nodiscard]] auto &mediums() noexcept { return medium_registry_->elements(); }
-    [[nodiscard]] bool process_mediums() const noexcept { return medium_registry_->process_mediums(); }
+    [[nodiscard]] const auto &medium_registry() const noexcept { return data_->medium_registry_; }
+    [[nodiscard]] auto &medium_registry() noexcept { return data_->medium_registry_; }
+    [[nodiscard]] const auto &mediums() const noexcept { return data_->medium_registry_.elements(); }
+    [[nodiscard]] auto &mediums() noexcept { return data_->medium_registry_.elements(); }
+    [[nodiscard]] bool process_mediums() const noexcept { return data_->medium_registry_.process_mediums(); }
     void load_mediums(const MediumsDesc &desc);
 
     // Lights
-    OC_MAKE_MEMBER_GETTER(light_manager, &)
+    [[nodiscard]] LightManager &light_manager() noexcept { return data_->light_manager_; }
+    [[nodiscard]] const LightManager &light_manager() const noexcept { return data_->light_manager_; }
     void add_light(TLight light) noexcept;
     TLight load_light(const LightDesc &desc) noexcept;
 
     // Instances
+    void register_instance_meshes() noexcept;
     void fill_instances();
-    [[nodiscard]] ShapeInstance *get_instance(uint id) noexcept { return instances_[id].get(); }
-    [[nodiscard]] const ShapeInstance *get_instance(uint id) const noexcept { return instances_[id].get(); }
+    [[nodiscard]] ShapeInstance *get_instance(uint id) noexcept { return data_->instances_[id].get(); }
+    [[nodiscard]] const ShapeInstance *get_instance(uint id) const noexcept { return data_->instances_[id].get(); }
 
     // World bounds
-    [[nodiscard]] float3 world_center() const noexcept { return aabb_.center(); }
-    [[nodiscard]] float world_radius() const noexcept { return ocarina::max(aabb_.radius(), min_radius_); }
+    [[nodiscard]] float3 world_center() const noexcept { return data_->aabb_.center(); }
+    [[nodiscard]] float world_radius() const noexcept { return ocarina::max(data_->aabb_.radius(), data_->min_radius_); }
     [[nodiscard]] float world_diameter() const noexcept { return world_radius() * 2; }
 
     void tidy_up() noexcept;

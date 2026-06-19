@@ -275,6 +275,8 @@ void BindAll(nanobind::module_& m) {
              "Get current camera output mode as string")
         .def("set_render_backend", &Camera::set_render_backend, nb::arg("mode"))
         .def("get_render_backend", &Camera::get_render_backend)
+        .def("set_vision_render_mode", &Camera::set_vision_render_mode, nb::arg("mode"))
+        .def("get_vision_render_mode", &Camera::get_vision_render_mode)
         .def("set_view_state", &Camera::set_view_state, nb::arg("open"), nb::arg("x"),
              nb::arg("y"), nb::arg("width"), nb::arg("height"), nb::arg("move_speed"))
         .def("get_view_state", &Camera::get_view_state)
@@ -432,6 +434,12 @@ void BindAll(nanobind::module_& m) {
           "Request a render backend switch. mode: 'native' or 'vision'. Only effective when Vision is available.");
     m.def("get_render_backend", &get_render_backend, nb::arg("camera_handle") = 0,
           "Get the currently requested render backend as 'native' or 'vision'");
+    m.def("set_vision_render_mode", &set_vision_render_mode, nb::arg("mode"),
+          nb::arg("camera_handle") = 0,
+          "Set the requested Vision render mode: 'path_tracing', 'svgf', or 'ssat'");
+    m.def("get_vision_render_mode", &get_vision_render_mode,
+          nb::arg("camera_handle") = 0,
+          "Get the requested Vision render mode");
     m.def("load_vision_scene", &load_vision_scene, nb::arg("path"),
           "Load an external Vision scene file (.json). Pass an empty string to "
           "unload and restore the engine-built scene. Only effective when Vision "

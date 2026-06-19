@@ -276,7 +276,7 @@ Float DielectricLobe::eta_to_ratio_z(const Float &eta) noexcept {
 
 Float2 DielectricLobe::sample_lut(const Float3 &wo, const SampledSpectrum &eta) const noexcept {
     Uint idx = select_lut(eta);
-    const BindlessArray &ba = Global::instance().bindless_array();
+    const BindlessArray &ba = MaterialLut::instance().bindless_array(lut_name);
     Float x = to_ratio_x();
     Float y = abs_cos_theta(wo);
     Float z = eta_to_ratio_z(eta[0]);

@@ -134,7 +134,8 @@ public:
     // ========================================================================
     
     void compile_accumulate() noexcept {
-        Kernel kernel = [&](Var<TemporalAccumParam> param,
+        Pipeline *pipeline_ref = pipeline();
+        Kernel kernel = [&, pipeline_ref](Var<TemporalAccumParam> param,
                            Var<LenticularParams> lent,
                            Var<LightFieldGeometry> geom) {
             
@@ -174,7 +175,7 @@ public:
             Bool cur_emissive = false;
             
             $if(cur_valid) {
-                Interaction cur_it = pipeline()->geometry().compute_surface_interaction(cur_hit, false);
+                Interaction cur_it = pipeline_ref->geometry().compute_surface_interaction(cur_hit, false);
                 cur_pos = cur_it.pos;
                 cur_depth = length(cur_it.pos - camera_pos);
                 cur_normal = cur_it.ng;
@@ -230,7 +231,7 @@ public:
                     Bool tap_valid = !tap_hit->is_miss() && tap_hit.inst_id != InvalidUI32;
 
                     $if(tap_valid) {
-                        Interaction tap_it = pipeline()->geometry().compute_surface_interaction(tap_hit, false);
+                        Interaction tap_it = pipeline_ref->geometry().compute_surface_interaction(tap_hit, false);
                         Float tap_depth = length(tap_it.pos - prev_camera_pos);
 
                         Float tap_depth_diff = abs(cur_depth - tap_depth) / max(cur_depth, 0.1f);

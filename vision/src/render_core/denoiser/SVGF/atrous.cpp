@@ -19,7 +19,8 @@ void AtrousFilter::compile() noexcept {
 
 
 void AtrousFilter::compile_combined() noexcept {
-Kernel kernel = [&](Var<CombinedAtrousParam> param) {
+Pipeline *pipeline_ref = pipeline();
+Kernel kernel = [&, pipeline_ref](Var<CombinedAtrousParam> param) {
     Int2 screen_size = make_int2(dispatch_dim().xy());
     Int2 cur_pixel = make_int2(dispatch_idx().xy());
     Uint cur_idx = dispatch_id();
@@ -30,7 +31,7 @@ Kernel kernel = [&](Var<CombinedAtrousParam> param) {
         
         
     $if(!PixelStateUtils::is_sky(center_hit)) {
-        Interaction center_it = pipeline()->geometry().compute_surface_interaction(center_hit, false);
+        Interaction center_it = pipeline_ref->geometry().compute_surface_interaction(center_hit, false);
         
         // Clamp luminance for half precision safety
         Float lum_center_direct = HalfSafeUtils::clamp_luminance(luminance(direct_center.xyz()));
@@ -77,10 +78,11 @@ Kernel kernel = [&](Var<CombinedAtrousParam> param) {
                 TriangleHitVar neighbor_hit = param.visibility_buffer.read(idx);
                 Bool neighbor_is_sky = PixelStateUtils::is_sky(neighbor_hit);
                 
-                Float boundary_w = BoundaryUtils::compute_boundary_weight(center_hit, neighbor_hit);
+                Float boundary_w = BoundaryUtils::compute_boundary_weight(
+                    pipeline_ref, center_hit, neighbor_hit);
                 
                 $if(!neighbor_is_sky && boundary_w > 0.f) {
-                    Interaction neighbor_it = pipeline()->geometry().compute_surface_interaction(neighbor_hit, false);
+                    Interaction neighbor_it = pipeline_ref->geometry().compute_surface_interaction(neighbor_hit, false);
                     weight = boundary_w * GeometryWeightUtils::compute_geometry_weight(
                         center_it.pos, center_it.ng, neighbor_it.pos, neighbor_it.ng,
                         param.n_phi, param.z_phi, Cfg::GeometryWeight::kEpsilon);
@@ -124,13 +126,14 @@ Kernel kernel = [&](Var<CombinedAtrousParam> param) {
                 TriangleHitVar neighbor_hit = param.visibility_buffer.read(idx);
                 Bool neighbor_is_sky = PixelStateUtils::is_sky(neighbor_hit);
                 
-                Float boundary_weight = BoundaryUtils::compute_boundary_weight(center_hit, neighbor_hit);
+                Float boundary_weight = BoundaryUtils::compute_boundary_weight(
+                    pipeline_ref, center_hit, neighbor_hit);
                     
                 Float3 neighbor_normal = make_float3(0.f, 1.f, 0.f);
                 Float3 neighbor_pos = make_float3(0.f);
                     
                 $if(!neighbor_is_sky) {
-                    Interaction neighbor_it = pipeline()->geometry().compute_surface_interaction(neighbor_hit, false);
+                    Interaction neighbor_it = pipeline_ref->geometry().compute_surface_interaction(neighbor_hit, false);
                     neighbor_normal = neighbor_it.ng;
                     neighbor_pos = neighbor_it.pos;
                 };

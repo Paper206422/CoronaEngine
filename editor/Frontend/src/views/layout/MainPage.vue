@@ -260,6 +260,32 @@
       </div>
 
       <div class="ml-auto flex items-center gap-2">
+        <div class="relative">
+          <button
+            class="px-2.5 py-1 rounded border border-gray-600 text-gray-200 bg-[#252525] hover:bg-[#3d3d3d] transition-colors duration-200 whitespace-nowrap"
+            :class="{ 'bg-[#3d3d3d]': activeMenu === 'mainRenderMode' }"
+            title="主窗口渲染模式"
+            @click="toggleMenu('mainRenderMode')"
+          >
+            {{ mainRenderModeLabel }}
+          </button>
+          <div
+            v-if="activeMenu === 'mainRenderMode'"
+            class="absolute top-full right-0 mt-1 w-52 bg-[#2d2d2d] border border-gray-700 rounded shadow-lg z-50"
+          >
+            <div class="py-1">
+              <button
+                v-for="mode in mainRenderModeOptions"
+                :key="mode.value"
+                class="block w-full text-left px-4 py-2 hover:bg-[#3d3d3d] transition-colors duration-200 disabled:text-gray-600 disabled:hover:bg-transparent"
+                :disabled="mode.backend === 'vision' && !visionAvailable"
+                @click="selectMainRenderMode(mode.value)"
+              >
+                {{ mode.label }}
+              </button>
+            </div>
+          </div>
+        </div>
         <button
           class="px-2.5 py-1 rounded border transition-colors duration-200 whitespace-nowrap"
           :class="previewRunning || previewBusy
@@ -693,6 +719,9 @@ const activeMenu = ref(null);
 const previewRunning = ref(false);
 const previewBusy = ref(false);
 const previewStatusText = ref('');
+const visionAvailable = ref(false);
+const mainRenderBackend = ref('native');
+const mainVisionRenderMode = ref('path_tracing');
 let previewPollTimer = null;
 window.__coronaGamePreviewInputLocked = false;
 
@@ -721,6 +750,19 @@ const pluginStates = computed(() =>
     open: dockStore.panels[p.id]?.open ?? false,
   }))
 );
+const mainRenderModeOptions = [
+  { value: 'native', backend: 'native', label: 'Native' },
+  { value: 'path_tracing', backend: 'vision', label: 'Vision Path Tracing' },
+  { value: 'svgf', backend: 'vision', label: 'Vision SVGF' },
+  { value: 'ssat', backend: 'vision', label: 'Vision SSAT' },
+];
+const mainRenderModeLabel = computed(() => {
+  if (mainRenderBackend.value !== 'vision') {
+    return 'Native';
+  }
+  return mainRenderModeOptions.find((mode) => mode.value === mainVisionRenderMode.value)?.label
+    || 'Vision Path Tracing';
+});
 
 // ── 包菜提示气泡状态 ──
 const STORAGE_KEY = 'corona_editor_settings';
@@ -768,6 +810,37 @@ const toggleMenu = (menu) => {
     if (menu === 'physics') {
       loadPhysicsParams();
     }
+  }
+};
+
+const selectMainRenderMode = async (mode) => {
+  const sceneId = tabs.value[activeTab.value]?.id || DEFAULT_SCENE_NAME;
+  activeMenu.value = null;
+  try {
+    if (mode === 'native') {
+      const result = unwrapBridgeData(
+        await sceneService.setRenderBackend('native', sceneId, null),
+      );
+      mainRenderBackend.value = result?.mode || 'native';
+      await syncSceneCameraBinding(sceneId);
+      return;
+    }
+
+    const backendResult = unwrapBridgeData(
+      await sceneService.setRenderBackend('vision', sceneId, null),
+    );
+    mainRenderBackend.value = backendResult?.mode || 'native';
+    if (mainRenderBackend.value !== 'vision') {
+      return;
+    }
+
+    const modeResult = unwrapBridgeData(
+      await sceneService.setVisionRenderMode(sceneId, null, mode),
+    );
+    mainVisionRenderMode.value = modeResult?.mode || mode;
+    await syncSceneCameraBinding(sceneId);
+  } catch (error) {
+    logError('Failed to set main viewport render mode', error);
   }
 };
 
@@ -858,6 +931,8 @@ const applySceneSnapshot = (sceneId, payload) => {
     cameraHandle: activeCamera?.handle ?? activeCamera?.camera_handle ?? null,
   };
   syncViewportUiMode();
+  mainRenderBackend.value = activeCamera?.render_backend || 'native';
+  mainVisionRenderMode.value = activeCamera?.vision_render_mode || 'path_tracing';
 
   if (
     activeCamera &&
@@ -891,6 +966,18 @@ const syncSceneCameraBinding = async (sceneId) => {
   } catch (e) {
     logError('Failed to sync scene camera binding', e);
   }
+};
+
+const handleVisionSceneImported = async (payload = {}) => {
+  const sceneId = payload?.sceneId || tabs.value[activeTab.value]?.id || DEFAULT_SCENE_NAME;
+  if (sceneId !== (tabs.value[activeTab.value]?.id || DEFAULT_SCENE_NAME)) {
+    return;
+  }
+  if (payload?.visionRenderMode) {
+    mainRenderBackend.value = 'vision';
+    mainVisionRenderMode.value = payload.visionRenderMode;
+  }
+  await syncSceneCameraBinding(sceneId);
 };
 
 const restoreCameraViews = async (sceneId) => {
@@ -1821,6 +1908,12 @@ onMounted(async () => {
   const initData = result?.data ?? result;
   const scenes = initData?.scenes ?? [];
   const activeIndex = Number(initData?.active_index ?? 0);
+  try {
+    const visionResult = unwrapBridgeData(await sceneService.isVisionAvailable());
+    visionAvailable.value = !!visionResult?.available;
+  } catch (error) {
+    visionAvailable.value = false;
+  }
 
   if (scenes.length > 0) {
     for (const s of scenes) {
@@ -1868,6 +1961,7 @@ onMounted(async () => {
     const panelId = payload?.panelId;
     if (panelId) dockStore.popIn(panelId);
   });
+  coronaEventBus.on('vision-scene-imported', handleVisionSceneImported);
   coronaEventBus.on('actor-pick-result', handleActorPickResult);
   coronaEventBus.on('viewport-ui-calibration-changed', applyViewportUiCalibration);
 
@@ -1893,6 +1987,7 @@ onUnmounted(() => {
   coronaEventBus.off('scene-add');
   coronaEventBus.off('scene-rename');
   coronaEventBus.off('panel-closed');
+  coronaEventBus.off('vision-scene-imported', handleVisionSceneImported);
   coronaEventBus.off('actor-pick-result', handleActorPickResult);
   window.removeEventListener('storage', onStorageChange);
   stopMoveLoop();

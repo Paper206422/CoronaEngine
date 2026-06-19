@@ -9,7 +9,8 @@ using Cfg = SVGFConfig;
 void VarianceEstimator::prepare() noexcept {}
 
 void VarianceEstimator::compile() noexcept {
-Kernel variance_kernel = [&](Var<VarianceEstimatorParam> param) {
+Pipeline *pipeline_ref = pipeline();
+Kernel variance_kernel = [&, pipeline_ref](Var<VarianceEstimatorParam> param) {
     Int2 screen_size = make_int2(dispatch_dim().xy());
     Uint index = dispatch_id();
         
@@ -21,7 +22,7 @@ Kernel variance_kernel = [&](Var<VarianceEstimatorParam> param) {
         Float lum_direct = luminance(cur_direct.xyz());
         Float lum_indirect = luminance(cur_indirect.xyz());
             
-        Interaction cur_it = pipeline()->geometry().compute_surface_interaction(cur_hit, false);
+        Interaction cur_it = pipeline_ref->geometry().compute_surface_interaction(cur_hit, false);
         Float cur_depth = length(cur_it.pos - param.camera_pos.as_vec3());
             
         Float2 motion_vec = param.motion_vectors.read(index);
@@ -58,9 +59,9 @@ Kernel variance_kernel = [&](Var<VarianceEstimatorParam> param) {
                 Bool tap_is_sky = PixelStateUtils::is_sky(tap_hit);
                 
                 $if(!tap_is_sky) {
-                    Interaction tap_it = pipeline()->geometry().compute_surface_interaction(tap_hit, false);
+                    Interaction tap_it = pipeline_ref->geometry().compute_surface_interaction(tap_hit, false);
                     Float tap_depth = length(tap_it.pos - param.prev_camera_pos.as_vec3());
-                    Bool tap_is_emissive = PixelStateUtils::is_emissive(tap_hit);
+                    Bool tap_is_emissive = PixelStateUtils::is_emissive(pipeline_ref, tap_hit);
                     
                     Float depth_diff = abs(cur_depth - tap_depth) / max(cur_depth, 0.1f);
                     Float normal_sim = pow(max(dot(cur_it.ng, tap_it.ng), 0.f), Cfg::Temporal::kNormalExp);

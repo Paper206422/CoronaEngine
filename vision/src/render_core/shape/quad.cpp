@@ -4,7 +4,6 @@
 
 #include "base/shape.h"
 #include "math/transform.h"
-#include "base/mgr/pipeline.h"
 
 namespace vision {
 
@@ -45,7 +44,6 @@ public:
         for (Vertex &vertex : mesh.vertices()) {
             vertex.set_normal(ng_un);
         }
-        mesh.update_data();
         add_instance(ShapeInstance(std::move(mesh)));
     }
 };

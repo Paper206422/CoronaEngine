@@ -6,6 +6,10 @@
 #include <corona/kernel/event/i_event_stream.h>
 #include <corona/kernel/system/system_base.h>
 #include <corona/shared_data_hub.h>
+#ifdef CORONA_ENABLE_VISION
+#include <corona/systems/optics/vision_pipeline_key.h>
+#include <corona/systems/optics/vision_scene_resource.h>
+#endif
 
 #include <cstdint>
 #include <memory>
@@ -107,18 +111,45 @@ class OpticsSystem : public Kernel::SystemBase {
                                    const SceneDevice& scene,
                                    uint64_t frame_index);
 
-    /// Vision 场景来源：引擎构建（默认，随 SharedDataHub 动态同步）或外部文件。
-    /// ExternalLive 使用外部 Vision pipeline，但有 proxy actor binding 作为后续增量同步入口。
-    enum class VisionSceneSource { EngineBuilt, ExternalFile, ExternalLive };
-    VisionSceneSource vision_scene_source_{VisionSceneSource::EngineBuilt};
+    using VisionPipelineSource = Vision::VisionPipelineSource;
+    using VisionPipelineKey = Vision::VisionPipelineKey;
+    using VisionPipelineKeyHash = Vision::VisionPipelineKeyHash;
+    using VisionSceneResource = Vision::VisionSceneResource;
+    using VisionSceneResourceKey = Vision::VisionSceneResourceKey;
+    using VisionSceneResourceKeyHash = Vision::VisionSceneResourceKeyHash;
+    struct VisionPipelineRuntime;
+
+    VisionPipelineRuntime& get_or_create_runtime(const VisionPipelineKey& key);
+    VisionPipelineRuntime& active_vision_runtime();
+    VisionPipelineKey make_vision_pipeline_key(std::string scene_path,
+                                               Corona::CameraVisionRenderMode mode,
+                                               VisionPipelineSource source) const;
+    VisionSceneResourceKey make_vision_scene_resource_key(
+        std::string scene_path,
+        VisionPipelineSource source) const;
+    std::shared_ptr<VisionSceneResource> get_or_create_vision_scene_resource(
+        const VisionSceneResourceKey& key,
+        std::string display_source_path);
+    void release_unused_vision_scene_resources();
+    VisionPipelineRuntime* ensure_external_vision_runtime(
+        const VisionPipelineKey& key,
+        bool force_reload_scene_resource = false);
+    void evict_idle_vision_runtimes(uint64_t frame_index);
+    void activate_single_vision_runtime_key(const VisionPipelineKey& key);
+    void clear_vision_runtimes();
 
     /// 渲染线程起始处消费：若存在 pending 加载请求则切换 Vision 场景。
     /// 仅在 Vision 已初始化后执行；空路径表示卸载外部场景、回到引擎构建场景。
     void apply_pending_vision_scene_load();
 
-    /// 从磁盘 .json 导入一个 Vision 场景并带到可渲染状态（替换全局
-    /// renderPipeline）。失败返回 false 且不改动现有 pipeline。
-    bool load_external_vision_scene(const std::string& scene_path);
+    /// 从磁盘 .json 导入一个 Vision 场景并带到可渲染状态（替换当前
+    /// runtime pipeline）。失败返回 false 且不改动现有 pipeline。
+    bool load_external_vision_scene(const std::string& scene_path,
+                                    Corona::CameraVisionRenderMode mode,
+                                    std::optional<VisionPipelineSource> source_override =
+                                        std::nullopt,
+                                    bool force_reload_scene_resource = false);
+    void apply_vision_render_mode(Corona::CameraVisionRenderMode mode);
 
     /// 计算当前 SharedDataHub 场景的轻量签名，用于检测动态变化
     /// （几何拓扑 / transform / 材质参数 / materialColor / visible）。
@@ -129,18 +160,29 @@ class OpticsSystem : public Kernel::SystemBase {
     /// 复用现有 pipeline（材质类型固定，无需重编译着色器），并通过
     /// scene.prepare() 内部的 remove_unused_elements() 回收旧材质，避免累积泄漏。
     /// 返回本次重建的统计结果，供去抖/重试逻辑区分"空场景"与"数据未就绪"。
-    Vision::VisionBuildResult rebuild_vision_scene();
+    Vision::VisionBuildResult rebuild_vision_scene(VisionPipelineRuntime& runtime);
 
     /// 去抖检测：若签名变化则触发（延迟）重建，覆盖导入/导出/参数调整等动态操作。
-    void sync_vision_dynamic_scene();
+    void sync_vision_dynamic_scene(VisionPipelineRuntime& runtime);
 
     /// external_live transform-only path:
     /// proxy actor transform -> mapped Vision ShapeInstance::set_o2w()
     /// -> Pipeline::update_geometry() -> invalidate view contexts.
-    void sync_external_live_vision_transforms();
+    void sync_external_live_vision_transforms(VisionPipelineRuntime& runtime);
 
-    std::string current_vision_scene_path_;
-    std::unordered_map<std::uintptr_t, std::size_t> external_live_transform_signatures_;
+    Corona::CameraVisionRenderMode current_vision_render_mode_{
+        Corona::CameraVisionRenderMode::PathTracing};
+    std::size_t last_vision_mode_conflict_signature_{0};
+    std::size_t last_vision_runtime_group_signature_{0};
+    std::optional<VisionPipelineKey> active_vision_runtime_key_;
+    std::unordered_map<VisionPipelineKey,
+                       std::unique_ptr<VisionPipelineRuntime>,
+                       VisionPipelineKeyHash>
+        vision_runtimes_;
+    std::unordered_map<VisionSceneResourceKey,
+                       std::shared_ptr<VisionSceneResource>,
+                       VisionSceneResourceKeyHash>
+        vision_scene_resources_;
 #endif  // CORONA_ENABLE_VISION
     struct ActorPickRequest {
         std::uintptr_t pick_handle{0};
@@ -235,15 +277,6 @@ class OpticsSystem : public Kernel::SystemBase {
     std::unique_ptr<Hardware> hardware_;
 
     // Vision 后端状态
-#ifdef CORONA_ENABLE_VISION
-    // Zero-copy path: shares Vision's pre-tonemap linear color buffer with Vulkan
-    // (CUDA exported buffer -> imported HardwareBuffer) and resolves it via the
-    // vision_resolve compute pass. This is the sole display path for Vision frames;
-    // the previous GPU->CPU->GPU readback (download float4 -> float_to_half -> upload)
-    // has been removed.
-    std::unordered_map<std::uintptr_t, std::unique_ptr<Vision::VisionZeroCopyBridge>>
-        vision_zero_copy_bridges_;
-#endif
     bool vision_initialized_{false};
 
     // ---- Vision 动态场景同步（脏标记 + 去抖全量重建）----

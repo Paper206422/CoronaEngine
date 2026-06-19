@@ -211,6 +211,11 @@ class Scene:
             cam.set_size(width, height)
             cam.set_output_mode(data.get(f'{prefix}.output_mode', 'final_color'))
             cam.set_render_backend(data.get(f'{prefix}.render_backend', 'native'))
+            try:
+                cam.set_vision_render_mode(data.get(f'{prefix}.vision_render_mode'))
+            except ValueError as exc:
+                logger.warning("Scene '%s': invalid Vision render mode for %s: %s",
+                               self.name, prefix, exc)
             cam.set_view_state(
                 data.get(f'{prefix}.view_open', 'false').lower() in ('1', 'true', 'yes', 'on'),
                 int(data.get(f'{prefix}.view_x', 120)),
@@ -342,6 +347,7 @@ class Scene:
                     self.file_data['camera'][f'{prefix}.height'] = str(cam.height)
                     self.file_data['camera'][f'{prefix}.output_mode'] = cam.get_output_mode()
                     self.file_data['camera'][f'{prefix}.render_backend'] = cam.get_render_backend()
+                    self.file_data['camera'][f'{prefix}.vision_render_mode'] = cam.get_vision_render_mode()
                     self.file_data['camera'][f'{prefix}.move_speed'] = str(cam.move_speed)
                     self.file_data['camera'][f'{prefix}.view_open'] = str(cam.view_open).lower()
                     self.file_data['camera'][f'{prefix}.view_x'] = str(cam.view_x)

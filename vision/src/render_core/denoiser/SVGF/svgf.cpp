@@ -36,7 +36,11 @@ void SVGF::initialize_(const vision::NodeDesc &node_desc) noexcept {
 }
 
 void SVGF::render_sub_UI(Widgets *widgets) noexcept {
-    changed_ |= widgets->check_box("turn on", &params_.switch_);
+    bool enabled = params_.switch_;
+    if (widgets->check_box("turn on", &enabled)) {
+        changed_ = true;
+        set_enabled(enabled);
+    }
     changed_ |= widgets->input_float_limit("sigma_rt", &params_.sigma_rt_,
                                            0.01, 1e10, 1, 3);
     changed_ |= widgets->input_float_limit("sigma_normal", &params_.sigma_normal_,
@@ -97,6 +101,10 @@ CommandBatch SVGF::dispatch(vision::RealTimeDenoiseInput &input) noexcept {
 
 void SVGF::set_enabled(bool enabled) noexcept {
     params_.switch_ = enabled;
+    if (enabled && frame_buffer().enable_accumulation()) {
+        frame_buffer().set_enable_accumulation(false);
+        frame_buffer().auto_manage_accumulation_buffer(false);
+    }
 }
 
 bool SVGF::enabled() noexcept {

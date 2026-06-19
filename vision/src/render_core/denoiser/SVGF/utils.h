@@ -2,7 +2,6 @@
 
 #include "math/basic_types.h"
 #include "dsl/dsl.h"
-#include "base/mgr/global.h"
 #include "base/mgr/pipeline.h"
 #include "base/mgr/scene.h"
 #include "base/scattering/interaction.h"
@@ -187,10 +186,11 @@ struct PixelStateUtils {
     return hit->is_miss() || hit.inst_id == InvalidUI32;
 }
 
-[[nodiscard]] static Bool is_emissive(const TriangleHitVar &hit) noexcept {
+[[nodiscard]] static Bool is_emissive(const Pipeline *pipeline,
+                                      const TriangleHitVar &hit) noexcept {
     Bool result = false;
     $if(!is_sky(hit)) {
-        result = Global::instance().pipeline()->geometry().is_emissive(hit.inst_id);
+        result = pipeline->geometry().is_emissive(hit.inst_id);
     };
     return result;
 }
@@ -200,6 +200,7 @@ struct PixelStateUtils {
 }
 
     [[nodiscard]] static Float3 query_albedo(
+        Pipeline *pipeline,
         const TriangleHitVar &hit,
         const Float3 &camera_pos) noexcept {
         
@@ -207,10 +208,11 @@ struct PixelStateUtils {
         
         Bool is_valid = !hit->is_miss() && hit.inst_id != InvalidUI32;
         $if(is_valid) {
-            Interaction it = Global::instance().pipeline()->geometry().compute_surface_interaction(hit, camera_pos);
+            Scene &scene = pipeline->scene();
+            Geometry &geometry = pipeline->geometry();
+            TSpectrum &sp = pipeline->renderer().spectrum();
+            Interaction it = geometry.compute_surface_interaction(hit, camera_pos);
             $if(it.has_material()) {
-                Scene &scene = Global::instance().pipeline()->scene();
-                TSpectrum sp = Global::instance().pipeline()->renderer().spectrum();
                 SampledWavelengths swl{sp->dimension()};
                 scene.materials().dispatch(it.material_id(), [&](const Material *material) {
                     MaterialEvaluator bsdf = material->create_evaluator(it, swl);
@@ -232,14 +234,16 @@ struct BoundaryUtils {
     }
     
     [[nodiscard]] static Bool is_emissive_boundary(
+        const Pipeline *pipeline,
         const TriangleHitVar &center_hit,
         const TriangleHitVar &neighbor_hit) noexcept {
-        Bool center_emissive = PixelStateUtils::is_emissive(center_hit);
-        Bool neighbor_emissive = PixelStateUtils::is_emissive(neighbor_hit);
+        Bool center_emissive = PixelStateUtils::is_emissive(pipeline, center_hit);
+        Bool neighbor_emissive = PixelStateUtils::is_emissive(pipeline, neighbor_hit);
         return center_emissive != neighbor_emissive;
     }
     
     [[nodiscard]] static Bool is_any_boundary(
+        const Pipeline *pipeline,
         const TriangleHitVar &center_hit,
         const TriangleHitVar &neighbor_hit) noexcept {
         Bool center_sky = PixelStateUtils::is_sky(center_hit);
@@ -248,15 +252,16 @@ struct BoundaryUtils {
         Bool sky_boundary = center_sky != neighbor_sky;
 
         Bool emissive_boundary = !center_sky && !neighbor_sky &&
-            is_emissive_boundary(center_hit, neighbor_hit);
+            is_emissive_boundary(pipeline, center_hit, neighbor_hit);
         
         return sky_boundary || emissive_boundary;
     }
     
     [[nodiscard]] static Float compute_boundary_weight(
+        const Pipeline *pipeline,
         const TriangleHitVar &center_hit,
         const TriangleHitVar &neighbor_hit) noexcept {
-        return ocarina::select(is_any_boundary(center_hit, neighbor_hit), 0.f, 1.f);
+        return ocarina::select(is_any_boundary(pipeline, center_hit, neighbor_hit), 0.f, 1.f);
     }
 };
 

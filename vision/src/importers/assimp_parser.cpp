@@ -3,8 +3,7 @@
 //
 
 #include "assimp_parser.h"
-#include "base/mgr/global.h"
-#include "base/mgr/pipeline.h"
+#include "base/mgr/scene.h"
 
 namespace vision {
 using namespace ocarina;
@@ -257,7 +256,8 @@ vector<ShapeInstance> AssimpParser::parse_meshes(bool parse_material,
 
     instances.reserve(ai_meshes.size());
 
-    Scene &scene = Global::instance().pipeline()->scene();
+    OC_ERROR_IF(parse_material && target_scene_ == nullptr,
+                "AssimpParser requires an explicit target scene when parsing materials");
 
     for (const aiMesh *ai_mesh : ai_meshes) {
         Box3f aabb;
@@ -267,7 +267,7 @@ vector<ShapeInstance> AssimpParser::parse_meshes(bool parse_material,
         if (ai_mesh->mMaterialIndex >= 0 && parse_material) {
             const MaterialDesc &desc = materials[ai_mesh->mMaterialIndex];
             material = Material::create_root(desc);
-            scene.materials().push_back(material);
+            target_scene_->materials().push_back(material);
         }
         for (int i = 0; i < ai_mesh->mNumVertices; ++i) {
             auto ai_position = ai_mesh->mVertices[i];

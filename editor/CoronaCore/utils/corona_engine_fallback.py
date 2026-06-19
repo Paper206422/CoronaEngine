@@ -312,6 +312,7 @@ class Camera:
         self._handle = Camera._next_handle
         Camera._next_handle += 1
         self._render_backend = 'native'
+        self._vision_render_mode = 'path_tracing'
         self._view_state = [0.0, 120.0, 120.0, 960.0, 540.0, 1.0]
 
     def set(self, position, forward, world_up, fov):
@@ -364,6 +365,13 @@ class Camera:
 
     def get_render_backend(self) -> str:
         return self._render_backend
+
+    def set_vision_render_mode(self, mode: str):
+        value = str(mode or 'path_tracing').strip().lower().replace('-', '_')
+        self._vision_render_mode = value if value in {'path_tracing', 'svgf', 'ssat'} else 'path_tracing'
+
+    def get_vision_render_mode(self) -> str:
+        return self._vision_render_mode
 
     def set_view_state(self, open_, x, y, width, height, move_speed):
         self._view_state = [
@@ -587,6 +595,15 @@ class CoronaEngine:
     @staticmethod
     def load_vision_scene(path):
         _log(f"[Fallback][load_vision_scene] path={path}")
+
+    @staticmethod
+    def set_vision_render_mode(mode, camera_handle=0):
+        _log(f"[Fallback][set_vision_render_mode] mode={mode}, camera_handle={camera_handle}")
+
+    @staticmethod
+    def get_vision_render_mode(camera_handle=0):
+        _log(f"[Fallback][get_vision_render_mode] camera_handle={camera_handle}")
+        return 'path_tracing'
 
     @staticmethod
     def import_media(path):

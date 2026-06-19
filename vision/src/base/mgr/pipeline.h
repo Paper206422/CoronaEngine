@@ -47,7 +47,7 @@ protected:
     };
 
     Device *device_{};
-    Scene scene_{};
+    Scene scene_view_{};
     Renderer renderer_{};
     Renderer *active_renderer_{&renderer_};
     unordered_map<uint64_t, UP<ViewContext>> view_contexts_;
@@ -75,13 +75,19 @@ protected:
 
 public:
     explicit Pipeline(const PipelineDesc &desc);
+    void activate_global_context() noexcept;
     void init() noexcept;
     void initialize_(const vision::NodeDesc &node_desc) noexcept override;
     void sync_output_denoise() noexcept;
     [[nodiscard]] const Device &device() const noexcept { return *device_; }
     [[nodiscard]] Device &device() noexcept { return *device_; }
-    [[nodiscard]] Scene &scene() noexcept { return scene_; }
-    [[nodiscard]] const Scene &scene() const noexcept { return scene_; }
+    void bind_shared_scene_data(SP<SceneData> scene_data) noexcept {
+        scene_view_.bind_shared_data(ocarina::move(scene_data));
+    }
+    [[nodiscard]] SP<SceneData> shared_scene_data() noexcept { return scene_view_.shared_data(); }
+    [[nodiscard]] SP<const SceneData> shared_scene_data() const noexcept { return scene_view_.shared_data(); }
+    [[nodiscard]] Scene &scene() noexcept { return scene_view_; }
+    [[nodiscard]] const Scene &scene() const noexcept { return scene_view_; }
     [[nodiscard]] Renderer &renderer() noexcept { return *active_renderer_; }
     [[nodiscard]] const Renderer &renderer() const noexcept { return *active_renderer_; }
     [[nodiscard]] auto frame_buffer() const noexcept { return active_renderer_->frame_buffer(); }
@@ -105,17 +111,21 @@ public:
     void check_and_save() noexcept;
     OC_MAKE_MEMBER_SETTER(window)
     OC_MAKE_MEMBER_GETTER(ui,&)
-    VS_MAKE_GUI_STATUS_FUNC(Node, scene_, renderer_)
+    VS_MAKE_GUI_STATUS_FUNC(Node, scene_view_, renderer_)
     /// virtual function start
     void update_runtime_object(const vision::IObjectConstructor *constructor) noexcept override;
     virtual void init_project(const ProjectDesc &project_desc) {
+        activate_global_context();
         output_desc_ = project_desc.output_desc;
         renderer_desc_ = project_desc.renderer_desc;
         sensor_desc_ = project_desc.scene_desc.sensor_desc;
         renderer_.pre_init(project_desc.renderer_desc);
-        scene_.init(project_desc.scene_desc);
-        scene_.set_min_radius(project_desc.renderer_desc.render_setting.min_world_radius);
-        renderer_.init(project_desc.renderer_desc, scene_);
+        if (!scene_view_.geometry().has_gpu_resource()) {
+            scene_view_.geometry().init(device());
+        }
+        scene_view_.init(project_desc.scene_desc);
+        scene_view_.set_min_radius(project_desc.renderer_desc.render_setting.min_world_radius);
+        renderer_.init(project_desc.renderer_desc, scene_view_);
         sync_output_denoise();
     };
     virtual void init_postprocessor(const DenoiserDesc &desc) = 0;
@@ -126,8 +136,10 @@ public:
     virtual void clear_geometry() noexcept;
     virtual void prepare_geometry() noexcept;
     virtual void update_geometry() noexcept;
+    void upload_scene_bindless_array() noexcept;
     virtual void prepare_render_graph() noexcept {}
     virtual void compile() noexcept {
+        activate_global_context();
         frame_buffer()->compile();
     }
     virtual void display(double dt) noexcept;
@@ -146,7 +158,7 @@ public:
     void set_output_save_exit(bool save_exit) noexcept { output_desc_.save_exit = save_exit; }
     void set_output_denoise(bool denoise) noexcept;
     void set_output_fn(string fn) noexcept { output_desc_.fn = std::move(fn); }
-    void render_scene_ui(Widgets *widgets) noexcept { scene_.render_UI(widgets); }
+    void render_scene_ui(Widgets *widgets) noexcept { scene_view_.render_UI(widgets); }
     void render_renderer_ui(Widgets *widgets) noexcept { renderer_.render_UI(widgets); }
     void render_framebuffer_ui(Widgets *widgets) noexcept { frame_buffer()->render_UI(widgets); }
     [[nodiscard]] GeometryStats geometry_stats() const noexcept {
@@ -194,12 +206,12 @@ public:
     void deregister_buffer(handle_ty index) noexcept;
     void deregister_texture3d(handle_ty index) noexcept;
     void deregister_texture2d(handle_ty index) noexcept;
-    [[nodiscard]] ImagePool &image_pool() noexcept { return Global::instance().image_pool(); }
+    [[nodiscard]] ImagePool &image_pool() noexcept { return scene_view_.image_pool(); }
     [[nodiscard]] BindlessArray &bindless_array() noexcept { return bindless_array_; }
     [[nodiscard]] const BindlessArray &bindless_array() const noexcept { return bindless_array_; }
     void upload_bindless_array() noexcept;
-    [[nodiscard]] Geometry &geometry() noexcept { return scene_.geometry(); }
-    [[nodiscard]] const Geometry &geometry() const noexcept { return scene_.geometry(); }
+    [[nodiscard]] Geometry &geometry() noexcept { return scene_view_.geometry(); }
+    [[nodiscard]] const Geometry &geometry() const noexcept { return scene_view_.geometry(); }
     [[nodiscard]] Stream &stream() const noexcept { return stream_; }
 };
 

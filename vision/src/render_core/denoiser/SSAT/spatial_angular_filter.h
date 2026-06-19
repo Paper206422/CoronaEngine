@@ -102,7 +102,8 @@ public:
     // ========================================================================
 
     void compile_filter() noexcept {
-        Kernel kernel = [&](Var<SpatialAngularParam> param,
+        Pipeline *pipeline_ref = pipeline();
+        Kernel kernel = [&, pipeline_ref](Var<SpatialAngularParam> param,
                            Var<LenticularParams> lent,
                            Var<LightFieldGeometry> geom,
                            Float4x4 l2w) {
@@ -133,7 +134,7 @@ public:
             Bool center_valid = !center_hit->is_miss() && center_hit.inst_id != InvalidUI32;
             Float center_depth = z_ref;
             $if(center_valid) {
-                Interaction center_it = pipeline()->geometry().compute_surface_interaction(center_hit, false);
+                Interaction center_it = pipeline_ref->geometry().compute_surface_interaction(center_hit, false);
                 center_depth = length(center_it.pos - camera_pos);
             };
 

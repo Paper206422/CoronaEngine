@@ -285,7 +285,7 @@ public:
     }
     [[nodiscard]] SampledWavelengths sample_wavelength(TSampler &sampler) const noexcept override {
         uint n = dimension();
-        uint scatter_pdf_dim = MaterialRegistry::instance().has_dispersive() ? dimension() : 1;
+        uint scatter_pdf_dim = scene_has_dispersive_materials() ? dimension() : 1;
         SampledWavelengths swl{n, scatter_pdf_dim};
         Float u = sampler->next_1d();
         for (uint i = 0; i < n; ++i) {

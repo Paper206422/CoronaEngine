@@ -14,6 +14,10 @@ corona_add_system(optics
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_camera_adapter.h>
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_light_adapter.cpp>
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_light_adapter.h>
+        $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_render_mode_config.cpp>
+        $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_render_mode_config.h>
+        $<$<BOOL:${CORONA_BUILD_VISION}>:${PROJECT_SOURCE_DIR}/include/corona/systems/optics/vision_pipeline_key.h>
+        $<$<BOOL:${CORONA_BUILD_VISION}>:${PROJECT_SOURCE_DIR}/include/corona/systems/optics/vision_scene_resource.h>
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_zero_copy_bridge.cpp>
         $<$<BOOL:${CORONA_BUILD_VISION}>:vision/vision_zero_copy_bridge.h>
     DEPENDENCIES
@@ -38,6 +42,77 @@ endif()
 set(OPTICS_CURSOR_SHADER "${PROJECT_SOURCE_DIR}/assets/shaders/optics_cursor.comp.glsl")
 set_source_files_properties("${OPTICS_CURSOR_SHADER}" PROPERTIES HEADER_FILE_ONLY TRUE)
 target_sources(corona_optics_system PRIVATE "${OPTICS_CURSOR_SHADER}")
+
+if((BUILD_CORONA_TESTING OR BUILD_TESTING) AND CORONA_BUILD_VISION)
+    add_executable(corona_vision_render_mode_config_tests
+        tests/test_vision_render_mode_config.cpp
+    )
+    target_include_directories(corona_vision_render_mode_config_tests
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/vision/src
+    )
+    target_link_libraries(corona_vision_render_mode_config_tests
+        PRIVATE
+            corona::system::optics
+            vision-all_libs
+    )
+    add_test(NAME VisionRenderModeConfigTests
+             COMMAND corona_vision_render_mode_config_tests)
+    set_tests_properties(VisionRenderModeConfigTests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+
+    add_executable(corona_vision_pipeline_key_tests
+        tests/test_vision_pipeline_key.cpp
+    )
+    target_include_directories(corona_vision_pipeline_key_tests
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(corona_vision_pipeline_key_tests
+        PRIVATE
+            corona::system::optics
+    )
+    add_test(NAME VisionPipelineKeyTests
+             COMMAND corona_vision_pipeline_key_tests)
+    set_tests_properties(VisionPipelineKeyTests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+
+    add_executable(corona_vision_scene_resource_tests
+        tests/test_vision_scene_resource.cpp
+    )
+    target_include_directories(corona_vision_scene_resource_tests
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(corona_vision_scene_resource_tests
+        PRIVATE
+            corona::system::optics
+    )
+    add_test(NAME VisionSceneResourceTests
+             COMMAND corona_vision_scene_resource_tests)
+    set_tests_properties(VisionSceneResourceTests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+
+    add_executable(corona_vision_geometry_gpu_resource_tests
+        tests/test_vision_geometry_gpu_resource.cpp
+    )
+    target_include_directories(corona_vision_geometry_gpu_resource_tests
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${CMAKE_SOURCE_DIR}/vision/src
+    )
+    target_link_libraries(corona_vision_geometry_gpu_resource_tests
+        PRIVATE
+            corona::system::optics
+            vision-all_libs
+    )
+    add_test(NAME VisionGeometryGpuResourceTests
+             COMMAND corona_vision_geometry_gpu_resource_tests)
+    set_tests_properties(VisionGeometryGpuResourceTests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+endif()
 
 # ------------------------------------------------------------------------------
 # Vision import-scene verification demo (OFF by default)

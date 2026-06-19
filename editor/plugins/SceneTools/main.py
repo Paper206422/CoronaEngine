@@ -124,6 +124,52 @@ def _extract_vision_camera_pose(document: dict):
     }
 
 
+def _infer_vision_render_mode(document: dict) -> str:
+    if not isinstance(document, dict):
+        return "path_tracing"
+
+    output = document.get("output")
+    output_denoise = (
+        bool(output.get("denoise"))
+        if isinstance(output, dict) and "denoise" in output
+        else False
+    )
+    render = document.get("render")
+    integrator = render.get("integrator") if isinstance(render, dict) else {}
+    integrator_param = (
+        integrator.get("param") if isinstance(integrator, dict) else {}
+    )
+    denoiser = (
+        integrator_param.get("denoiser")
+        if isinstance(integrator_param, dict)
+        else {}
+    )
+    denoiser_type = (
+        str(denoiser.get("type") or "").strip().lower()
+        if isinstance(denoiser, dict)
+        else ""
+    )
+
+    pipeline = document.get("pipeline")
+    pipeline_param = pipeline.get("param") if isinstance(pipeline, dict) else {}
+    frame_buffer = (
+        pipeline_param.get("frame_buffer")
+        if isinstance(pipeline_param, dict)
+        else {}
+    )
+    frame_buffer_type = (
+        str(frame_buffer.get("type") or "").strip().lower()
+        if isinstance(frame_buffer, dict)
+        else ""
+    )
+
+    if frame_buffer_type == "lightfield" or denoiser_type == "ssat":
+        return "ssat"
+    if output_denoise and denoiser_type == "svgf":
+        return "svgf"
+    return "path_tracing"
+
+
 def _vision_scene_data(document: dict) -> dict:
     return document.get("scene", document) if isinstance(document, dict) else {}
 
@@ -630,6 +676,25 @@ def _derived_vision_scene_path(source_path: str, scene) -> str:
     return os.path.join(source_dir, f"{source_stem}.corona_{scene_stem}_{suffix}{source_ext or '.json'}")
 
 
+def _atomic_write_json(path: str, document: dict) -> None:
+    directory = os.path.dirname(os.path.abspath(path))
+    temp_path = os.path.join(directory, f".{os.path.basename(path)}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(temp_path, "w", encoding="utf-8") as file:
+            json.dump(document, file, ensure_ascii=False, indent=2)
+            file.write("\n")
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            logger.warning("Failed to remove temporary Vision scene file: %s", temp_path)
+        raise
+
+
 def _write_derived_external_live_scene(scene, source_path: str) -> str:
     if not source_path or not os.path.isfile(source_path):
         return source_path
@@ -667,9 +732,7 @@ def _write_derived_external_live_scene(scene, source_path: str) -> str:
 
     _compact_removed_shapes(derived)
     path = _derived_vision_scene_path(source_path, scene)
-    with open(path, "w", encoding="utf-8") as file:
-        json.dump(derived, file, ensure_ascii=False, indent=2)
-        file.write("\n")
+    _atomic_write_json(path, derived)
     return path
 
 
@@ -1046,6 +1109,38 @@ class SceneTools(PluginBase):
             return {"status": "error", "message": str(exc)}
 
     @staticmethod
+    def set_vision_render_mode(scene_name: str, camera_name: str = None,
+                               mode: str = "path_tracing") -> dict:
+        try:
+            scene = scene_manager.get(scene_name)
+            if scene is None:
+                raise ValueError(f"Scene '{scene_name}' not found")
+            camera = scene.find_camera(camera_name)
+            if camera is None:
+                raise ValueError(f"Camera '{camera_name}' not found")
+            camera.set_vision_render_mode(mode)
+            scene.save_data()
+            actual = camera.get_vision_render_mode()
+            logger.info("Vision render mode set to '%s' for scene %s camera %s",
+                        actual, scene_name, getattr(camera, 'name', camera_name))
+            return {"status": "success", "mode": actual}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    @staticmethod
+    def get_vision_render_mode(scene_name: str, camera_name: str = None) -> dict:
+        try:
+            scene = scene_manager.get(scene_name)
+            if scene is None:
+                raise ValueError(f"Scene '{scene_name}' not found")
+            camera = scene.find_camera(camera_name)
+            if camera is None:
+                raise ValueError(f"Camera '{camera_name}' not found")
+            return {"status": "success", "mode": camera.get_vision_render_mode()}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    @staticmethod
     def prepare_external_live_vision_scene(scene) -> str:
         return prepare_external_live_vision_scene(scene)
 
@@ -1078,6 +1173,11 @@ class SceneTools(PluginBase):
                 height=source.height,
                 render_backend=source.get_render_backend(),
                 output_mode=source.get_output_mode(),
+                vision_render_mode=(
+                    source.get_vision_render_mode()
+                    if hasattr(source, "get_vision_render_mode")
+                    else getattr(source, "vision_render_mode", "path_tracing")
+                ),
                 move_speed=source.move_speed,
                 view_open=True,
                 view_x=120 + index * 36,
@@ -1251,6 +1351,10 @@ class SceneTools(PluginBase):
 
             active_camera = scene.get_active_camera()
 
+            imported_vision_render_mode = _infer_vision_render_mode(document)
+            if active_camera is not None:
+                active_camera.set_vision_render_mode(imported_vision_render_mode)
+
             if "vision" not in scene.file_data:
                 scene.file_data["vision"] = {}
             scene.vision_source_path = abs_path
@@ -1400,6 +1504,7 @@ class SceneTools(PluginBase):
                 "path": abs_path,
                 "runtime_path": runtime_path or abs_path,
                 "import_mode": "external_live",
+                "vision_render_mode": imported_vision_render_mode,
                 "camera_imported": camera_imported,
                 "camera": active_camera.to_dict() if active_camera is not None else None,
                 "proxy_actors_created": created_proxy_count,

@@ -7,6 +7,7 @@
 #include "base/sensor/photosensory.h"
 #include "base/color/spectrum.h"
 #include "window/window.h"
+#include <memory>
 
 namespace vision {
 using namespace ocarina;
@@ -27,9 +28,7 @@ Pipeline::Pipeline(const vision::PipelineDesc &desc)
     : Node(desc),
       device_(&Global::instance().device()),
       stream_(device().create_stream()),
-      bindless_array_(device().create_bindless_array()) {
-    scene_.geometry_.init(this);
-}
+      bindless_array_(device().create_bindless_array()) {}
 
 void Pipeline::initialize_(const vision::NodeDesc &node_desc) noexcept {
     const Desc &desc = static_cast<const Desc &>(node_desc);
@@ -42,7 +41,15 @@ void Pipeline::initialize_(const vision::NodeDesc &node_desc) noexcept {
     renderer_.set_frame_buffer(Node::create_shared<FrameBuffer>(desc.frame_buffer_desc));
 }
 
+void Pipeline::activate_global_context() noexcept {
+    try {
+        Global::instance().set_pipeline(shared_from_this());
+    } catch (const std::bad_weak_ptr &) {
+    }
+}
+
 bool Pipeline::create_view_context(uint64_t view_id, uint2 resolution) noexcept {
+    activate_global_context();
     if (view_id == 0u || view_contexts_.contains(view_id)) {
         return view_id != 0u;
     }
@@ -56,13 +63,13 @@ bool Pipeline::create_view_context(uint64_t view_id, uint2 resolution) noexcept 
         }
 
         renderer().pre_init(renderer_desc_);
-        renderer().init(renderer_desc_, scene_);
-        scene_.sensor().init(sensor_desc_);
+        renderer().init(renderer_desc_, scene_view_);
+        scene_view_.sensor().init(sensor_desc_);
         frame_buffer()->update_resolution(resolution);
         frame_buffer()->prepare();
-        scene_.sensor()->prepare();
-        scene_.sensor()->update_resolution(resolution);
-        scene_.sensor()->update_device_data();
+        scene_view_.sensor()->prepare();
+        scene_view_.sensor()->update_resolution(resolution);
+        scene_view_.sensor()->update_device_data();
         // Enable the denoiser BEFORE renderer().prepare(): PathTracingIntegrator::prepare()
         // only allocates the denoiser's buffers (and registers its GBuffer callback) when
         // the denoiser is enabled. Syncing after prepare() left a denoise-enabled view
@@ -71,8 +78,10 @@ bool Pipeline::create_view_context(uint64_t view_id, uint2 resolution) noexcept 
         sync_output_denoise();
         OC_INFO_FORMAT("Pipeline::create_view_context synced output denoise: view={} denoise={}",
                        view_id, output_desc_.denoise);
-        renderer().prepare(scene_);
+        renderer().prepare(scene_view_);
+        upload_scene_bindless_array();
         frame_buffer()->prepare_view_texture();
+        sync_output_denoise();
         compile();
         upload_bindless_array();
         invalidate();
@@ -87,7 +96,7 @@ bool Pipeline::create_view_context(uint64_t view_id, uint2 resolution) noexcept 
 bool Pipeline::activate_view_context(uint64_t view_id) noexcept {
     if (view_id == 0u) {
         active_renderer_ = &renderer_;
-        scene_.set_sensor_override(nullptr);
+        scene_view_.set_sensor_override(nullptr);
         return true;
     }
     auto it = view_contexts_.find(view_id);
@@ -95,7 +104,7 @@ bool Pipeline::activate_view_context(uint64_t view_id) noexcept {
         return false;
     }
     active_renderer_ = &it->second->renderer;
-    scene_.set_sensor_override(&it->second->sensor);
+    scene_view_.set_sensor_override(&it->second->sensor);
     return true;
 }
 
@@ -130,7 +139,8 @@ void Pipeline::rebuild_view_context_renderers() noexcept {
         if (!activate_view_context(view_id)) {
             continue;
         }
-        renderer().prepare_lights();
+        renderer().prepare_lights(scene_view_);
+        upload_scene_bindless_array();
         compile();
         invalidate();
     }
@@ -138,6 +148,7 @@ void Pipeline::rebuild_view_context_renderers() noexcept {
 }
 
 void Pipeline::init() noexcept {
+    activate_global_context();
 }
 
 void Pipeline::sync_output_denoise() noexcept {
@@ -146,6 +157,10 @@ void Pipeline::sync_output_denoise() noexcept {
 }
 
 void Pipeline::prepare() noexcept {
+    activate_global_context();
+    if (!scene_view_.geometry().has_gpu_resource()) {
+        scene_view_.geometry().init(device());
+    }
     renderer().frame_buffer()->prepare();
 }
 
@@ -162,10 +177,10 @@ void Pipeline::on_touch(ocarina::uint2 pos) noexcept {
 
 void Pipeline::mark_selected(TriangleHit hit) noexcept {
     if (hit.is_miss()) {
-        ui().set_cur_node(scene_.light_manager().env_light());
+        ui().set_cur_node(scene_view_.light_manager().env_light());
         return;
     }
-    ShapeInstance *instance = scene_.get_instance(hit.inst_id);
+    ShapeInstance *instance = scene_view_.get_instance(hit.inst_id);
     ui().set_cur_node(instance);
 }
 
@@ -214,44 +229,61 @@ void Pipeline::update_runtime_object(const vision::IObjectConstructor *construct
 
 void Pipeline::invalidate() noexcept {
     integrator()->invalidation();
-    if (frame_buffer()->enable_accumulation()) {
-        total_time_ = 0;
+    if (auto *fb = frame_buffer(); fb != nullptr && fb->enable_accumulation()) {
+        stream_ << fb->clear_accumulation_history() << synchronize() << commit();
     }
+    total_time_ = 0;
 }
 
 void Pipeline::change_resolution(uint2 res) noexcept {
+    activate_global_context();
     OC_INFO_FORMAT("Pipeline::change_resolution request=({}, {}), current=({}, {})",
                    res.x, res.y, resolution().x, resolution().y);
     if (all(res == resolution())) { return; }
     frame_buffer()->update_resolution(res);
-    scene_.sensor()->update_resolution(res);
+    scene_view_.sensor()->update_resolution(res);
     integrator()->update_resolution(res);
     OC_INFO_FORMAT("Pipeline::change_resolution applied framebuffer=({}, {}), raytracing=({}, {})",
                    frame_buffer()->resolution().x, frame_buffer()->resolution().y,
                    frame_buffer()->raytracing_resolution().x, frame_buffer()->raytracing_resolution().y);
-    pipeline()->upload_bindless_array();
+    upload_scene_bindless_array();
+    upload_bindless_array();
 }
 
 void Pipeline::prepare_geometry() noexcept {
-    scene_.update_geometry_instances();
-    scene_.geometry_.reset_device_buffer();
-    scene_.geometry_.upload();
-    scene_.geometry_.build_accel();
+    activate_global_context();
+    scene_view_.update_geometry_instances();
+    scene_view_.geometry().reset_device_buffer();
+    scene_view_.geometry().upload(stream());
+    scene_view_.geometry().build_accel(stream());
+    scene_view_.geometry().upload_bindless_array(stream());
 }
 
 void Pipeline::update_geometry() noexcept {
-    scene_.update_geometry_instances();
-    scene_.geometry_.upload();
-    scene_.geometry_.update_accel();
+    activate_global_context();
+    scene_view_.update_geometry_instances();
+    scene_view_.geometry().upload(stream());
+    scene_view_.geometry().update_accel(stream());
+    scene_view_.geometry().upload_bindless_array(stream());
+}
+
+void Pipeline::upload_scene_bindless_array() noexcept {
+    activate_global_context();
+    if (!scene_view_.geometry().has_gpu_resource()) {
+        return;
+    }
+    scene_view_.geometry().upload_bindless_array(stream());
 }
 
 void Pipeline::clear_geometry() noexcept {
-    scene_.geometry_.clear();
-    scene_.clear_shapes();
-    scene_.geometry_.data()->clear_meshes();
+    activate_global_context();
+    scene_view_.geometry().clear();
+    scene_view_.clear_shapes();
+    scene_view_.geometry().data()->clear_meshes();
 }
 
 void Pipeline::upload_bindless_array() noexcept {
+    activate_global_context();
     stream_ << bindless_array_.update_slotSOA() << synchronize() << commit();
     stream_ << bindless_array_.upload_handles() << synchronize() << commit();
 }
@@ -269,24 +301,29 @@ void Pipeline::deregister_texture2d(handle_ty index) noexcept {
 }
 
 void Pipeline::before_render() noexcept {
+    activate_global_context();
     sync_output_denoise();
     stream_ << Env::debugger().upload();
 }
 
 void Pipeline::set_output_denoise(bool denoise) noexcept {
+    activate_global_context();
     output_desc_.denoise = denoise;
     sync_output_denoise();
 }
 
 void Pipeline::after_render() noexcept {
+    activate_global_context();
     Env::debugger().reset_range();
-    scene_.sensor()->after_render();
+    scene_view_.sensor()->after_render();
     renderer().frame_buffer()->after_render();
 }
 
 void Pipeline::upload_data() noexcept {
-    renderer().upload_data(scene_);
-    if (scene_.has_changed() || renderer().has_changed()) {
+    activate_global_context();
+    renderer().upload_data(scene_view_);
+    if (scene_view_.has_changed() || renderer().has_changed()) {
+        upload_scene_bindless_array();
         upload_bindless_array();
     }
     for (EncodedObject *object : encoded_objects) {
@@ -295,6 +332,7 @@ void Pipeline::upload_data() noexcept {
 }
 
 void Pipeline::commit_command() noexcept {
+    activate_global_context();
     if (should_gamma_correct_for_display(output_desc_, window_)) {
         stream_ << renderer().frame_buffer()->gamma_correct();
     }
@@ -303,6 +341,7 @@ void Pipeline::commit_command() noexcept {
 }
 
 void Pipeline::display(double dt) noexcept {
+    activate_global_context();
     delta_time_ = dt;
     total_time_ += dt;
     Clock clk;

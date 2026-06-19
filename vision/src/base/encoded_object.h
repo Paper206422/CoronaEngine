@@ -20,7 +20,8 @@ namespace vision {
  */
 class EncodedObject : public Encodable {
 protected:
-    RegistrableManaged<buffer_ty> datas_{Global::instance().bindless_array()};
+    RegistrableManaged<buffer_ty> datas_{};
+    weak_ptr<Pipeline> owner_pipeline_{};
 
 protected:
     EncodedObject();

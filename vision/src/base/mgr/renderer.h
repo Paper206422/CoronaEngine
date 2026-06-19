@@ -68,7 +68,7 @@ public:
         return Node::create_shared<Warper2D>(warper_desc);
     }
 
-    void prepare_lights() noexcept;
+    void prepare_lights(Scene &scene) noexcept;
     void tidy_up() noexcept;
 };
 
