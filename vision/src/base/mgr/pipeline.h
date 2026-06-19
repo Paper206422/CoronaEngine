@@ -41,9 +41,19 @@ public:
     using Desc = PipelineDesc;
 
 protected:
+    struct ViewContext {
+        Renderer renderer;
+        TSensor sensor;
+    };
+
     Device *device_{};
     Scene scene_{};
     Renderer renderer_{};
+    Renderer *active_renderer_{&renderer_};
+    unordered_map<uint64_t, UP<ViewContext>> view_contexts_;
+    RendererDesc renderer_desc_{};
+    SensorDesc sensor_desc_{};
+    FrameBufferDesc frame_buffer_desc_{};
     BindlessArray bindless_array_{};
     mutable Stream stream_;
     Postprocessor postprocessor_{this};
@@ -60,8 +70,8 @@ protected:
     vector<EncodedObject *> encoded_objects;
 
 protected:
-    [[nodiscard]] auto &integrator() noexcept { return renderer_.integrator(); }
-    [[nodiscard]] auto &integrator() const noexcept { return renderer_.integrator(); }
+    [[nodiscard]] auto &integrator() noexcept { return active_renderer_->integrator(); }
+    [[nodiscard]] auto &integrator() const noexcept { return active_renderer_->integrator(); }
 
 public:
     explicit Pipeline(const PipelineDesc &desc);
@@ -72,10 +82,20 @@ public:
     [[nodiscard]] Device &device() noexcept { return *device_; }
     [[nodiscard]] Scene &scene() noexcept { return scene_; }
     [[nodiscard]] const Scene &scene() const noexcept { return scene_; }
-    [[nodiscard]] Renderer &renderer() noexcept { return renderer_; }
-    [[nodiscard]] const Renderer &renderer() const noexcept { return renderer_; }
-    [[nodiscard]] auto frame_buffer() const noexcept { return renderer_.frame_buffer(); }
-    [[nodiscard]] auto frame_buffer() noexcept { return renderer_.frame_buffer(); }
+    [[nodiscard]] Renderer &renderer() noexcept { return *active_renderer_; }
+    [[nodiscard]] const Renderer &renderer() const noexcept { return *active_renderer_; }
+    [[nodiscard]] auto frame_buffer() const noexcept { return active_renderer_->frame_buffer(); }
+    [[nodiscard]] auto frame_buffer() noexcept { return active_renderer_->frame_buffer(); }
+    bool create_view_context(uint64_t view_id, uint2 resolution) noexcept;
+    bool activate_view_context(uint64_t view_id) noexcept;
+    void remove_view_context(uint64_t view_id) noexcept;
+    void clear_view_contexts() noexcept;
+    void invalidate_view_context(uint64_t view_id) noexcept;
+    void invalidate_all_view_contexts() noexcept;
+    void rebuild_view_context_renderers() noexcept;
+    [[nodiscard]] bool has_view_context(uint64_t view_id) const noexcept {
+        return view_contexts_.contains(view_id);
+    }
     void on_touch(uint2 pos) noexcept;
     void mark_selected(TriangleHit hit) noexcept;
     void register_encoded_object(EncodedObject *object) noexcept;
@@ -90,6 +110,8 @@ public:
     void update_runtime_object(const vision::IObjectConstructor *constructor) noexcept override;
     virtual void init_project(const ProjectDesc &project_desc) {
         output_desc_ = project_desc.output_desc;
+        renderer_desc_ = project_desc.renderer_desc;
+        sensor_desc_ = project_desc.scene_desc.sensor_desc;
         renderer_.pre_init(project_desc.renderer_desc);
         scene_.init(project_desc.scene_desc);
         scene_.set_min_radius(project_desc.renderer_desc.render_setting.min_world_radius);
@@ -115,8 +137,8 @@ public:
     virtual void after_render() noexcept;
     virtual void upload_data() noexcept;
     virtual void final_picture(const OutputDesc &desc, float4 *data) noexcept;
-    [[nodiscard]] virtual uint2 resolution() const noexcept { return renderer_.frame_buffer()->resolution(); }
-    [[nodiscard]] uint pixel_num() const noexcept { return renderer_.frame_buffer()->pixel_num(); }
+    [[nodiscard]] virtual uint2 resolution() const noexcept { return active_renderer_->frame_buffer()->resolution(); }
+    [[nodiscard]] uint pixel_num() const noexcept { return active_renderer_->frame_buffer()->pixel_num(); }
     [[nodiscard]] OutputDesc &output_desc() noexcept { return output_desc_; }
     [[nodiscard]] const OutputDesc &output_desc() const noexcept { return output_desc_; }
     [[nodiscard]] uint output_spp() const noexcept { return output_desc_.spp; }

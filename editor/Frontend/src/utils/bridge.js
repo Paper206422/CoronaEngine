@@ -115,9 +115,27 @@ export const sceneService = {
   getOutputMode: (sceneName, cameraName) =>
     Bridge.callCEF('SceneTools', 'get_output_mode', [sceneName, cameraName]),
   isVisionAvailable: () => Bridge.callCEF('SceneTools', 'is_vision_available', []),
-  setRenderBackend: (mode) => Bridge.callCEF('SceneTools', 'set_render_backend', [mode]),
-  getRenderBackend: () => Bridge.callCEF('SceneTools', 'get_render_backend', []),
+  setRenderBackend: (mode, sceneName = null, cameraId = null) =>
+    Bridge.callCEF('SceneTools', 'set_render_backend', [mode, sceneName, cameraId]),
+  getRenderBackend: (sceneName = null, cameraId = null) =>
+    Bridge.callCEF('SceneTools', 'get_render_backend', [sceneName, cameraId]),
+  createCameraView: (sceneName, name = null) =>
+    Bridge.callCEF('SceneTools', 'create_camera_view', [sceneName, name]),
+  openCameraView: (sceneName, cameraId) =>
+    Bridge.callCEF('SceneTools', 'open_camera_view', [sceneName, cameraId]),
+  closeCameraView: (sceneName, cameraId) =>
+    Bridge.callCEF('SceneTools', 'close_camera_view', [sceneName, cameraId]),
+  renameCameraView: (sceneName, cameraId, name) =>
+    Bridge.callCEF('SceneTools', 'rename_camera_view', [sceneName, cameraId, name]),
+  listCameraViews: (sceneName) =>
+    Bridge.callCEF('SceneTools', 'list_camera_views', [sceneName]),
+  updateCameraView: (sceneName, cameraId, state) =>
+    Bridge.callCEF('SceneTools', 'update_camera_view', [sceneName, cameraId, state]),
+  deleteCamera: (sceneName, cameraId) =>
+    Bridge.callCEF('SceneTools', 'delete_camera', [sceneName, cameraId]),
   loadVisionScene: (path) => Bridge.callCEF('SceneTools', 'load_vision_scene', [path]),
+  importVisionSceneIntoCurrentScene: (sceneName, path) =>
+    Bridge.callCEF('SceneTools', 'import_vision_scene_into_current_scene', [sceneName, path]),
   selectVisionScenePath: () => Bridge.callCEF('SceneTools', 'select_vision_scene_path', []),
   listActorTree: (sceneName) => Bridge.callCEF('SceneTools', 'list_actor_tree', [sceneName]),
   listSceneTree: (sceneName) => Bridge.callCEF('SceneTools', 'list_scene_tree', [sceneName]),
@@ -176,6 +194,12 @@ export const projectService = {
       tabId: null,
       regions: [{ x, y, w, h }],
     }),
+  setCurrentTabDragRegions: (regions) =>
+    Bridge.callDockCommand({
+      cmd: 'setDragRegions',
+      tabId: null,
+      regions: Array.isArray(regions) ? regions : [],
+    }),
 };
 
 export const appService = {
@@ -185,6 +209,30 @@ export const appService = {
     Bridge.callDockCommand({ cmd: 'closeThisTab', panelId }),
   closePanelTab: (tabId, panelId) =>
     Bridge.callDockCommand({ cmd: 'closePanelTab', tabId, panelId }),
+  toggleMaximizeThisCameraView: (sceneId = '', cameraId = '') =>
+    Bridge.callDockCommand({ cmd: 'toggleMaximizeThisCameraView', sceneId, cameraId }),
+  cycleThisCameraViewWindowMode: (sceneId = '', cameraId = '') =>
+    Bridge.callDockCommand({ cmd: 'cycleThisCameraViewWindowMode', sceneId, cameraId }),
+  toggleBorderlessThisCameraView: (sceneId = '', cameraId = '') =>
+    Bridge.callDockCommand({ cmd: 'toggleBorderlessThisCameraView', sceneId, cameraId }),
+  resizeThisCameraView: (width, height, sceneId = '', cameraId = '') =>
+    Bridge.callDockCommand({ cmd: 'resizeThisCameraView', width, height, sceneId, cameraId }),
+  createCameraView: (camera) =>
+    Bridge.callDockCommand({
+      cmd: 'createCameraView',
+      sceneId: camera.scene_id,
+      cameraId: camera.camera_id || camera.id,
+      cameraHandle: camera.handle,
+      routePath: `/CameraView?scene=${encodeURIComponent(camera.scene_id)}&camera=${encodeURIComponent(camera.camera_id || camera.id)}`,
+      width: camera.view_width || 960,
+      height: camera.view_height || 540,
+      x: camera.view_x || 120,
+      y: camera.view_y || 120,
+    }),
+  closeCameraView: (sceneId, cameraId) =>
+    Bridge.callDockCommand({ cmd: 'closeCameraView', sceneId, cameraId }),
+  suspendCameraViews: (sceneId) =>
+    Bridge.callDockCommand({ cmd: 'suspendCameraViews', sceneId }),
   crossTabBroadcast: (event, payload) =>
     Bridge.callDockCommand({ cmd: 'broadcast', event, payload }),
   closeProcess: () => Bridge.callCEF('CoronaEditor', 'close_process'),

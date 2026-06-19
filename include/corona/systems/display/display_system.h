@@ -61,13 +61,23 @@ class DisplaySystem : public Kernel::SystemBase {
         PendingLayer ui;
     };
 
-    void compose_and_present(HardwareDisplayer& displayer,
+    struct CompositeResources {
+        HardwareExecutor executor;
+        HardwareImage output;
+        uint32_t width = 0;
+        uint32_t height = 0;
+    };
+
+    bool compose_and_present(HardwareDisplayer& displayer,
                              SurfaceState& state,
+                             CompositeResources& resources,
                              HardwareImage& optics_image,
                              HardwareExecutor* optics_executor,
                              HardwareImage& ui_image,
                              HardwareExecutor* ui_executor);
-    bool ensure_composite_resources(uint32_t width, uint32_t height);
+    bool ensure_composite_resources(CompositeResources& resources,
+                                    uint32_t width,
+                                    uint32_t height);
 
     Kernel::EventId surface_changed_sub_id_ = 0;
     Kernel::EventId surface_removed_sub_id_ = 0;
@@ -80,6 +90,7 @@ class DisplaySystem : public Kernel::SystemBase {
 
     std::unordered_map<uint64_t, HardwareDisplayer> displayers_;
     std::unordered_map<uint64_t, SurfaceState> surface_states_;
+    std::unordered_map<uint64_t, CompositeResources> composite_resources_;
     std::vector<void*> pending_surfaces_;  ///< Surfaces awaiting displayer creation (deferred to update thread)
 
     // Surfaces awaiting teardown (ImGui secondary viewport closed). The removal event
@@ -95,12 +106,9 @@ class DisplaySystem : public Kernel::SystemBase {
 
     // Compositing resources
     ComputePipeline<composite_comp_glsl> composite_pipeline_;
-    HardwareExecutor compositor_executor_;
-    HardwareImage composite_output_;
+    HardwareExecutor transparent_executor_;
     HardwareImage transparent_storage_;  ///< 1x1 transparent StorageImage fallback (missing Optics bg)
     HardwareImage transparent_sampled_;  ///< 1x1 transparent SampledImage fallback (missing UI fg)
-    uint32_t composite_width_ = 0;
-    uint32_t composite_height_ = 0;
     bool composite_pipeline_ready_ = false;
 };
 }  // namespace Corona::Systems

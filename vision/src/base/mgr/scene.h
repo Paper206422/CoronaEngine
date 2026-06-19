@@ -76,6 +76,7 @@ private:
     Box3f aabb_;
     PolymorphicGUI<TSensor> sensors_{};
     uint cur_sensor_index_{0};
+    TSensor *sensor_override_{nullptr};
     SP<Material> black_body_{};
     LightManager light_manager_{};
     MaterialRegistry *material_registry_{&MaterialRegistry::instance()};
@@ -97,8 +98,13 @@ public:
     void update_resolution(uint2 res) noexcept { sensor()->update_resolution(res); }
 
     // Sensor access
-    [[nodiscard]] TSensor &sensor() noexcept { return sensors_[cur_sensor_index_]; }
-    [[nodiscard]] const TSensor &sensor() const noexcept { return sensors_[cur_sensor_index_]; }
+    [[nodiscard]] TSensor &sensor() noexcept {
+        return sensor_override_ != nullptr ? *sensor_override_ : sensors_[cur_sensor_index_];
+    }
+    [[nodiscard]] const TSensor &sensor() const noexcept {
+        return sensor_override_ != nullptr ? *sensor_override_ : sensors_[cur_sensor_index_];
+    }
+    void set_sensor_override(TSensor *sensor) noexcept { sensor_override_ = sensor; }
     void add_sensor(TSensor s) noexcept { sensors_.push_back(ocarina::move(s)); }
     void remove_sensor(const TSensor &s) noexcept {
         std::erase_if(sensors_, [&](const TSensor &elm) { return elm.get() == s.get(); });

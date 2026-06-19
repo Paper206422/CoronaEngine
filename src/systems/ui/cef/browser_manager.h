@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <mutex>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -53,8 +54,16 @@ struct BrowserTab {
     bool open = true;
     bool minimized = false;  // 新增：是否最小化
     bool needs_resize = false;
+    bool needs_reposition = false;
     bool buffer_dirty = false;
     bool has_focus = false;
+    bool camera_view = false;
+    bool transparent_overlay = false;
+    bool preserve_camera_open_on_close = false;
+    SDL_WindowID platform_window_id = 0;
+    void* platform_handle_raw = nullptr;
+    int initial_x = 120;
+    int initial_y = 120;
 
     char url_buffer[1024] = "";
     std::vector<uint8_t> pixel_buffer;
@@ -79,9 +88,13 @@ class BrowserManager {
                    const std::string& docking_pos = "",
                    int dock_width = 0, int dock_height = 0,
                    bool dock_fixed = false);
+    int create_tab(const std::string& url, const std::string& path,
+                   const std::string& docking_pos, int dock_width, int dock_height,
+                   bool dock_fixed, bool camera_view, int initial_x, int initial_y);
     BrowserTab* get_tab(int tab_id);
     void remove_tab(int tab_id);
     void update_texture(int tab_id);
+    void wait_for_texture_uploads(HardwareExecutor& consumer);
     void resize_tab(int tab_id, int width, int height);
 
     // 隐藏标签页（最小化）
@@ -97,6 +110,7 @@ class BrowserManager {
 
     void update();
     void close_all_tabs();
+    void enqueue_main_thread_task(std::function<void()> task);
 
     // 设置主窗口指针
     void set_main_window(SDL_Window* window) { main_window_ = window; }
@@ -116,6 +130,8 @@ class BrowserManager {
 
     std::unordered_map<int, std::unique_ptr<BrowserTab>> tabs_;
     std::vector<int> tabs_to_close_;
+    std::mutex pending_tasks_mutex_;
+    std::vector<std::function<void()>> pending_tasks_;
     std::unordered_map<ImTextureID, OwnedImage> owned_images_;
     int tab_counter_ = 0;
 

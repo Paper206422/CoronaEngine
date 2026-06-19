@@ -164,7 +164,10 @@ class CoronaSettings:
             proj_cfg.read(ini_path, encoding='utf-8')
             self.active_project_path = project_path
             from CoronaCore.core.corona_editor import CoronaEditor
-            CoronaEditor.CoronaEngine.active_project_path = project_path
+            try:
+                CoronaEditor.CoronaEngine.active_project_path = project_path
+            except Exception:
+                logger.debug("CoronaEngine active_project_path is not writable; using settings_manager only")
             self.active_project_config = proj_cfg
             self.config.set('General', 'last_project', project_path)
             self.add_recent_project(project_path)

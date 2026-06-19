@@ -34,6 +34,7 @@ Pipeline::Pipeline(const vision::PipelineDesc &desc)
 void Pipeline::initialize_(const vision::NodeDesc &node_desc) noexcept {
     const Desc &desc = static_cast<const Desc &>(node_desc);
     Global::instance().set_pipeline(shared_from_this());
+    frame_buffer_desc_ = desc.frame_buffer_desc;
     Env::printer().init(device());
     Env::debugger().init(device());
     Env::set_code_obfuscation(desc["obfuscation"].as_bool(false));
@@ -41,16 +42,106 @@ void Pipeline::initialize_(const vision::NodeDesc &node_desc) noexcept {
     renderer_.set_frame_buffer(Node::create_shared<FrameBuffer>(desc.frame_buffer_desc));
 }
 
+bool Pipeline::create_view_context(uint64_t view_id, uint2 resolution) noexcept {
+    if (view_id == 0u || view_contexts_.contains(view_id)) {
+        return view_id != 0u;
+    }
+
+    try {
+        auto context = make_unique<ViewContext>();
+        context->renderer.set_frame_buffer(Node::create_shared<FrameBuffer>(frame_buffer_desc_));
+        auto [it, inserted] = view_contexts_.emplace(view_id, std::move(context));
+        if (!inserted || !activate_view_context(view_id)) {
+            return false;
+        }
+
+        renderer().pre_init(renderer_desc_);
+        renderer().init(renderer_desc_, scene_);
+        scene_.sensor().init(sensor_desc_);
+        frame_buffer()->update_resolution(resolution);
+        frame_buffer()->prepare();
+        scene_.sensor()->prepare();
+        scene_.sensor()->update_resolution(resolution);
+        scene_.sensor()->update_device_data();
+        renderer().prepare(scene_);
+        frame_buffer()->prepare_view_texture();
+        sync_output_denoise();
+        OC_INFO_FORMAT("Pipeline::create_view_context synced output denoise: view={} denoise={}",
+                       view_id, output_desc_.denoise);
+        compile();
+        upload_bindless_array();
+        invalidate();
+        return true;
+    } catch (...) {
+        activate_view_context(0u);
+        view_contexts_.erase(view_id);
+        return false;
+    }
+}
+
+bool Pipeline::activate_view_context(uint64_t view_id) noexcept {
+    if (view_id == 0u) {
+        active_renderer_ = &renderer_;
+        scene_.set_sensor_override(nullptr);
+        return true;
+    }
+    auto it = view_contexts_.find(view_id);
+    if (it == view_contexts_.end()) {
+        return false;
+    }
+    active_renderer_ = &it->second->renderer;
+    scene_.set_sensor_override(&it->second->sensor);
+    return true;
+}
+
+void Pipeline::remove_view_context(uint64_t view_id) noexcept {
+    if (view_id == 0u) return;
+    activate_view_context(0u);
+    view_contexts_.erase(view_id);
+}
+
+void Pipeline::clear_view_contexts() noexcept {
+    activate_view_context(0u);
+    view_contexts_.clear();
+}
+
+void Pipeline::invalidate_view_context(uint64_t view_id) noexcept {
+    if (activate_view_context(view_id)) {
+        invalidate();
+    }
+}
+
+void Pipeline::invalidate_all_view_contexts() noexcept {
+    for (const auto &[view_id, context] : view_contexts_) {
+        (void)context;
+        invalidate_view_context(view_id);
+    }
+    activate_view_context(0u);
+}
+
+void Pipeline::rebuild_view_context_renderers() noexcept {
+    for (const auto &[view_id, context] : view_contexts_) {
+        (void)context;
+        if (!activate_view_context(view_id)) {
+            continue;
+        }
+        renderer().prepare_lights();
+        compile();
+        invalidate();
+    }
+    activate_view_context(0u);
+}
+
 void Pipeline::init() noexcept {
 }
 
 void Pipeline::sync_output_denoise() noexcept {
     /// output.denoise is the runtime switch; the integrator-owned denoiser consumes it.
-    renderer_.integrator()->set_denoise_enabled(output_desc_.denoise);
+    renderer().integrator()->set_denoise_enabled(output_desc_.denoise);
 }
 
 void Pipeline::prepare() noexcept {
-    renderer_.frame_buffer()->prepare();
+    renderer().frame_buffer()->prepare();
 }
 
 void Pipeline::on_touch(ocarina::uint2 pos) noexcept {
@@ -128,8 +219,8 @@ void Pipeline::change_resolution(uint2 res) noexcept {
                    res.x, res.y, resolution().x, resolution().y);
     if (all(res == resolution())) { return; }
     frame_buffer()->update_resolution(res);
-    scene_.update_resolution(res);
-    renderer_.integrator()->update_resolution(res);
+    scene_.sensor()->update_resolution(res);
+    integrator()->update_resolution(res);
     OC_INFO_FORMAT("Pipeline::change_resolution applied framebuffer=({}, {}), raytracing=({}, {})",
                    frame_buffer()->resolution().x, frame_buffer()->resolution().y,
                    frame_buffer()->raytracing_resolution().x, frame_buffer()->raytracing_resolution().y);
@@ -185,12 +276,12 @@ void Pipeline::set_output_denoise(bool denoise) noexcept {
 void Pipeline::after_render() noexcept {
     Env::debugger().reset_range();
     scene_.sensor()->after_render();
-    renderer_.frame_buffer()->after_render();
+    renderer().frame_buffer()->after_render();
 }
 
 void Pipeline::upload_data() noexcept {
-    renderer_.upload_data(scene_);
-    if (scene_.has_changed() || renderer_.has_changed()) {
+    renderer().upload_data(scene_);
+    if (scene_.has_changed() || renderer().has_changed()) {
         upload_bindless_array();
     }
     for (EncodedObject *object : encoded_objects) {
@@ -200,7 +291,7 @@ void Pipeline::upload_data() noexcept {
 
 void Pipeline::commit_command() noexcept {
     if (should_gamma_correct_for_display(output_desc_, window_)) {
-        stream_ << renderer_.frame_buffer()->gamma_correct();
+        stream_ << renderer().frame_buffer()->gamma_correct();
     }
     stream_ << synchronize();
     stream_ << commit();

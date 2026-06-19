@@ -4,12 +4,12 @@
 // buffer with the Vulkan engine via CUDA<->Vulkan external memory, eliminating
 // the per-frame GPU->CPU->GPU readback used by the [MANUAL-READBACK] path.
 //
-// Direction: Vision (CUDA) renders into accumulation_buffer_/rt_buffer_ (linear
-// HDR, pre-tonemap). We copy that on-device into a CUDA *exportable* buffer,
-// export its Win32 handle, and import it as a Vulkan HardwareBuffer. A Vulkan
-// compute pass (vision_resolve.comp) then applies exposure + ACES and writes the
-// engine's RGBA16F finalOutputImage. The final-color view_texture_ is a cuArray
-// and is intentionally NOT used (cuArray memory is not exportable).
+// Direction: Vision (CUDA) renders into the framebuffer-selected display source
+// (linear HDR, pre-tonemap). We copy that on-device into a CUDA *exportable*
+// buffer, export its Win32 handle, and import it as a Vulkan HardwareBuffer. A
+// Vulkan compute pass (vision_resolve.comp) then applies exposure + ACES and
+// writes the engine's RGBA16F finalOutputImage. The final-color view_texture_ is
+// a cuArray and is intentionally NOT used (cuArray memory is not exportable).
 //
 // NOTE: no cross-API synchronization yet (no timeline semaphore). CUDA writes and
 // Vulkan reads are not ordered, so tearing/flicker is possible. This is the
@@ -43,8 +43,7 @@ public:
     // which case the caller should fall back (e.g. skip this frame).
     bool ensure(::vision::Pipeline& pipeline, uint32_t width, uint32_t height);
 
-    // Copies the current pre-tonemap linear color buffer (accumulation_buffer_
-    // when accumulation is enabled, otherwise rt_buffer_) into the shared
+    // Copies the current pre-tonemap linear display source into the shared
     // exportable buffer on the Vision stream, then synchronizes + commits so the
     // bytes are visible to Vulkan before the resolve dispatch reads them. This
     // synchronize is the only thing standing in for real cross-API sync.

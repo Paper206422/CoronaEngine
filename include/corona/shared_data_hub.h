@@ -7,6 +7,8 @@
 #include <mutex>
 #include <unordered_map>
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 #include <filesystem>
 
@@ -84,7 +86,7 @@ struct MechanicsDevice {
     bool physics_enabled{true};
 
     // 力学碰撞检测开关：false 时完全禁用该物体的碰撞检测（物体不与其他物体或地面碰撞）
-    bool bEnableCollision{true};
+    bool bEnableCollision{false};
 
     // 轴锁定位掩码：bit0=锁定X轴, bit1=锁定Y轴, bit2=锁定Z轴
     uint8_t linear_lock_mask{0};   // 锁定线性运动（平移）的轴
@@ -137,6 +139,17 @@ struct ProfileDevice {
     std::uintptr_t geometry_handle{};
 };
 
+struct ExternalVisionBindingDevice {
+    bool enabled{false};
+    std::string source_path;
+    std::string shape_guid;
+    int shape_index{-1};
+    std::string json_path;
+    std::string shape_type;
+    std::string shape_identity_key;
+    std::string model_path;
+};
+
 struct ActorDevice {
     std::vector<std::uintptr_t> profile_handles;
     std::filesystem::path model_path;  //Actor文件路径，同时作为Actor的唯一标识
@@ -152,8 +165,14 @@ enum class CameraOutputMode : uint8_t {
     VisibilityBuffer,
 };
 
+enum class CameraRenderBackend : uint8_t {
+    Native,
+    Vision,
+};
+
 struct CameraDevice {
     void* surface{};
+    bool follows_default_surface{true};
 
     ktm::fvec3 position;
     ktm::fvec3 forward;
@@ -165,6 +184,13 @@ struct CameraDevice {
     std::uint32_t width{1920};
     std::uint32_t height{1080};
     CameraOutputMode output_mode{CameraOutputMode::FinalColor};
+    CameraRenderBackend render_backend{CameraRenderBackend::Native};
+    bool view_open{false};
+    int view_x{120};
+    int view_y{120};
+    int view_width{960};
+    int view_height{540};
+    float move_speed{1.0f};
     std::uintptr_t actor_pick_handle{};
 
     CameraDevice() {
@@ -199,6 +225,8 @@ struct CameraDevice {
 };
 
 struct ActorPickDevice {
+    std::string request_id;
+    std::string result_request_id;
     std::uint32_t x{0};
     std::uint32_t y{0};
     std::uint32_t result_x{0};
@@ -214,6 +242,104 @@ struct CameraMoveCommand {
     ktm::fvec3 forward{};
     ktm::fvec3 world_up{};
     float fov{45.0f};
+    std::uint64_t sequence{};
+};
+
+struct CameraViewportUpdateCommand {
+    std::uintptr_t camera_handle{};
+    void* surface{};
+    bool view_open{false};
+    int x{120};
+    int y{120};
+    int width{960};
+    int height{540};
+    int render_width{960};
+    int render_height{540};
+    std::uint64_t sequence{};
+};
+
+enum class CameraStateUpdateField : std::uint32_t {
+    None = 0,
+    Surface = 1u << 0,
+    Size = 1u << 1,
+    OutputMode = 1u << 2,
+    RenderBackend = 1u << 3,
+    ViewState = 1u << 4,
+};
+
+constexpr CameraStateUpdateField operator|(CameraStateUpdateField lhs,
+                                           CameraStateUpdateField rhs) {
+    return static_cast<CameraStateUpdateField>(
+        static_cast<std::uint32_t>(lhs) | static_cast<std::uint32_t>(rhs));
+}
+
+constexpr bool has_camera_state_field(CameraStateUpdateField fields,
+                                      CameraStateUpdateField field) {
+    return (static_cast<std::uint32_t>(fields) &
+            static_cast<std::uint32_t>(field)) != 0;
+}
+
+struct CameraStateUpdateCommand {
+    std::uintptr_t camera_handle{};
+    CameraStateUpdateField fields{CameraStateUpdateField::None};
+    void* surface{};
+    std::uint32_t width{1};
+    std::uint32_t height{1};
+    CameraOutputMode output_mode{CameraOutputMode::FinalColor};
+    CameraRenderBackend render_backend{CameraRenderBackend::Native};
+    bool view_open{false};
+    int view_x{120};
+    int view_y{120};
+    int view_width{960};
+    int view_height{540};
+    float move_speed{1.0f};
+    std::uint64_t sequence{};
+};
+
+struct CameraReleaseCommand {
+    std::uintptr_t camera_handle{};
+    std::uintptr_t actor_pick_handle{};
+};
+
+enum class ViewportUiMode : std::uint8_t {
+    Flat2D,
+    Stereo3D,
+};
+
+enum class ViewportUiCursorShape : std::uint8_t {
+    Arrow,
+    Hand,
+    Crosshair,
+    Grab,
+    Grabbing,
+    Hidden,
+};
+
+struct ViewportUiCalibration {
+    float lenticular_pitch{19.1849f};
+    float slant_angle_radians{0.2333f};
+    float phase_offset{10.0f};
+    std::array<float, 3> rgb_subpixel_offsets{0.0f, 1.0f / 3.0f, 2.0f / 3.0f};
+    std::uint32_t display_width{1920};
+    std::uint32_t display_height{1080};
+    float parallax_scale{19.1849f};
+};
+
+struct ViewportUiState {
+    std::uintptr_t camera_handle{};
+    ViewportUiMode mode{ViewportUiMode::Flat2D};
+    ViewportUiCursorShape cursor_shape{ViewportUiCursorShape::Arrow};
+    ViewportUiCalibration calibration{};
+};
+
+struct ViewportUiPointerCommand {
+    std::uintptr_t camera_handle{};
+    std::string event_type;
+    float x{0.0f};
+    float y{0.0f};
+    std::uint32_t buttons{0};
+    std::uint32_t modifiers{0};
+    ViewportUiCursorShape cursor_shape{ViewportUiCursorShape::Arrow};
     std::uint64_t sequence{};
 };
 
@@ -309,6 +435,18 @@ class SharedDataHub {
     ActorStorage& actor_storage();
     const ActorStorage& actor_storage() const;
 
+    // Runtime-only editor metadata keyed by native actor handle. Persisted state
+    // remains in .scene; this cache only bridges Python proxy actors to native
+    // systems such as OpticsSystem/ExternalVisionSceneAdapter.
+    void set_actor_guid(std::uintptr_t actor_handle, std::string actor_guid);
+    [[nodiscard]] std::string actor_guid(std::uintptr_t actor_handle) const;
+    void set_external_vision_binding(std::uintptr_t actor_handle, ExternalVisionBindingDevice binding);
+    void clear_external_vision_binding(std::uintptr_t actor_handle);
+    [[nodiscard]] std::optional<ExternalVisionBindingDevice> external_vision_binding(
+        std::uintptr_t actor_handle) const;
+    [[nodiscard]] bool has_external_vision_binding(std::uintptr_t actor_handle) const;
+    void clear_actor_metadata(std::uintptr_t actor_handle);
+
     CameraStorage& camera_storage();
     const CameraStorage& camera_storage() const;
 
@@ -326,6 +464,18 @@ class SharedDataHub {
 
     void enqueue_camera_move(CameraMoveCommand command);
     std::vector<CameraMoveCommand> drain_camera_moves();
+    void enqueue_camera_viewport_update(CameraViewportUpdateCommand command);
+    std::vector<CameraViewportUpdateCommand> drain_camera_viewport_updates();
+    void enqueue_camera_state_update(CameraStateUpdateCommand command);
+    std::vector<CameraStateUpdateCommand> drain_camera_state_updates();
+    void enqueue_camera_release(CameraReleaseCommand command);
+    std::vector<CameraReleaseCommand> drain_camera_releases();
+    void set_viewport_ui_mode(std::uintptr_t camera_handle, ViewportUiMode mode);
+    void set_viewport_ui_calibration(std::uintptr_t camera_handle,
+                                     const ViewportUiCalibration& calibration);
+    [[nodiscard]] ViewportUiState viewport_ui_state(std::uintptr_t camera_handle) const;
+    void enqueue_viewport_ui_pointer(ViewportUiPointerCommand command);
+    std::vector<ViewportUiPointerCommand> drain_viewport_ui_pointer_commands();
 
    private:
     ModelResourceStorage model_resource_storage_;
@@ -336,6 +486,9 @@ class SharedDataHub {
     AcousticsStorage acoustics_storage_;
     ProfileStorage profile_storage_;
     ActorStorage actor_storage_;
+    mutable std::mutex actor_metadata_mutex_;
+    std::unordered_map<std::uintptr_t, std::string> actor_guids_;
+    std::unordered_map<std::uintptr_t, ExternalVisionBindingDevice> external_vision_bindings_;
     EnvironmentStorage environment_storage_;
     CameraStorage camera_storage_;
     ActorPickStorage actor_pick_storage_;
@@ -344,6 +497,20 @@ class SharedDataHub {
     std::mutex camera_move_mutex_;
     std::unordered_map<std::uintptr_t, CameraMoveCommand> pending_camera_moves_;
     std::uint64_t camera_move_sequence_{0};
+    std::mutex camera_viewport_update_mutex_;
+    std::unordered_map<std::uintptr_t, CameraViewportUpdateCommand>
+        pending_camera_viewport_updates_;
+    std::uint64_t camera_viewport_update_sequence_{0};
+    std::mutex camera_state_update_mutex_;
+    std::unordered_map<std::uintptr_t, CameraStateUpdateCommand>
+        pending_camera_state_updates_;
+    std::uint64_t camera_state_update_sequence_{0};
+    std::mutex camera_release_mutex_;
+    std::vector<CameraReleaseCommand> pending_camera_releases_;
+    mutable std::mutex viewport_ui_mutex_;
+    std::unordered_map<std::uintptr_t, ViewportUiState> viewport_ui_states_;
+    std::vector<ViewportUiPointerCommand> pending_viewport_ui_pointer_commands_;
+    std::uint64_t viewport_ui_pointer_sequence_{0};
 };
 
 }  // namespace Corona

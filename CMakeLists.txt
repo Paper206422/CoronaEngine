@@ -31,6 +31,8 @@ if(WIN32 AND EXISTS "${_CORONA_OFFLINE_FETCH_BASE}")
     set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "Require local FetchContent sources only" FORCE)
     message(STATUS "[FetchContent] Offline cache enabled: ${FETCHCONTENT_BASE_DIR}")
 endif()
+unset(_CORONA_LOCAL_HORIZON_SOURCE)
+unset(_CORONA_OFFLINE_FETCH_BASE)
 
 # ------------------------------------------------------------------------------
 # Modular Configuration Includes

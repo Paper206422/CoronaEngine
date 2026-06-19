@@ -48,6 +48,59 @@ const SharedDataHub::ProfileStorage& SharedDataHub::profile_storage() const { re
 SharedDataHub::ActorStorage& SharedDataHub::actor_storage() { return actor_storage_; }
 const SharedDataHub::ActorStorage& SharedDataHub::actor_storage() const { return actor_storage_; }
 
+void SharedDataHub::set_actor_guid(std::uintptr_t actor_handle, std::string actor_guid) {
+    if (actor_handle == 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(actor_metadata_mutex_);
+    if (actor_guid.empty()) {
+        actor_guids_.erase(actor_handle);
+    } else {
+        actor_guids_[actor_handle] = std::move(actor_guid);
+    }
+}
+
+std::string SharedDataHub::actor_guid(std::uintptr_t actor_handle) const {
+    std::lock_guard<std::mutex> lock(actor_metadata_mutex_);
+    const auto it = actor_guids_.find(actor_handle);
+    return it != actor_guids_.end() ? it->second : std::string{};
+}
+
+void SharedDataHub::set_external_vision_binding(std::uintptr_t actor_handle,
+                                                ExternalVisionBindingDevice binding) {
+    if (actor_handle == 0) {
+        return;
+    }
+    binding.enabled = true;
+    std::lock_guard<std::mutex> lock(actor_metadata_mutex_);
+    external_vision_bindings_[actor_handle] = std::move(binding);
+}
+
+void SharedDataHub::clear_external_vision_binding(std::uintptr_t actor_handle) {
+    std::lock_guard<std::mutex> lock(actor_metadata_mutex_);
+    external_vision_bindings_.erase(actor_handle);
+}
+
+std::optional<ExternalVisionBindingDevice> SharedDataHub::external_vision_binding(
+    std::uintptr_t actor_handle) const {
+    std::lock_guard<std::mutex> lock(actor_metadata_mutex_);
+    const auto it = external_vision_bindings_.find(actor_handle);
+    if (it == external_vision_bindings_.end() || !it->second.enabled) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+bool SharedDataHub::has_external_vision_binding(std::uintptr_t actor_handle) const {
+    return external_vision_binding(actor_handle).has_value();
+}
+
+void SharedDataHub::clear_actor_metadata(std::uintptr_t actor_handle) {
+    std::lock_guard<std::mutex> lock(actor_metadata_mutex_);
+    actor_guids_.erase(actor_handle);
+    external_vision_bindings_.erase(actor_handle);
+}
+
 SharedDataHub::CameraStorage& SharedDataHub::camera_storage() { return camera_storage_; }
 const SharedDataHub::CameraStorage& SharedDataHub::camera_storage() const { return camera_storage_; }
 
@@ -88,5 +141,157 @@ std::vector<CameraMoveCommand> SharedDataHub::drain_camera_moves() {
         return lhs.sequence < rhs.sequence;
     });
     return moves;
+}
+
+void SharedDataHub::enqueue_camera_viewport_update(CameraViewportUpdateCommand command) {
+    if (command.camera_handle == 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(camera_viewport_update_mutex_);
+    command.sequence = ++camera_viewport_update_sequence_;
+    pending_camera_viewport_updates_[command.camera_handle] = command;
+}
+
+std::vector<CameraViewportUpdateCommand> SharedDataHub::drain_camera_viewport_updates() {
+    std::vector<CameraViewportUpdateCommand> updates;
+    {
+        std::lock_guard<std::mutex> lock(camera_viewport_update_mutex_);
+        updates.reserve(pending_camera_viewport_updates_.size());
+        for (auto& [_, command] : pending_camera_viewport_updates_) {
+            updates.push_back(command);
+        }
+        pending_camera_viewport_updates_.clear();
+    }
+
+    std::sort(updates.begin(), updates.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.sequence < rhs.sequence;
+    });
+    return updates;
+}
+
+void SharedDataHub::enqueue_camera_state_update(CameraStateUpdateCommand command) {
+    if (command.camera_handle == 0 ||
+        command.fields == CameraStateUpdateField::None) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(camera_state_update_mutex_);
+    auto& pending = pending_camera_state_updates_[command.camera_handle];
+    if (pending.camera_handle == 0) {
+        pending.camera_handle = command.camera_handle;
+    }
+    pending.sequence = ++camera_state_update_sequence_;
+    pending.fields = pending.fields | command.fields;
+
+    if (has_camera_state_field(command.fields, CameraStateUpdateField::Surface)) {
+        pending.surface = command.surface;
+    }
+    if (has_camera_state_field(command.fields, CameraStateUpdateField::Size)) {
+        pending.width = command.width;
+        pending.height = command.height;
+    }
+    if (has_camera_state_field(command.fields, CameraStateUpdateField::OutputMode)) {
+        pending.output_mode = command.output_mode;
+    }
+    if (has_camera_state_field(command.fields, CameraStateUpdateField::RenderBackend)) {
+        pending.render_backend = command.render_backend;
+    }
+    if (has_camera_state_field(command.fields, CameraStateUpdateField::ViewState)) {
+        pending.view_open = command.view_open;
+        pending.view_x = command.view_x;
+        pending.view_y = command.view_y;
+        pending.view_width = command.view_width;
+        pending.view_height = command.view_height;
+        pending.move_speed = command.move_speed;
+    }
+}
+
+std::vector<CameraStateUpdateCommand> SharedDataHub::drain_camera_state_updates() {
+    std::vector<CameraStateUpdateCommand> updates;
+    {
+        std::lock_guard<std::mutex> lock(camera_state_update_mutex_);
+        updates.reserve(pending_camera_state_updates_.size());
+        for (auto& [_, command] : pending_camera_state_updates_) {
+            updates.push_back(command);
+        }
+        pending_camera_state_updates_.clear();
+    }
+
+    std::sort(updates.begin(), updates.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.sequence < rhs.sequence;
+    });
+    return updates;
+}
+
+void SharedDataHub::enqueue_camera_release(CameraReleaseCommand command) {
+    if (command.camera_handle == 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(camera_release_mutex_);
+    pending_camera_releases_.push_back(command);
+}
+
+std::vector<CameraReleaseCommand> SharedDataHub::drain_camera_releases() {
+    std::vector<CameraReleaseCommand> releases;
+    {
+        std::lock_guard<std::mutex> lock(camera_release_mutex_);
+        releases.swap(pending_camera_releases_);
+    }
+    return releases;
+}
+
+void SharedDataHub::set_viewport_ui_mode(std::uintptr_t camera_handle, ViewportUiMode mode) {
+    if (camera_handle == 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(viewport_ui_mutex_);
+    auto& state = viewport_ui_states_[camera_handle];
+    state.camera_handle = camera_handle;
+    state.mode = mode;
+}
+
+void SharedDataHub::set_viewport_ui_calibration(std::uintptr_t camera_handle,
+                                                const ViewportUiCalibration& calibration) {
+    if (camera_handle == 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(viewport_ui_mutex_);
+    auto& state = viewport_ui_states_[camera_handle];
+    state.camera_handle = camera_handle;
+    state.calibration = calibration;
+}
+
+ViewportUiState SharedDataHub::viewport_ui_state(std::uintptr_t camera_handle) const {
+    std::lock_guard<std::mutex> lock(viewport_ui_mutex_);
+    const auto it = viewport_ui_states_.find(camera_handle);
+    if (it != viewport_ui_states_.end()) {
+        return it->second;
+    }
+    ViewportUiState state;
+    state.camera_handle = camera_handle;
+    return state;
+}
+
+void SharedDataHub::enqueue_viewport_ui_pointer(ViewportUiPointerCommand command) {
+    if (command.camera_handle == 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(viewport_ui_mutex_);
+    command.sequence = ++viewport_ui_pointer_sequence_;
+    pending_viewport_ui_pointer_commands_.push_back(std::move(command));
+}
+
+std::vector<ViewportUiPointerCommand> SharedDataHub::drain_viewport_ui_pointer_commands() {
+    std::vector<ViewportUiPointerCommand> commands;
+    {
+        std::lock_guard<std::mutex> lock(viewport_ui_mutex_);
+        commands.swap(pending_viewport_ui_pointer_commands_);
+    }
+    return commands;
 }
 }  // namespace Corona

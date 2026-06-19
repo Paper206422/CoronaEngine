@@ -6,6 +6,8 @@
 #include <corona/systems/script/corona_engine_api.h>
 #include <corona/systems/ui/vulkan_backend.h>
 
+#include "../cef/browser_manager.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -38,6 +40,45 @@ inline uint32_t texture_id_to_descriptor(ImTextureID tex_id) {
         CFW_LOG_ERROR("VulkanBackend: ImTextureID out of uint32 range: {}", raw);
     }
     return static_cast<uint32_t>(raw);
+}
+
+std::uintptr_t select_main_camera_handle(const Corona::SceneDevice& scene) {
+    if (scene.active_camera_handle != 0 &&
+        std::find(scene.camera_handles.begin(),
+                  scene.camera_handles.end(),
+                  scene.active_camera_handle) != scene.camera_handles.end()) {
+        return scene.active_camera_handle;
+    }
+    return scene.camera_handles.empty() ? 0 : scene.camera_handles.front();
+}
+
+void sync_default_surface_camera_size(void* surface, uint32_t width, uint32_t height) {
+    if (surface == nullptr || width == 0 || height == 0) {
+        return;
+    }
+
+    auto& hub = Corona::SharedDataHub::instance();
+    for (const auto& scene : hub.scene_storage()) {
+        if (!scene.enabled) {
+            continue;
+        }
+        const auto camera_handle = select_main_camera_handle(scene);
+        if (camera_handle == 0) {
+            continue;
+        }
+        if (auto camera = hub.camera_storage().try_acquire_write(camera_handle)) {
+            if (!camera->follows_default_surface) {
+                continue;
+            }
+            if (camera->surface != nullptr && camera->surface != surface) {
+                continue;
+            }
+            camera->surface = surface;
+            camera->width = width;
+            camera->height = height;
+            camera->aspect = static_cast<float>(width) / static_cast<float>(height);
+        }
+    }
 }
 }  // namespace
 
@@ -435,6 +476,7 @@ bool VulkanBackend::render_draw_data(
     }
 
     // --- Submit ---
+    UI::BrowserManager::instance().wait_for_texture_uploads(res.executor);
     res.executor << pipeline(static_cast<uint16_t>(fb_width), static_cast<uint16_t>(fb_height))
                  << res.executor.commit();
 
@@ -452,6 +494,8 @@ void VulkanBackend::present_frame() {
     } else {
         return;
     }
+
+    sync_default_surface_camera_size(surface_, main_resources_.width, main_resources_.height);
 
     if (auto* event_bus = Kernel::KernelContext::instance().event_bus()) {
         ++frame_index_;
@@ -474,11 +518,27 @@ void VulkanBackend::rebuild(int width, int height) {
         return;
     }
 
-    if (!ensure_render_target(main_resources_, static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
+    const auto target_width = static_cast<uint32_t>(width);
+    const auto target_height = static_cast<uint32_t>(height);
+    const bool size_changed = !main_resources_.render_target ||
+                              main_resources_.width != target_width ||
+                              main_resources_.height != target_height;
+    if (size_changed) {
+        if (image_handle_ != 0) {
+            if (auto image_device = SharedDataHub::instance().image_storage().acquire_write(image_handle_)) {
+                main_resources_.executor.wait(image_device->consumed_executor);
+            }
+        }
+        main_resources_.executor.waitForDeferredResources();
+        main_resources_.executor.cleanupDeferredResources();
+    }
+
+    if (!ensure_render_target(main_resources_, target_width, target_height)) {
         rebuild_needed_ = true;
         return;
     }
 
+    sync_default_surface_camera_size(surface_, target_width, target_height);
     rebuild_needed_ = false;
 }
 
@@ -496,7 +556,7 @@ bool VulkanBackend::ensure_render_target(ViewportRenderResources& resources, uin
     // When the render target is used as a storage image (secondary viewports), use a
     // storage-capable format (RGBA16_FLOAT) to avoid VK_ERROR_FORMAT_NOT_SUPPORTED.
     const ImageFormat target_format =
-        (usage == ImageUsage::StorageImage) ? ImageFormat::RGBA16_FLOAT : ImageFormat::RGBA8_SRGB;
+        (usage == ImageUsage::StorageImage) ? ImageFormat::RGBA16_FLOAT : ImageFormat::RGBA8_UNORM;
 
     HardwareImage new_target(width, height, target_format, usage);
     if (!new_target) {
@@ -557,7 +617,7 @@ bool VulkanBackend::ensure_font_texture() {
     font_atlas_image_ = HardwareImage(
         static_cast<uint32_t>(width),
         static_cast<uint32_t>(height),
-        ImageFormat::RGBA8_SRGB,
+        ImageFormat::RGBA8_UNORM,
         ImageUsage::SampledImage);
 
     if (!font_atlas_image_) {
@@ -664,13 +724,11 @@ void VulkanBackend::renderer_set_window_size(ImGuiViewport* vp, ImVec2 size) {
         return;
     }
 
-    const auto w = static_cast<uint32_t>(size.x);
-    const auto h = static_cast<uint32_t>(size.y);
-    if (w > 0 && h > 0) {
-        // SampledImage: the UI layer is consumed as the composite shader's fg (sampled),
-        // matching the main window. DisplaySystem owns/recreates the swapchain on resize.
-        ensure_render_target(vd->resources, w, h, ImageUsage::SampledImage);
-    }
+    (void)size;
+    // ImGui passes logical window size here, while renderer_render_window uses
+    // framebuffer size. Allocating here causes high-DPI camera viewports to
+    // bounce between two sizes during live resize. Let the render path allocate
+    // exactly once for the framebuffer dimensions it will actually draw into.
 }
 
 void VulkanBackend::renderer_render_window(ImGuiViewport* vp, void* /*render_arg*/) {

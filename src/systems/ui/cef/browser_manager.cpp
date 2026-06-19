@@ -8,6 +8,7 @@
 
 #include "cef_client.h"
 #include "corona/kernel/core/i_logger.h"
+#include "corona/systems/ui/camera_viewport_manager.h"
 
 namespace fs = std::filesystem;
 
@@ -81,6 +82,15 @@ int BrowserManager::create_tab(const std::string& url, const std::string& path,
                                const std::string& docking_pos,
                                int dock_width, int dock_height,
                                bool dock_fixed) {
+    return create_tab(url, path, docking_pos, dock_width, dock_height,
+                      dock_fixed, false, 120, 120);
+}
+
+int BrowserManager::create_tab(const std::string& url, const std::string& path,
+                               const std::string& docking_pos,
+                               int dock_width, int dock_height,
+                               bool dock_fixed, bool camera_view,
+                               int initial_x, int initial_y) {
     auto tab = std::make_unique<BrowserTab>();
 
     int id = ++tab_counter_;
@@ -93,6 +103,9 @@ int BrowserManager::create_tab(const std::string& url, const std::string& path,
     tab->dock_initialized = false;
     tab->minimized = false;
     tab->open = true;  // 新标签页默认显示
+    tab->camera_view = camera_view;
+    tab->initial_x = initial_x;
+    tab->initial_y = initial_y;
 
     // 如果有指定的dock大小，使用它，否则使用默认大小
     if (dock_width > 0 && dock_height > 0) {
@@ -154,6 +167,10 @@ int BrowserManager::create_tab(const std::string& url, const std::string& path,
     browser_settings.javascript = STATE_ENABLED;
     browser_settings.local_storage = STATE_ENABLED;
     browser_settings.webgl = STATE_ENABLED;
+    const bool transparent_overlay = camera_view || docking_pos == "main";
+    tab->transparent_overlay = transparent_overlay;
+    browser_settings.background_color =
+        CefColorSetARGB(transparent_overlay ? 0 : 255, 255, 255, 255);
 
     if (!CefBrowserHost::CreateBrowser(window_info, CefRefPtr<CefClient>(tab->client),
                                        full_url, browser_settings, nullptr, nullptr)) {
@@ -174,6 +191,10 @@ void BrowserManager::remove_tab(int tab_id) {
     if (!tabs_.contains(tab_id)) return;
 
     BrowserTab* tab = tabs_[tab_id].get();
+    if (tab->camera_view) {
+        CameraViewportManager::instance().unregister_view(
+            tab_id, tab->preserve_camera_open_on_close);
+    }
     // 先断开 render handler 对 BrowserTab 的引用，避免 CloseBrowser 之后
     // 仍有在途的 OnPaint 回调访问已释放的 tab（use-after-free 崩溃）。
     if (tab->client) {
@@ -195,6 +216,24 @@ std::unordered_map<int, std::unique_ptr<BrowserTab>>& BrowserManager::get_tabs()
 }
 
 void BrowserManager::update() {
+    std::function<void()> task;
+    {
+        std::lock_guard lock(pending_tasks_mutex_);
+        if (!pending_tasks_.empty()) {
+            task = std::move(pending_tasks_.front());
+            pending_tasks_.erase(pending_tasks_.begin());
+        }
+    }
+    if (task) {
+        try {
+            task();
+        } catch (const std::exception& exception) {
+            CFW_LOG_ERROR("Browser main-thread task failed: {}", exception.what());
+        } catch (...) {
+            CFW_LOG_ERROR("Browser main-thread task failed with an unknown exception");
+        }
+    }
+
     for (auto& [tab_id, tab] : tabs_) {
         if (!tab->open) {
             tabs_to_close_.push_back(tab_id);
@@ -203,6 +242,11 @@ void BrowserManager::update() {
         update_texture(tab_id);
         std::string window_id = tab->name + "##" + std::to_string(tab_id);
     }
+}
+
+void BrowserManager::enqueue_main_thread_task(std::function<void()> task) {
+    std::lock_guard lock(pending_tasks_mutex_);
+    pending_tasks_.push_back(std::move(task));
 }
 
 void BrowserManager::close_all_tabs() {

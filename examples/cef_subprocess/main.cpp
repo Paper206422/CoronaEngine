@@ -96,6 +96,90 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
                 return true;
             }
 
+            if (name == "setViewportUiMode") {
+                if (arguments.size() < 2 ||
+                    !arguments[0] || (!arguments[0]->IsInt() && !arguments[0]->IsDouble()) ||
+                    !arguments[1] || !arguments[1]->IsString()) {
+                    exception = "setViewportUiMode(cameraHandle, mode) requires (number, string)";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                auto ctx = CefV8Context::GetCurrentContext();
+                if (!ctx || !ctx->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("ViewportUiMode");
+                CefRefPtr<CefListValue> args = msg->GetArgumentList();
+                args->SetDouble(0, arguments[0]->GetDoubleValue());
+                args->SetString(1, arguments[1]->GetStringValue());
+                ctx->GetFrame()->SendProcessMessage(PID_BROWSER, msg);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
+            if (name == "setViewportUiCalibration") {
+                bool args_ok = arguments.size() >= 5;
+                for (size_t i = 0; args_ok && i < 5; ++i) {
+                    if (!arguments[i] || (!arguments[i]->IsInt() && !arguments[i]->IsDouble())) {
+                        args_ok = false;
+                    }
+                }
+                if (!args_ok) {
+                    exception =
+                        "setViewportUiCalibration(cameraHandle, pe, angle, offset, parallaxScale) requires 5 numbers";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                auto ctx = CefV8Context::GetCurrentContext();
+                if (!ctx || !ctx->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                CefRefPtr<CefProcessMessage> msg =
+                    CefProcessMessage::Create("ViewportUiCalibration");
+                CefRefPtr<CefListValue> args = msg->GetArgumentList();
+                for (size_t i = 0; i < 5; ++i) {
+                    args->SetDouble(static_cast<int>(i), arguments[i]->GetDoubleValue());
+                }
+                ctx->GetFrame()->SendProcessMessage(PID_BROWSER, msg);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
+            if (name == "viewportUiPointer") {
+                if (arguments.size() < 4 ||
+                    !arguments[0] || (!arguments[0]->IsInt() && !arguments[0]->IsDouble()) ||
+                    !arguments[1] || !arguments[1]->IsString() ||
+                    !arguments[2] || (!arguments[2]->IsInt() && !arguments[2]->IsDouble()) ||
+                    !arguments[3] || (!arguments[3]->IsInt() && !arguments[3]->IsDouble())) {
+                    exception = "viewportUiPointer(cameraHandle, type, x, y, buttons?, modifiers?, cursor?) requires (number, string, number, number, ...)";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                auto ctx = CefV8Context::GetCurrentContext();
+                if (!ctx || !ctx->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("ViewportUiPointer");
+                CefRefPtr<CefListValue> args = msg->GetArgumentList();
+                args->SetDouble(0, arguments[0]->GetDoubleValue());
+                args->SetString(1, arguments[1]->GetStringValue());
+                args->SetDouble(2, arguments[2]->GetDoubleValue());
+                args->SetDouble(3, arguments[3]->GetDoubleValue());
+                for (size_t i = 4; i < arguments.size() && i < 7; ++i) {
+                    const auto& arg = arguments[i];
+                    if (!arg) continue;
+                    if (arg->IsInt()) args->SetInt(static_cast<int>(i), arg->GetIntValue());
+                    else if (arg->IsDouble()) args->SetDouble(static_cast<int>(i), arg->GetDoubleValue());
+                    else if (arg->IsString()) args->SetString(static_cast<int>(i), arg->GetStringValue());
+                }
+                ctx->GetFrame()->SendProcessMessage(PID_BROWSER, msg);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
             // ── setProperty: 属性编辑快速通道 ──
             if (name == "setProperty") {
                 // arguments: (actorHandle: number, propertyType: int, value: number)
@@ -181,10 +265,10 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
 
             // ── pickActor: 视口拾取快速通道 ──
             if (name == "pickActor") {
-                // arguments: (sceneHandle: number, x: number, y: number, vpWidth: number, vpHeight: number)
-                // Returns result via __coronaEmit("actor-pick-result", ...) injected into the main frame
-                if (arguments.size() < 5) {
-                    exception = "pickActor(handle, x, y, vpW, vpH) requires 5 arguments";
+                // arguments: (cameraHandle: number, sceneId: string, requestId: string,
+                //             x: number, y: number, vpWidth: number, vpHeight: number)
+                if (arguments.size() < 7) {
+                    exception = "pickActor(cameraHandle, sceneId, requestId, x, y, vpW, vpH) requires 7 arguments";
                     retval = CefV8Value::CreateBool(false);
                     return true;
                 }
@@ -195,13 +279,34 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
                 }
                 CefRefPtr<CefProcessMessage> pick_msg = CefProcessMessage::Create("ViewportPick");
                 CefRefPtr<CefListValue> pick_args = pick_msg->GetArgumentList();
-                for (int i = 0; i < 5; ++i) {
-                    const auto& arg = arguments[i];
-                    if (!arg) { retval = CefV8Value::CreateBool(false); return true; }
-                    if (arg->IsInt()) pick_args->SetInt(i, arg->GetIntValue());
-                    else if (arg->IsDouble()) pick_args->SetDouble(i, arg->GetDoubleValue());
-                    else { retval = CefV8Value::CreateBool(false); return true; }
+
+                const auto set_numeric_arg = [&](int index) -> bool {
+                    const auto& arg = arguments[index];
+                    if (!arg) return false;
+                    if (arg->IsInt()) {
+                        pick_args->SetInt(index, arg->GetIntValue());
+                        return true;
+                    }
+                    if (arg->IsDouble()) {
+                        pick_args->SetDouble(index, arg->GetDoubleValue());
+                        return true;
+                    }
+                    return false;
+                };
+
+                if (!set_numeric_arg(0) ||
+                    !arguments[1] || !arguments[1]->IsString() ||
+                    !arguments[2] || !arguments[2]->IsString() ||
+                    !set_numeric_arg(3) ||
+                    !set_numeric_arg(4) ||
+                    !set_numeric_arg(5) ||
+                    !set_numeric_arg(6)) {
+                    exception = "pickActor: expected (number, string, string, number, number, number, number)";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
                 }
+                pick_args->SetString(1, arguments[1]->GetStringValue());
+                pick_args->SetString(2, arguments[2]->GetStringValue());
                 pick_ctx->GetFrame()->SendProcessMessage(PID_BROWSER, pick_msg);
                 retval = CefV8Value::CreateBool(true);
                 return true;
@@ -366,6 +471,12 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
         CefRefPtr<CefV8Value> actor_transform = CefV8Value::CreateFunction("actorTransform", handler);
         CefRefPtr<CefV8Value> set_property = CefV8Value::CreateFunction("setProperty", handler);
         CefRefPtr<CefV8Value> pick_actor = CefV8Value::CreateFunction("pickActor", handler);
+        CefRefPtr<CefV8Value> set_viewport_ui_mode =
+            CefV8Value::CreateFunction("setViewportUiMode", handler);
+        CefRefPtr<CefV8Value> set_viewport_ui_calibration =
+            CefV8Value::CreateFunction("setViewportUiCalibration", handler);
+        CefRefPtr<CefV8Value> viewport_ui_pointer =
+            CefV8Value::CreateFunction("viewportUiPointer", handler);
         CefRefPtr<CefV8Value> inject_input = CefV8Value::CreateFunction("injectInput", handler);
         CefRefPtr<CefV8Value> dock_command = CefV8Value::CreateFunction("dockCommand", handler);
         CefRefPtr<CefV8Value> compute_actor_focus_pose =
@@ -374,6 +485,9 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
         bridge->SetValue("actorTransform", actor_transform, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("setProperty", set_property, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("pickActor", pick_actor, V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("setViewportUiMode", set_viewport_ui_mode, V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("setViewportUiCalibration", set_viewport_ui_calibration, V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("viewportUiPointer", viewport_ui_pointer, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("injectInput", inject_input, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("dockCommand", dock_command, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("computeActorFocusPose", compute_actor_focus_pose, V8_PROPERTY_ATTRIBUTE_NONE);

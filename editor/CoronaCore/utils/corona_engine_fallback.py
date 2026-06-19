@@ -213,6 +213,8 @@ class Actor:
         self._profiles: List[ActorProfile] = []
         self._active: Optional[ActorProfile] = None
         self._follow_camera = False
+        self._actor_guid = ""
+        self._external_vision_binding = {}
 
     def add_profile(self, profile: ActorProfile) -> Optional[ActorProfile]:
         _log(f"[Fallback][Actor.add_profile] profile={profile}")
@@ -260,11 +262,43 @@ class Actor:
         _log("[Fallback][Actor.get_follow_camera]")
         return self._follow_camera
 
+    def set_actor_guid(self, actor_guid: str):
+        _log(f"[Fallback][Actor.set_actor_guid] actor_guid={actor_guid}")
+        self._actor_guid = actor_guid or ""
+
+    def get_actor_guid(self) -> str:
+        _log("[Fallback][Actor.get_actor_guid]")
+        return self._actor_guid
+
+    def set_external_vision_binding(self, source_path: str, shape_guid: str, shape_index: int,
+                                    json_path: str, shape_type: str, shape_identity_key: str,
+                                    model_path: str):
+        _log(f"[Fallback][Actor.set_external_vision_binding] source_path={source_path}, shape_guid={shape_guid}")
+        self._external_vision_binding = {
+            "source_path": source_path or "",
+            "shape_guid": shape_guid or "",
+            "shape_index": int(shape_index),
+            "json_path": json_path or "",
+            "shape_type": shape_type or "",
+            "shape_identity_key": shape_identity_key or "",
+            "model_path": model_path or "",
+        }
+
+    def clear_external_vision_binding(self):
+        _log("[Fallback][Actor.clear_external_vision_binding]")
+        self._external_vision_binding = {}
+
+    def has_external_vision_binding(self) -> bool:
+        _log("[Fallback][Actor.has_external_vision_binding]")
+        return bool(self._external_vision_binding)
+
 
 # ================================
 # Camera / ImageEffects
 # ================================
 class Camera:
+    _next_handle = 1
+
     def __init__(self, position=None, forward=None, world_up=None, fov=None):
         _log(f"[Fallback][Camera.__init__] position={position}, forward={forward}, world_up={world_up}, fov={fov}")
         self._position = list(position or [0.0, 0.0, -5.0])
@@ -275,6 +309,10 @@ class Camera:
         self._effects = None
         self._w = 1920
         self._h = 1080
+        self._handle = Camera._next_handle
+        Camera._next_handle += 1
+        self._render_backend = 'native'
+        self._view_state = [0.0, 120.0, 120.0, 960.0, 540.0, 1.0]
 
     def set(self, position, forward, world_up, fov):
         _log(f"[Fallback][Camera.set] position={position}, forward={forward}, world_up={world_up}, fov={fov}")
@@ -290,6 +328,9 @@ class Camera:
     def get_surface(self):
         _log("[Fallback][Camera.get_surface]")
         return self._surface or 0
+
+    def get_handle(self):
+        return self._handle
 
     def get_position(self):
         _log("[Fallback][Camera.get_position]")
@@ -318,6 +359,20 @@ class Camera:
         _log("[Fallback][Camera.get_output_mode]")
         return getattr(self, '_output_mode', 'final_color')
 
+    def set_render_backend(self, mode: str):
+        self._render_backend = 'vision' if mode == 'vision' else 'native'
+
+    def get_render_backend(self) -> str:
+        return self._render_backend
+
+    def set_view_state(self, open_, x, y, width, height, move_speed):
+        self._view_state = [
+            1.0 if open_ else 0.0, float(x), float(y),
+            float(width), float(height), float(move_speed)]
+
+    def get_view_state(self):
+        return list(self._view_state)
+
     def set_image_effects(self, effects):
         _log(f"[Fallback][Camera.set_image_effects] effects={effects}")
         self._effects = effects
@@ -337,6 +392,9 @@ class Camera:
     def set_size(self, width: int, height: int):
         _log(f"[Fallback][Camera.set_size] width={width}, height={height}")
         self._w, self._h = int(width), int(height)
+
+    def get_size(self):
+        return [self._w, self._h]
 
     def set_viewport_rect(self, x: int, y: int, width: int, height: int):
         _log(f"[Fallback][Camera.set_viewport_rect] x={x}, y={y}, width={width}, height={height}")
@@ -368,9 +426,15 @@ class Environment:
         _log(f"[Fallback][Environment.set_sun_direction] direction={direction}")
         self._sun_dir = list(direction)
 
+    def get_sun_direction(self):
+        return list(self._sun_dir)
+
     def set_floor_grid(self, enabled: bool):
         _log(f"[Fallback][Environment.set_floor_grid] enabled={enabled}")
         self._floor_grid = bool(enabled)
+
+    def get_floor_grid(self):
+        return self._floor_grid
 
     def set_gravity(self, gravity: List[float]):
         _log(f"[Fallback][Environment.set_gravity] gravity={gravity}")
@@ -455,6 +519,14 @@ class Scene:
         if cam not in self._cameras:
             self._cameras.append(cam)
 
+    def set_active_camera(self, cam: Camera):
+        if cam in self._cameras:
+            self._active_camera = cam
+
+    def get_active_camera_handle(self):
+        active = getattr(self, '_active_camera', None)
+        return active.get_handle() if active is not None else 0
+
     def remove_camera(self, cam: Camera):
         _log(f"[Fallback][Scene.remove_camera] camera={cam}")
         if cam in self._cameras:
@@ -507,6 +579,14 @@ class CoronaEngine:
     Environment = Environment
     Scene = Scene
     MediaInfo = MediaInfo
+
+    @staticmethod
+    def is_vision_available():
+        return False
+
+    @staticmethod
+    def load_vision_scene(path):
+        _log(f"[Fallback][load_vision_scene] path={path}")
 
     @staticmethod
     def import_media(path):

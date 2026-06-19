@@ -74,6 +74,26 @@ int convert_sdl_key_code_to_windows(int sdl_key) {
             return 0x1B;
         case SDLK_SPACE:
             return 0x20;
+        case SDLK_LSHIFT:
+            return 0xA0;
+        case SDLK_RSHIFT:
+            return 0xA1;
+        case SDLK_LCTRL:
+            return 0xA2;
+        case SDLK_RCTRL:
+            return 0xA3;
+        case SDLK_LALT:
+            return 0xA4;
+        case SDLK_RALT:
+            return 0xA5;
+        case SDLK_LGUI:
+            return 0x5B;
+        case SDLK_RGUI:
+            return 0x5C;
+        case SDLK_CAPSLOCK:
+            return 0x14;
+        case SDLK_NUMLOCKCLEAR:
+            return 0x90;
         case SDLK_KP_0:
             return 0x60;
         case SDLK_KP_1:
@@ -324,6 +344,12 @@ EventProcessResult SDLEventHandler::process_events(
         switch (event.type) {
             case SDL_EVENT_QUIT:
                 result.should_quit = true;
+                break;
+
+            case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+                if (event.window.windowID == SDL_GetWindowID(window)) {
+                    result.should_quit = true;
+                }
                 break;
 
             case SDL_EVENT_WINDOW_FOCUS_GAINED:

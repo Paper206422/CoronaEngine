@@ -20,6 +20,24 @@ CoronaEngine = CoronaEditor.CoronaEngine
 _handle_to_actor = weakref.WeakValueDictionary()
 
 
+def _active_project_path():
+    try:
+        from ...utils.settings import settings_manager
+        if settings_manager.active_project_path:
+            return settings_manager.active_project_path
+    except Exception:
+        pass
+    return getattr(CoronaEngine, "active_project_path", None)
+
+
+def _format_float(value) -> str:
+    return format(float(value), ".17g")
+
+
+def _format_float3(values) -> str:
+    return ", ".join(_format_float(values[index]) for index in range(3))
+
+
 class Actor:
     """
     OOP API 包装：基于 CoronaEngine.Actor。
@@ -81,6 +99,7 @@ class Actor:
             self.actor_guid = f"actor-{uuid.uuid4().hex}"
 
         self.handle = self.engine_obj.get_handle()
+        self._sync_actor_guid_to_engine()
         self._sync_follow_camera_to_engine()
         _handle_to_actor[self.handle] = self
 
@@ -105,7 +124,7 @@ class Actor:
         if os.path.isabs(self.route):
             return self.route
         else:
-            return os.path.join(CoronaEngine.active_project_path, self.route)
+            return os.path.join(_active_project_path() or '', self.route)
 
     def _load_from_config(self, data_path: str):
         """从配置文件加载actor数据"""
@@ -118,7 +137,7 @@ class Actor:
         if not self.actor_guid:
             self.actor_guid = f"actor-{uuid.uuid4().hex}"
         if self.model_path:
-            self.final_model_path = os.path.join(CoronaEngine.active_project_path, self.model_path)
+            self.final_model_path = os.path.join(_active_project_path() or '', self.model_path)
             if self.parent:
                 self._create_components_from_config()
 
@@ -136,7 +155,7 @@ class Actor:
             )
             file_follow_camera = self.file_data['base'].getboolean('follow_camera', fallback=False)
             self.script_path = self.file_data['scripts']["path"]
-            self.final_model_path = os.path.join(CoronaEngine.active_project_path,
+            self.final_model_path = os.path.join(_active_project_path() or '',
                                                  self.model_path) if self.model_path else ""
         else:
             self.final_model_path = data_path
@@ -175,6 +194,10 @@ class Actor:
         self.set_scale(scale, True)
 
         self._create_and_add_profile()
+        self._apply_mechanics_data({
+            "physics_enabled": self.file_data.getboolean(
+                'mechanics', 'physics_enabled', fallback=True)
+        })
 
     def _create_components_from_actor_data(self, actor_data: dict):
         """从actor_data字典创建几何体和组件"""
@@ -190,6 +213,7 @@ class Actor:
         self.set_scale(actor_data["geometry"]["scale"], True)
 
         self._create_and_add_profile()
+        self._apply_mechanics_data(actor_data.get("mechanics", {}))
 
     def _create_and_add_profile(self):
         """创建组件、配置集合并添加到actor"""
@@ -215,6 +239,14 @@ class Actor:
             raise RuntimeError("无法向 Actor 添加默认 Profile（几何/组件不一致）")
         self.engine_obj.set_active_profile(stored)
 
+    def _apply_mechanics_data(self, mechanics_data: dict):
+        if not isinstance(mechanics_data, dict):
+            return
+        if not hasattr(self, '_mechanics') or self._mechanics is None:
+            return
+        if "physics_enabled" in mechanics_data:
+            self.set_physics_enabled(self._coerce_bool(mechanics_data.get("physics_enabled")))
+
     @staticmethod
     def _coerce_bool(value) -> bool:
         if isinstance(value, str):
@@ -228,6 +260,49 @@ class Actor:
             except Exception as exc:
                 logging.warning("Failed to sync follow_camera for actor %s: %s",
                                 self.name or self.route, exc)
+
+    def _sync_actor_guid_to_engine(self):
+        if hasattr(self.engine_obj, 'set_actor_guid'):
+            try:
+                self.engine_obj.set_actor_guid(self.actor_guid)
+            except Exception as exc:
+                logging.warning("Failed to sync actor_guid for actor %s: %s",
+                                self.name or self.route, exc)
+
+    def set_external_vision_binding(self, binding: Dict[str, Any]):
+        self._external_vision_binding = dict(binding or {})
+        setter = getattr(self.engine_obj, 'set_external_vision_binding', None)
+        if not callable(setter):
+            return
+        try:
+            shape_index = self._external_vision_binding.get("shape_index", -1)
+            try:
+                shape_index = int(shape_index)
+            except (TypeError, ValueError):
+                shape_index = -1
+            setter(
+                self._external_vision_binding.get("source_path", "") or "",
+                self._external_vision_binding.get("shape_guid", "") or "",
+                shape_index,
+                self._external_vision_binding.get("json_path", "") or "",
+                self._external_vision_binding.get("shape_type", "") or "",
+                self._external_vision_binding.get("shape_identity_key", "") or "",
+                self._external_vision_binding.get("model_path", "") or "",
+            )
+        except Exception as exc:
+            logging.warning("Failed to sync external Vision binding for actor %s: %s",
+                            self.name or self.route, exc)
+
+    def clear_external_vision_binding(self):
+        self._external_vision_binding = {}
+        clearer = getattr(self.engine_obj, 'clear_external_vision_binding', None)
+        if not callable(clearer):
+            return
+        try:
+            clearer()
+        except Exception as exc:
+            logging.warning("Failed to clear external Vision binding for actor %s: %s",
+                            self.name or self.route, exc)
 
     def _broadcast_actor_created(self):
         """通过 NetworkSystem 广播 Actor 创建事件到已连接的 peer。"""
@@ -254,7 +329,7 @@ class Actor:
         if self.actor_type == "actor" or not self.route:
             return
 
-        project_root_raw = getattr(CoronaEngine, "active_project_path", None)
+        project_root_raw = _active_project_path()
         if not project_root_raw:
             return
 
@@ -373,16 +448,25 @@ class Actor:
             self.file_data['base']['path'] = self.model_path
             self.file_data['base']['actor_guid'] = self.actor_guid
             self.file_data['base']['follow_camera'] = 'true' if self._follow_camera else 'false'
+            if 'mechanics' not in self.file_data:
+                self.file_data['mechanics'] = {}
+            if hasattr(self, 'get_physics_enabled'):
+                try:
+                    self.file_data['mechanics']['physics_enabled'] = (
+                        'true' if self.get_physics_enabled() else 'false'
+                    )
+                except Exception:
+                    pass
             if self.model_path:
                 position = self.get_position()
                 rotation = self.get_rotation()
                 scale = self.get_scale()
                 self.file_data['geometry'][
-                    f'position'] = f"{position[0]: .2f}, {position[1]: .2f}, {position[2]: .2f}"
+                    f'position'] = _format_float3(position)
                 self.file_data['geometry'][
-                    f'rotation'] = f"{rotation[0]: .2f}, {rotation[1]: .2f}, {rotation[2]: .2f}"
+                    f'rotation'] = _format_float3(rotation)
                 self.file_data['geometry'][
-                    f'scale'] = f"{scale[0]: .2f}, {scale[1]: .2f}, {scale[2]: .2f}"
+                    f'scale'] = _format_float3(scale)
 
             self.file_data['scripts']['path'] = self.script_path
 

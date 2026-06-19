@@ -12,6 +12,42 @@
 
 namespace Corona::Systems::UI {
 
+namespace {
+
+bool is_main_editor_route(const std::string& url) {
+    const auto hash_pos = url.find('#');
+    if (hash_pos == std::string::npos) {
+        return false;
+    }
+
+    std::string route = url.substr(hash_pos + 1);
+    if (const auto query_pos = route.find('?'); query_pos != std::string::npos) {
+        route = route.substr(0, query_pos);
+    }
+
+    return route == "/" || route == "/MainPage";
+}
+
+bool should_preserve_alpha(BrowserTab* tab, CefRefPtr<CefBrowser> browser) {
+    if (!tab) {
+        return false;
+    }
+    if (tab->camera_view) {
+        return true;
+    }
+    if (tab->docking_pos != "main") {
+        return tab->transparent_overlay;
+    }
+
+    std::string url = tab->url;
+    if (browser && browser->GetMainFrame()) {
+        url = browser->GetMainFrame()->GetURL().ToString();
+    }
+    return is_main_editor_route(url);
+}
+
+}  // namespace
+
 // ============================================================================
 // OffscreenRenderHandler 实现
 // ============================================================================
@@ -32,6 +68,7 @@ void OffscreenRenderHandler::OnPaint(CefRefPtr<CefBrowser> browser, PaintElement
     std::lock_guard tab_lock(tab_mutex_);
     BrowserTab* t = tab_;
     if (t && type == PET_VIEW && buffer && width > 0 && height > 0) {
+        const bool preserve_alpha = should_preserve_alpha(t, browser);
         size_t bufferSize = static_cast<size_t>(width) * height * 4;
         std::lock_guard<std::mutex> lock(t->mutex);
         t->pixel_buffer.resize(bufferSize);
@@ -41,6 +78,9 @@ void OffscreenRenderHandler::OnPaint(CefRefPtr<CefBrowser> browser, PaintElement
         auto* pixels = t->pixel_buffer.data();
         for (size_t i = 0; i < bufferSize; i += 4) {
             std::swap(pixels[i], pixels[i + 2]);
+            if (!preserve_alpha) {
+                pixels[i + 3] = 255;
+            }
         }
 
         t->buffer_dirty = true;

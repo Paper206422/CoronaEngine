@@ -338,6 +338,10 @@ public:
     [[nodiscard]] virtual BufferView<float4> post_processed_buffer() const noexcept {
         return rt_buffer_.view();
     }
+    /// Linear pre-tonemap source for external display bridges.
+    [[nodiscard]] virtual BufferView<float4> display_source_buffer() const noexcept {
+        return enable_accumulation() ? accumulation_buffer_.view() : rt_buffer_.view();
+    }
     /// Final presentation stage for this frame buffer.
     /// Default: accumulate rt_buffer -> accumulation_buffer, then tone map -> output_buffer.
     /// Override in subclasses (e.g. LightFieldFrameBuffer) when the display resolution or

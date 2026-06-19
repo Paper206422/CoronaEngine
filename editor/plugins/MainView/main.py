@@ -62,6 +62,23 @@ class MainView(PluginBase):
         return scene_file
 
     @staticmethod
+    def _apply_vision_source_for_scene(scene) -> None:
+        try:
+            if not CoronaEditor.CoronaEngine.is_vision_available():
+                return
+            source_path = getattr(scene, "vision_source_path", "") or ""
+            import_mode = getattr(scene, "vision_import_mode", "") or ""
+            if source_path and import_mode == "external_live":
+                CoronaEditor.CoronaEngine.load_vision_scene(
+                    SceneTools.prepare_external_live_vision_scene(scene) or source_path)
+            elif source_path and import_mode == "external":
+                CoronaEditor.CoronaEngine.load_vision_scene(source_path)
+            else:
+                CoronaEditor.CoronaEngine.load_vision_scene("")
+        except Exception:
+            logger.exception("Failed to apply Vision source for scene %s", getattr(scene, "route", ""))
+
+    @staticmethod
     def _save_project_field(key: str, value: str) -> None:
         MainView._sync_project_field(key, value)
         settings_manager.save_active_project_info()
@@ -119,6 +136,8 @@ class MainView(PluginBase):
             scene = scene_manager.get(route)
             if scene:
                 scene.set_enabled(route == active_scene)
+                if route == active_scene:
+                    MainView._apply_vision_source_for_scene(scene)
 
         if active_scene:
             MainView._save_project_field("active_scene", active_scene)
@@ -204,11 +223,13 @@ class MainView(PluginBase):
         if current_scene_path:
             now_scene = scene_manager.get(current_scene_path)
             if now_scene:
+                now_scene.save_data()
                 now_scene.set_enabled(False)
 
         # 激活目标场景（若首次访问则自动创建并加载 actors）
         scene = scene_manager.get_or_create(to_scene_path)
         scene.set_enabled(True)
+        MainView._apply_vision_source_for_scene(scene)
 
         CoronaEditor.js_call_func("actor-change", ['scene', scene.route, ""])
         MainView._save_project_field("active_scene", scene.route)
@@ -243,7 +264,7 @@ class MainView(PluginBase):
             # 对于场景文件，传路径即可由 import_scene_file 自行解析
             read_content = False
 
-            init_path = CoronaEditor.CoronaEngine.active_project_path if CoronaEditor.CoronaEngine.active_project_path else None
+            init_path = settings_manager.active_project_path
 
             content, file_path = FileHandler.open_file(title, filter_str, init_path, read_content=read_content,
                                                        return_relative_path=True)
@@ -299,7 +320,7 @@ class MainView(PluginBase):
         # 相对路径转绝对路径（与 import_scene_file 保持一致）
         abs_path = file_path
         if not os.path.isabs(abs_path):
-            project_path = CoronaEditor.CoronaEngine.active_project_path or ''
+            project_path = settings_manager.active_project_path or ''
             abs_path = os.path.join(project_path, abs_path)
 
         import_media_fn = getattr(CoronaEditor.CoronaEngine, 'import_media', None)
@@ -347,7 +368,7 @@ class MainView(PluginBase):
         """从 .json 导出文件导入场景内容到当前场景"""
         # 将相对路径转为绝对路径
         if not os.path.isabs(file_path):
-            project_path = CoronaEditor.CoronaEngine.active_project_path or ''
+            project_path = settings_manager.active_project_path or ''
             file_path = os.path.join(project_path, file_path)
 
         if not os.path.exists(file_path):

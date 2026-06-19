@@ -207,6 +207,82 @@ void test_actor_device_follow_camera_defaults_false_and_round_trips() {
     hub.actor_storage().deallocate(actor);
 }
 
+void test_actor_metadata_guid_round_trips_and_clears() {
+    auto& hub = Corona::SharedDataHub::instance();
+
+    auto actor = hub.actor_storage().allocate();
+    hub.set_actor_guid(actor, "actor-meta-guid");
+    expect_true(hub.actor_guid(actor) == "actor-meta-guid",
+                "actor metadata guid round trips");
+
+    hub.set_actor_guid(actor, "");
+    expect_true(hub.actor_guid(actor).empty(),
+                "actor metadata guid clears on empty value");
+
+    hub.actor_storage().deallocate(actor);
+}
+
+void test_external_vision_binding_round_trips_and_clears() {
+    auto& hub = Corona::SharedDataHub::instance();
+
+    auto actor = hub.actor_storage().allocate();
+    Corona::ExternalVisionBindingDevice binding{};
+    binding.source_path = "D:/vision/scene.json";
+    binding.shape_guid = "shape-chair";
+    binding.shape_index = 7;
+    binding.json_path = "/scene/shapes/7";
+    binding.shape_type = "model";
+    binding.shape_identity_key = "guid:shape-chair";
+    binding.model_path = "D:/vision/chair.obj";
+
+    hub.set_external_vision_binding(actor, binding);
+    expect_true(hub.has_external_vision_binding(actor),
+                "external Vision binding is present after set");
+    auto stored = hub.external_vision_binding(actor);
+    expect_true(stored.has_value(), "external Vision binding can be read");
+    expect_true(stored && stored->enabled, "external Vision binding is enabled");
+    expect_true(stored && stored->source_path == binding.source_path,
+                "external Vision binding source path round trips");
+    expect_true(stored && stored->shape_guid == binding.shape_guid,
+                "external Vision binding shape guid round trips");
+    expect_true(stored && stored->shape_index == binding.shape_index,
+                "external Vision binding shape index round trips");
+
+    hub.clear_external_vision_binding(actor);
+    expect_true(!hub.has_external_vision_binding(actor),
+                "external Vision binding clears");
+    expect_true(!hub.external_vision_binding(actor).has_value(),
+                "cleared external Vision binding is absent");
+
+    hub.actor_storage().deallocate(actor);
+}
+
+void test_actor_metadata_handle_cleanup_removes_guid_and_binding() {
+    auto& hub = Corona::SharedDataHub::instance();
+
+    auto actor = hub.actor_storage().allocate();
+    hub.set_actor_guid(actor, "actor-cleanup");
+
+    Corona::ExternalVisionBindingDevice binding{};
+    binding.source_path = "D:/vision/scene.json";
+    binding.shape_guid = "shape-cleanup";
+    hub.set_external_vision_binding(actor, binding);
+
+    hub.clear_actor_metadata(actor);
+    expect_true(hub.actor_guid(actor).empty(),
+                "actor metadata cleanup removes guid");
+    expect_true(!hub.has_external_vision_binding(actor),
+                "actor metadata cleanup removes external Vision binding");
+
+    hub.actor_storage().deallocate(actor);
+    auto reused = hub.actor_storage().allocate();
+    expect_true(hub.actor_guid(reused).empty(),
+                "fresh or reused actor handle has no stale guid");
+    expect_true(!hub.has_external_vision_binding(reused),
+                "fresh or reused actor handle has no stale external Vision binding");
+    hub.actor_storage().deallocate(reused);
+}
+
 void test_network_identity_registry_resolves_actor_components() {
     auto& hub = Corona::SharedDataHub::instance();
 
@@ -699,6 +775,9 @@ int main() {
     test_project_relative_path_validation();
     test_network_system_session_role_defaults_to_none();
     test_actor_device_follow_camera_defaults_false_and_round_trips();
+    test_actor_metadata_guid_round_trips_and_clears();
+    test_external_vision_binding_round_trips_and_clears();
+    test_actor_metadata_handle_cleanup_removes_guid_and_binding();
     test_network_identity_registry_resolves_actor_components();
     test_network_identity_registry_tracks_local_ownership();
     test_network_identity_registry_applies_pending_ownership_override();

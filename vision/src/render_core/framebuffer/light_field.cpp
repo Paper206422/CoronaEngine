@@ -668,6 +668,10 @@ public:
         return encoded_buffer_.view();
     }
 
+    [[nodiscard]] BufferView<float4> display_source_buffer() const noexcept override {
+        return enable_accumulation() ? encoded_accum_buffer_.view() : encoded_buffer_.view();
+    }
+
     /// Final presentation stage for light field:
     /// post_path_tracing() has already executed encode_lightfield() into encoded_buffer_.
     /// Here we optionally accumulate (pixel-sized) then tone-map into output buffer.

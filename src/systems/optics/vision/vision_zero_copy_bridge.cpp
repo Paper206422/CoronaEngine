@@ -89,11 +89,9 @@ bool VisionZeroCopyBridge::copy_from_framebuffer(::vision::Pipeline& pipeline) {
         return false;
     }
 
-    // Mirror render_final()'s source selection: accumulation_buffer_ when
-    // accumulation is on, otherwise rt_buffer_. Both are linear pre-tonemap
-    // RegistrableManaged<float4> (device-resident).
-    const auto& src = fb->enable_accumulation() ? fb->accumulation_buffer()
-                                                : fb->rt_buffer();
+    // Use the framebuffer-selected display source. Normal framebuffers return
+    // accumulation/rt; lightfield framebuffers return pixel-sized encoded data.
+    const auto src = fb->display_source_buffer();
 
     const uint64_t pixel_count = static_cast<uint64_t>(width_) * static_cast<uint64_t>(height_);
 
@@ -101,7 +99,7 @@ bool VisionZeroCopyBridge::copy_from_framebuffer(::vision::Pipeline& pipeline) {
         // Device-to-device copy on the Vision stream, then synchronize+commit so
         // the bytes are present before Vulkan's resolve pass reads them. This
         // synchronize is the stand-in for real cross-API ordering.
-        pipeline.stream() << shared_->buffer.view(0, pixel_count).copy_from(src.view(0, pixel_count))
+        pipeline.stream() << shared_->buffer.view(0, pixel_count).copy_from(src)
                           << ocarina::synchronize()
                           << ocarina::commit();
         return true;

@@ -55,6 +55,7 @@ struct ScreenshotRequestEvent {
  */
 struct RenderBackendSwitchEvent {
     int backend = 0;
+    std::uintptr_t camera_handle = 0;
 };
 
 /**

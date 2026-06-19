@@ -34,11 +34,11 @@ public:
 
     void compile() noexcept override {
         Pipeline::compile();
-        renderer_.integrator()->compile();
+        integrator()->compile();
     }
 
     void render(double dt) noexcept override {
-        renderer_.integrator()->render();
+        integrator()->render();
     }
 };
 

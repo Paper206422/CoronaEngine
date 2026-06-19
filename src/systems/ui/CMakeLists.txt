@@ -15,6 +15,8 @@ file(GLOB IMGUI_SYSTEM_SOURCES
     vulk/vulkan_backend.cpp
     vulk/browser_manager_vulkan.cpp
     imgui/imgui_ui.cpp
+
+    camera_viewport_manager.cpp
     cef/browser_manager.cpp
     cef/browser_ui.cpp
     cef/cef_client.cpp

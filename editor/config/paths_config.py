@@ -55,9 +55,15 @@ def _get_active_project_path() -> Path:
     """获取当前活跃项目路径，未打开项目时回退到 cwd。"""
     try:
         from CoronaCore.core.corona_editor import CoronaEditor
-        project_path = CoronaEditor.CoronaEngine.active_project_path
+        project_path = getattr(CoronaEditor.CoronaEngine, "active_project_path", None)
         if project_path:
             return Path(project_path)
+    except Exception:
+        pass
+    try:
+        from utils.settings import settings_manager
+        if settings_manager.active_project_path:
+            return Path(settings_manager.active_project_path)
     except Exception:
         pass
     return Path(os.getcwd())

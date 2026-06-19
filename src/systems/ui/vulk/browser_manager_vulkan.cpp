@@ -12,6 +12,7 @@ void BrowserManager::destroy_tab_texture(BrowserTab* tab) {
         return;
     }
 
+    texture_executor_.waitForDeferredResources();
     auto it = owned_images_.find(tab->texture_id);
     if (it != owned_images_.end()) {
         owned_images_.erase(it);
@@ -25,7 +26,7 @@ ImTextureID BrowserManager::create_browser_texture(int width, int height) {
     const uint32_t safe_height = static_cast<uint32_t>(std::max(height, 1));
 
     OwnedImage owned{};
-    owned.image = HardwareImage(safe_width, safe_height, ImageFormat::RGBA8_SRGB, ImageUsage::SampledImage);
+    owned.image = HardwareImage(safe_width, safe_height, ImageFormat::RGBA8_UNORM, ImageUsage::SampledImage);
     if (!owned.image) {
         return k_invalid_texture_id;
     }
@@ -80,6 +81,10 @@ void BrowserManager::update_texture(int tab_id) {
         texture_executor_ << image_it->second.image.copyFrom(pixels.data())
                           << texture_executor_.commit();
     }
+}
+
+void BrowserManager::wait_for_texture_uploads(HardwareExecutor& consumer) {
+    consumer.wait(texture_executor_);
 }
 
 void BrowserManager::resize_tab(int tab_id, int width, int height) {

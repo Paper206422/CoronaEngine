@@ -11,6 +11,7 @@ import ProjectSettings from '@/views/sidebar/ProjectSettings.vue';
 import AITalkBar from '@/views/sidebar/AITalkBar.vue';
 import EditorSettings from '@/views/sidebar/EditorSettings.vue';
 import NetworkPanel from '@/views/sidebar/Network.vue';
+import LightFieldCalibrationPanel from '@/components/panels/LightFieldCalibrationPanel.vue';
 
 export const PLUGIN_MANIFEST = [
   {
@@ -23,6 +24,17 @@ export const PLUGIN_MANIFEST = [
     defaultHeight: 600,
     autoInit: true,
     component: SceneBar,
+  },
+  {
+    id: 'LightFieldCalibration',
+    routePath: '/LightFieldCalibration',
+    displayName: '光场3D UI标定',
+    pageType: 'view',
+    defaultDock: 'right',
+    defaultWidth: 300,
+    defaultHeight: 300,
+    autoInit: false,
+    component: LightFieldCalibrationPanel,
   },
   {
     id: 'SceneDatas',

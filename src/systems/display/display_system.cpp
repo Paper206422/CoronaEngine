@@ -90,12 +90,12 @@ bool DisplaySystem::initialize(Kernel::ISystemContext* ctx) {
     // Two images needed because Optics outputs StorageImage and UI outputs SampledImage,
     // which live in different descriptor sets.
     transparent_storage_ = HardwareImage(1, 1, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
-    transparent_sampled_ = HardwareImage(1, 1, ImageFormat::RGBA8_SRGB, ImageUsage::SampledImage);
+    transparent_sampled_ = HardwareImage(1, 1, ImageFormat::RGBA8_UNORM, ImageUsage::SampledImage);
     if (transparent_storage_ && transparent_sampled_) {
         uint8_t zero_pixel[4] = {0, 0, 0, 0};
-        compositor_executor_ << transparent_storage_.copyFrom(zero_pixel)
-                             << transparent_sampled_.copyFrom(zero_pixel)
-                             << compositor_executor_.commit();
+        transparent_executor_ << transparent_storage_.copyFrom(zero_pixel)
+                              << transparent_sampled_.copyFrom(zero_pixel)
+                              << transparent_executor_.commit();
     }
 
     return true;
@@ -150,6 +150,7 @@ void DisplaySystem::update() {
     for (auto& r : removals) {
         const auto surface_id = reinterpret_cast<uint64_t>(r.surface);
         displayers_.erase(surface_id);
+        composite_resources_.erase(surface_id);
         if (r.done) {
             r.done->set_value();
         }
@@ -201,24 +202,31 @@ void DisplaySystem::update() {
             continue;
         }
 
-        compose_and_present(displayer,
-                            state,
-                            bg_image,
-                            (optics_img_ptr && *optics_img_ptr) ? optics_exec_ptr : nullptr,
-                            fg_image,
-                            (ui_img_ptr && *ui_img_ptr) ? ui_exec_ptr : nullptr);
+        auto& composite_resources = composite_resources_[surface_id];
+        if (!compose_and_present(
+                displayer,
+                state,
+                composite_resources,
+                bg_image,
+                (optics_img_ptr && *optics_img_ptr) ? optics_exec_ptr : &transparent_executor_,
+                fg_image,
+                (ui_img_ptr && *ui_img_ptr) ? ui_exec_ptr : &transparent_executor_)) {
+            continue;
+        }
 
         // Write back the consumed signal so producers know when to safely reuse their image.
         if (has_optics && optics_frame) {
-            optics_frame->consumed_executor = compositor_executor_;
+            optics_frame->consumed_executor = composite_resources.executor;
         }
         if (has_ui && ui_frame) {
-            ui_frame->consumed_executor = compositor_executor_;
+            ui_frame->consumed_executor = composite_resources.executor;
         }
     }
 }
 
-bool DisplaySystem::ensure_composite_resources(uint32_t width, uint32_t height) {
+bool DisplaySystem::ensure_composite_resources(CompositeResources& resources,
+                                               uint32_t width,
+                                               uint32_t height) {
     if (!composite_pipeline_ready_) {
         composite_pipeline_ready_ = (composite_pipeline_.getComputePipelineID() != 0);
         if (!composite_pipeline_ready_) {
@@ -227,21 +235,24 @@ bool DisplaySystem::ensure_composite_resources(uint32_t width, uint32_t height) 
         }
     }
 
-    if (composite_width_ != width || composite_height_ != height || !composite_output_) {
-        composite_output_ = HardwareImage(width, height, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
-        if (!composite_output_) {
+    if (resources.width != width || resources.height != height || !resources.output) {
+        resources.executor.waitForDeferredResources();
+        resources.output =
+            HardwareImage(width, height, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
+        if (!resources.output) {
             CFW_LOG_ERROR("DisplaySystem: Failed to create composite output ({}x{})", width, height);
             return false;
         }
-        composite_width_ = width;
-        composite_height_ = height;
+        resources.width = width;
+        resources.height = height;
     }
 
     return true;
 }
 
-void DisplaySystem::compose_and_present(HardwareDisplayer& displayer,
+bool DisplaySystem::compose_and_present(HardwareDisplayer& displayer,
                                         SurfaceState& state,
+                                        CompositeResources& resources,
                                         HardwareImage& optics_image,
                                         HardwareExecutor* optics_executor,
                                         HardwareImage& ui_image,
@@ -249,17 +260,17 @@ void DisplaySystem::compose_and_present(HardwareDisplayer& displayer,
     const uint32_t output_width = state.ui.width != 0 ? state.ui.width : state.optics.width;
     const uint32_t output_height = state.ui.height != 0 ? state.ui.height : state.optics.height;
     if (output_width == 0 || output_height == 0) {
-        return;
+        return false;
     }
 
-    if (!ensure_composite_resources(output_width, output_height)) {
-        return;
+    if (!ensure_composite_resources(resources, output_width, output_height)) {
+        return false;
     }
 
     // bgImage & outputImage are StorageImage (set 2); fgImage is SampledImage (set 0).
     composite_pipeline_.pushConsts.bgImage = optics_image.storeDescriptor();
     composite_pipeline_.pushConsts.fgImage = ui_image.storeDescriptor();
-    composite_pipeline_.pushConsts.outputImage = composite_output_.storeDescriptor();
+    composite_pipeline_.pushConsts.outputImage = resources.output.storeDescriptor();
     composite_pipeline_.pushConsts.outputWidth = output_width;
     composite_pipeline_.pushConsts.outputHeight = output_height;
     composite_pipeline_.pushConsts.bgWidth = std::max(state.optics.width, 1u);
@@ -270,17 +281,18 @@ void DisplaySystem::compose_and_present(HardwareDisplayer& displayer,
 
     // GPU sync: wait for each producer's rendering to finish before reading their images
     if (optics_executor) {
-        compositor_executor_.wait(*optics_executor);
+        resources.executor.wait(*optics_executor);
     }
     if (ui_executor) {
-        compositor_executor_.wait(*ui_executor);
+        resources.executor.wait(*ui_executor);
     }
 
-    compositor_executor_ << composite_pipeline_(dispatch_x, dispatch_y, 1)
-                         << compositor_executor_.commit();
+    resources.executor << composite_pipeline_(dispatch_x, dispatch_y, 1)
+                       << resources.executor.commit();
 
-    // After commit, producer images are no longer read — displayer only reads composite_output_
-    displayer.wait(compositor_executor_) << composite_output_;
+    // After commit, producer images are no longer read; presentation uses this surface's output.
+    displayer.wait(resources.executor) << resources.output;
+    return true;
 }
 
 void DisplaySystem::shutdown() {
@@ -312,11 +324,13 @@ void DisplaySystem::shutdown() {
     }
 
     composite_pipeline_ready_ = false;
-    composite_output_ = HardwareImage();
-    composite_pipeline_ = ComputePipeline<composite_comp_glsl>();
-
     surface_states_.clear();
     displayers_.clear();
+    composite_resources_.clear();
+    transparent_executor_.waitForDeferredResources();
+    transparent_storage_ = HardwareImage();
+    transparent_sampled_ = HardwareImage();
+    composite_pipeline_ = ComputePipeline<composite_comp_glsl>();
 }
 
 }  // namespace Corona::Systems
