@@ -61,6 +61,9 @@ class UiFrameRunner {
 
    private:
     int url_input_active_tab_ = -1;
+    bool system_cursor_hidden_ = false;
+
+    void apply_system_cursor_visibility(SDL_Window* main_window, int active_tab_id);
 
     UiLayoutManager layout_manager_{};
     BrowserRenderer browser_renderer_{};

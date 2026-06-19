@@ -147,6 +147,25 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
                 return true;
             }
 
+            if (name == "setViewportSystemCursorHidden") {
+                if (arguments.empty() || !arguments[0] || !arguments[0]->IsBool()) {
+                    exception = "setViewportSystemCursorHidden(hidden) requires (boolean)";
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                auto ctx = CefV8Context::GetCurrentContext();
+                if (!ctx || !ctx->GetBrowser()) {
+                    retval = CefV8Value::CreateBool(false);
+                    return true;
+                }
+                CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("ViewportSystemCursor");
+                CefRefPtr<CefListValue> args = msg->GetArgumentList();
+                args->SetBool(0, arguments[0]->GetBoolValue());
+                ctx->GetFrame()->SendProcessMessage(PID_BROWSER, msg);
+                retval = CefV8Value::CreateBool(true);
+                return true;
+            }
+
             if (name == "viewportUiPointer") {
                 if (arguments.size() < 4 ||
                     !arguments[0] || (!arguments[0]->IsInt() && !arguments[0]->IsDouble()) ||
@@ -475,6 +494,8 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
             CefV8Value::CreateFunction("setViewportUiMode", handler);
         CefRefPtr<CefV8Value> set_viewport_ui_calibration =
             CefV8Value::CreateFunction("setViewportUiCalibration", handler);
+        CefRefPtr<CefV8Value> viewport_system_cursor =
+            CefV8Value::CreateFunction("setViewportSystemCursorHidden", handler);
         CefRefPtr<CefV8Value> viewport_ui_pointer =
             CefV8Value::CreateFunction("viewportUiPointer", handler);
         CefRefPtr<CefV8Value> inject_input = CefV8Value::CreateFunction("injectInput", handler);
@@ -487,6 +508,7 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
         bridge->SetValue("pickActor", pick_actor, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("setViewportUiMode", set_viewport_ui_mode, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("setViewportUiCalibration", set_viewport_ui_calibration, V8_PROPERTY_ATTRIBUTE_NONE);
+        bridge->SetValue("setViewportSystemCursorHidden", viewport_system_cursor, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("viewportUiPointer", viewport_ui_pointer, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("injectInput", inject_input, V8_PROPERTY_ATTRIBUTE_NONE);
         bridge->SetValue("dockCommand", dock_command, V8_PROPERTY_ATTRIBUTE_NONE);

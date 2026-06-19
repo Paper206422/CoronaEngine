@@ -24,7 +24,9 @@ bool DisplaySystem::initialize(Kernel::ISystemContext* ctx) {
                 return;
             }
 
+            const auto surface_id = reinterpret_cast<uint64_t>(event.surface);
             std::lock_guard<std::mutex> lock(frame_mutex_);
+            removed_surfaces_.erase(surface_id);
             pending_surfaces_.push_back(event.surface);
         });
 
@@ -45,7 +47,16 @@ bool DisplaySystem::initialize(Kernel::ISystemContext* ctx) {
                 return;
             }
 
+            const auto surface_id = reinterpret_cast<uint64_t>(event.surface);
             std::lock_guard<std::mutex> lock(frame_mutex_);
+            removed_surfaces_.insert(surface_id);
+            surface_states_.erase(surface_id);
+            pending_surfaces_.erase(
+                std::remove_if(pending_surfaces_.begin(), pending_surfaces_.end(),
+                               [surface_id](void* s) {
+                                   return reinterpret_cast<uint64_t>(s) == surface_id;
+                               }),
+                pending_surfaces_.end());
             pending_removals_.push_back({event.surface, event.done});
         });
 
@@ -58,6 +69,9 @@ bool DisplaySystem::initialize(Kernel::ISystemContext* ctx) {
 
             const auto surface_id = reinterpret_cast<uint64_t>(event.surface);
             std::lock_guard<std::mutex> lock(frame_mutex_);
+            if (removed_surfaces_.contains(surface_id)) {
+                return;
+            }
             auto& layer = surface_states_[surface_id].optics;
             if (event.frame_index >= layer.frame_index) {
                 layer.image_handle = event.image_handle;
@@ -76,6 +90,9 @@ bool DisplaySystem::initialize(Kernel::ISystemContext* ctx) {
 
             const auto surface_id = reinterpret_cast<uint64_t>(event.surface);
             std::lock_guard<std::mutex> lock(frame_mutex_);
+            if (removed_surfaces_.contains(surface_id)) {
+                return;
+            }
             auto& layer = surface_states_[surface_id].ui;
             if (event.frame_index >= layer.frame_index) {
                 layer.image_handle = event.image_handle;
@@ -116,6 +133,7 @@ void DisplaySystem::update() {
         if (!removals.empty()) {
             for (const auto& r : removals) {
                 const auto surface_id = reinterpret_cast<uint64_t>(r.surface);
+                removed_surfaces_.insert(surface_id);
                 surface_states_.erase(surface_id);
             }
             pending_surfaces_.erase(
@@ -325,6 +343,7 @@ void DisplaySystem::shutdown() {
 
     composite_pipeline_ready_ = false;
     surface_states_.clear();
+    removed_surfaces_.clear();
     displayers_.clear();
     composite_resources_.clear();
     transparent_executor_.waitForDeferredResources();

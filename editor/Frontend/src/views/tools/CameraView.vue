@@ -66,7 +66,19 @@
         {{ item.label }}
       </button>
     </div>
-    <div class="input-layer" @mousedown="beginLook" @mousemove="updateLook" @mouseup="endLook" />
+    <div
+      ref="inputLayerRef"
+      class="input-layer"
+      :class="{ 'viewport-cursor-hidden': viewportUiMode === 'stereo3d' }"
+      :style="viewportUiMode === 'stereo3d' ? { cursor: 'none' } : null"
+      @pointermove="handleViewportPointer"
+      @pointerdown="handleViewportPointerDown"
+      @pointerup="handleViewportPointer"
+      @pointerleave="handleViewportPointerLeave"
+      @mousedown="beginLook"
+      @mousemove="updateLook"
+      @mouseup="endLook"
+    />
     <div v-if="errorText" class="error">{{ errorText }}</div>
   </div>
 </template>
@@ -76,7 +88,12 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { appService, projectService, sceneService } from '@/utils/bridge.js';
 import { buildDragRegions, dragRegionsSignature } from '@/utils/cameraDragRegions.js';
-import { createViewportUiModeStore } from '@/utils/viewportUiMode.js';
+import { coronaEventBus } from '@/utils/eventBus.js';
+import {
+  createViewportUiCalibrationStore,
+  createViewportUiModeStore,
+  createViewportUiPointerController,
+} from '@/utils/viewportUiMode.js';
 
 const route = useRoute();
 const sceneId = String(route.query.scene || '');
@@ -93,6 +110,7 @@ const viewportUiMode = ref('flat2d');
 const visionAvailable = ref(false);
 const errorText = ref('');
 const toolbarRef = ref(null);
+const inputLayerRef = ref(null);
 const backendMenuOpen = ref(false);
 const outputMenuOpen = ref(false);
 const borderlessFullscreen = ref(false);
@@ -108,6 +126,8 @@ const outputModes = [
 ];
 
 const viewportUiModeStore = createViewportUiModeStore();
+const viewportUiCalibrationStore = createViewportUiCalibrationStore();
+const viewportUiCalibrationDescriptor = {};
 const viewportUiModeItems = [
   { mode: 'flat2d', label: '2D UI', title: '普通屏幕 UI' },
   { mode: 'stereo3d', label: '3D UI', title: '光场屏立体 UI' },
@@ -191,6 +211,43 @@ const viewportUiDescriptor = () => ({
   cameraHandle: camera.value?.handle || '',
 });
 
+const getCameraViewHitRect = () => inputLayerRef.value?.getBoundingClientRect?.() ?? null;
+
+const getCameraRenderRect = () => {
+  const width = Math.max(Number(window.innerWidth || renderWidth.value || 0), 0);
+  const height = Math.max(Number(window.innerHeight || renderHeight.value || 0), 0);
+  return {
+    left: 0,
+    top: 0,
+    width,
+    height,
+    renderWidth: Math.max(Number(renderWidth.value || width), 0),
+    renderHeight: Math.max(Number(renderHeight.value || height), 0),
+  };
+};
+
+const viewportUiPointerController = createViewportUiPointerController({
+  getBridge: () => window.coronaBridge,
+  getCameraHandle: () => camera.value?.handle,
+  getEnabled: () => viewportUiMode.value === 'stereo3d',
+  getHitRect: getCameraViewHitRect,
+  getRenderRect: getCameraRenderRect,
+});
+
+const applyViewportUiCalibration = (calibration) => {
+  viewportUiCalibrationStore.applyToBridge({
+    bridge: window.coronaBridge,
+    cameraHandle: camera.value?.handle,
+    calibration: calibration ?? viewportUiCalibrationStore.get(viewportUiCalibrationDescriptor),
+  });
+};
+
+const syncViewportUiCalibration = () => {
+  if (viewportUiMode.value === 'stereo3d') {
+    applyViewportUiCalibration();
+  }
+};
+
 const syncViewportUiMode = () => {
   viewportUiMode.value = viewportUiModeStore.get(viewportUiDescriptor());
   viewportUiModeStore.applyToBridge({
@@ -198,6 +255,10 @@ const syncViewportUiMode = () => {
     cameraHandle: camera.value?.handle,
     mode: viewportUiMode.value,
   });
+  if (viewportUiMode.value !== 'stereo3d') {
+    viewportUiPointerController.hide();
+  }
+  syncViewportUiCalibration();
 };
 
 const selectViewportUiMode = (mode) => {
@@ -207,6 +268,22 @@ const selectViewportUiMode = (mode) => {
     cameraHandle: camera.value?.handle,
     mode: viewportUiMode.value,
   });
+  if (viewportUiMode.value !== 'stereo3d') {
+    viewportUiPointerController.hide();
+  }
+  syncViewportUiCalibration();
+};
+
+const handleViewportUiCalibrationChanged = (calibration) => {
+  if (viewportUiMode.value === 'stereo3d') {
+    applyViewportUiCalibration(calibration);
+  }
+};
+
+const handleViewportUiCalibrationStorage = (event) => {
+  if (event.key === viewportUiCalibrationStore.keyFor(viewportUiCalibrationDescriptor)) {
+    syncViewportUiCalibration();
+  }
 };
 
 const saveSettings = async () => {
@@ -445,6 +522,25 @@ const beginLook = (event) => {
   lastMouseY = event.clientY;
 };
 const endLook = () => { looking = false; };
+
+const viewportCursorShape = () => (looking ? 'grabbing' : 'arrow');
+
+const handleViewportPointer = (event) => {
+  viewportUiPointerController.send(event, event.type, viewportCursorShape());
+};
+
+const handleViewportPointerDown = (event) => {
+  viewportUiPointerController.send(
+    event,
+    event.type,
+    event.button === 2 ? 'grabbing' : viewportCursorShape(),
+  );
+};
+
+const handleViewportPointerLeave = () => {
+  viewportUiPointerController.hide();
+};
+
 const updateLook = (event) => {
   if (!looking || !camera.value) return;
   const dx = event.clientX - lastMouseX;
@@ -509,6 +605,8 @@ onMounted(async () => {
   window.addEventListener('resize', scheduleDragRegionSync);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('storage', handleViewportUiCalibrationStorage);
+  coronaEventBus.on('viewport-ui-calibration-changed', handleViewportUiCalibrationChanged);
   animationFrame = requestAnimationFrame(movementFrame);
 });
 
@@ -520,6 +618,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', scheduleDragRegionSync);
   window.removeEventListener('keydown', onKeyDown);
   window.removeEventListener('keyup', onKeyUp);
+  window.removeEventListener('storage', handleViewportUiCalibrationStorage);
+  coronaEventBus.off('viewport-ui-calibration-changed', handleViewportUiCalibrationChanged);
+  viewportUiPointerController.dispose();
 });
 </script>
 
@@ -547,6 +648,10 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid rgba(255, 255, 255, 0.14);
 }
 .input-layer { position: absolute; inset: 34px 0 0; z-index: 1; }
+.input-layer.viewport-cursor-hidden,
+.input-layer.viewport-cursor-hidden * {
+  cursor: none !important;
+}
 .camera-overlay.borderless .input-layer { inset: 0; }
 .ui-mode-switch {
   position: absolute;

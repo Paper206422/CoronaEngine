@@ -349,8 +349,13 @@
       ref="viewportPickSurfaceRef"
       tabindex="0"
       class="relative flex-1 min-h-0 w-full"
+      :class="{ 'viewport-cursor-hidden': viewportUiMode === 'stereo3d' }"
+      :style="viewportUiMode === 'stereo3d' ? { cursor: 'none' } : null"
       data-viewport-pick-surface
-      @pointerdown="focusViewportInput"
+      @pointermove="handleViewportPointer"
+      @pointerdown="handleViewportPointerDown"
+      @pointerup="handleViewportPointer"
+      @pointerleave="handleViewportPointerLeave"
       @mousedown.left="handleViewportPick"
       @wheel.prevent="handleWheel"
     >
@@ -505,7 +510,7 @@ import { useDockStore } from '@/stores/dockStore.js';
 import { PLUGIN_MANIFEST } from '@/config/pluginManifest.js';
 import { coronaEventBus } from '@/utils/eventBus.js';
 import { createViewportPickController, indexActorsByHandle } from '@/utils/viewportPick.js';
-import { createViewportUiModeStore, createViewportUiCalibrationStore } from '@/utils/viewportUiMode.js';
+import { createViewportUiModeStore, createViewportUiCalibrationStore, createViewportUiPointerController } from '@/utils/viewportUiMode.js';
 import AIHintBubble from '@/components/ui/AIHintBubble.vue';
 import { startStageHints, stopStageHints, setHintShowMs } from '@/services/aiHintGenerator.js';
 
@@ -579,12 +584,18 @@ const mouseRotate = reactive({
 
 const getViewportHitRect = () => viewportPickSurfaceRef.value?.getBoundingClientRect?.() ?? null;
 
-const getViewportRenderRect = () => ({
-  left: 0,
-  top: 0,
-  width: Math.max(Number(window.innerWidth || 0), 0),
-  height: Math.max(Number(window.innerHeight || 0), 0),
-});
+const getViewportRenderRect = () => {
+  const width = Math.max(Number(window.innerWidth || 0), 0);
+  const height = Math.max(Number(window.innerHeight || 0), 0);
+  return {
+    left: 0,
+    top: 0,
+    width,
+    height,
+    renderWidth: width,
+    renderHeight: height,
+  };
+};
 
 const currentViewportUiDescriptor = () => ({
   scope: 'main',
@@ -610,6 +621,14 @@ const viewportPickController = createViewportPickController({
   emitActorChange: (type, sceneId, actorName) => emitActorChangeFast(type, sceneId, actorName),
 });
 
+const viewportUiPointerController = createViewportUiPointerController({
+  getBridge: () => window.coronaBridge,
+  getCameraHandle: () => cameraBindingState.value.cameraHandle,
+  getEnabled: () => viewportUiMode.value === 'stereo3d',
+  getHitRect: getViewportHitRect,
+  getRenderRect: getViewportRenderRect,
+});
+
 const syncViewportUiMode = () => {
   const mode = viewportUiModeStore.get(currentViewportUiDescriptor());
   viewportUiMode.value = mode;
@@ -618,6 +637,9 @@ const syncViewportUiMode = () => {
     cameraHandle: cameraBindingState.value.cameraHandle,
     mode,
   });
+  if (mode !== 'stereo3d') {
+    viewportUiPointerController.hide();
+  }
   syncViewportUiCalibrationPanel(mode);
 };
 
@@ -628,6 +650,9 @@ const selectViewportUiMode = (mode) => {
     cameraHandle: cameraBindingState.value.cameraHandle,
     mode: viewportUiMode.value,
   });
+  if (viewportUiMode.value !== 'stereo3d') {
+    viewportUiPointerController.hide();
+  }
   syncViewportUiCalibrationPanel(viewportUiMode.value);
 };
 
@@ -1203,6 +1228,25 @@ const handleMouseRotate = (dx, dy) => {
   }
 
   cameraState.value.forward = vec3.normalize(newFwd);
+};
+
+const viewportCursorShape = () => (mouseRotate.active ? 'grabbing' : 'arrow');
+
+const handleViewportPointer = (event) => {
+  viewportUiPointerController.send(event, event.type, viewportCursorShape());
+};
+
+const handleViewportPointerDown = (event) => {
+  focusViewportInput();
+  viewportUiPointerController.send(
+    event,
+    event.type,
+    event.button === 2 ? 'grabbing' : viewportCursorShape(),
+  );
+};
+
+const handleViewportPointerLeave = () => {
+  viewportUiPointerController.hide();
 };
 
 const handleViewportPick = (event) => {
@@ -1853,6 +1897,7 @@ onUnmounted(() => {
   window.removeEventListener('storage', onStorageChange);
   stopMoveLoop();
   viewportPickController.dispose();
+  viewportUiPointerController.dispose();
   document.removeEventListener('keydown', handleKeyDown);
   document.removeEventListener('keyup', handleKeyUp);
   document.removeEventListener('click', handleClickOutside);
@@ -1862,3 +1907,10 @@ onUnmounted(() => {
   document.removeEventListener('contextmenu', onContextMenu);
 });
 </script>
+
+<style scoped>
+.viewport-cursor-hidden,
+.viewport-cursor-hidden * {
+  cursor: none !important;
+}
+</style>

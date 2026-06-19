@@ -125,6 +125,197 @@ export const createViewportUiCalibrationStore = ({ storage = safeStorage() } = {
   return { keyFor, get, set, applyToBridge };
 };
 
+export const VIEWPORT_UI_CURSOR_SHAPES = Object.freeze([
+  'arrow',
+  'hand',
+  'crosshair',
+  'grab',
+  'grabbing',
+  'hidden',
+]);
+
+export const normalizeViewportUiCursorShape = (shape) => {
+  const normalized = String(shape ?? '').trim().toLowerCase();
+  if (normalized === 'pointer') return 'hand';
+  if (normalized === 'none') return 'hidden';
+  return VIEWPORT_UI_CURSOR_SHAPES.includes(normalized) ? normalized : 'arrow';
+};
+
+const normalizeRect = (rect) => {
+  if (!rect) return null;
+  const left = Number(rect.left);
+  const top = Number(rect.top);
+  const width = Number(rect.width);
+  const height = Number(rect.height);
+  if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    return null;
+  }
+  const renderWidth = Number.isFinite(Number(rect.renderWidth)) ? Number(rect.renderWidth) : width;
+  const renderHeight = Number.isFinite(Number(rect.renderHeight)) ? Number(rect.renderHeight) : height;
+  return {
+    left,
+    top,
+    width,
+    height,
+    renderWidth: Math.max(renderWidth, 0),
+    renderHeight: Math.max(renderHeight, 0),
+  };
+};
+
+const pointerModifiers = (event) => (
+  (event?.ctrlKey ? 1 : 0) |
+  (event?.shiftKey ? 2 : 0) |
+  (event?.altKey ? 4 : 0) |
+  (event?.metaKey ? 8 : 0)
+);
+
+const pointInRect = (event, rect) => (
+  event.clientX >= rect.left &&
+  event.clientY >= rect.top &&
+  event.clientX <= rect.left + rect.width &&
+  event.clientY <= rect.top + rect.height
+);
+
+export const createViewportUiPointerController = ({
+  getBridge,
+  getCameraHandle,
+  getHitRect,
+  getRenderRect,
+  getEnabled = () => true,
+  defaultCursor = 'arrow',
+} = {}) => {
+  let lastCameraHandle = 0;
+  let lastX = 0;
+  let lastY = 0;
+  let pendingMove = null;
+  let pendingMoveFrame = 0;
+  let pointerVisible = false;
+  let systemCursorHidden = false;
+
+  const cameraHandleForSend = () => {
+    const handle = Number(getCameraHandle?.() ?? 0);
+    return Number.isFinite(handle) && handle > 0 ? handle : 0;
+  };
+
+  const bridgeForSend = () => getBridge?.() ?? globalThis.coronaBridge ?? null;
+
+  const isEnabled = () => getEnabled?.() !== false;
+
+  const setSystemCursorHidden = (hidden) => {
+    if (systemCursorHidden === hidden) return false;
+    const bridge = bridgeForSend();
+    if (typeof bridge?.setViewportSystemCursorHidden !== 'function') return false;
+    if (bridge.setViewportSystemCursorHidden(hidden) === false) return false;
+    systemCursorHidden = hidden;
+    return true;
+  };
+
+  const isHidePayload = ({ type, cursor }) => {
+    const eventType = String(type ?? '').toLowerCase();
+    return cursor === 'hidden' || eventType === 'pointerleave' ||
+      eventType === 'pointercancel' || eventType === 'leave' ||
+      eventType === 'cancel' || eventType === 'blur';
+  };
+
+  const emitPointer = ({ cameraHandle, type, x, y, buttons, modifiers, cursor }) => {
+    const bridge = bridgeForSend();
+    if (typeof bridge?.viewportUiPointer !== 'function') return false;
+    bridge.viewportUiPointer(cameraHandle, type, x, y, buttons, modifiers, cursor);
+    pointerVisible = !isHidePayload({ type, cursor });
+    setSystemCursorHidden(pointerVisible);
+    return true;
+  };
+
+  const flushPendingMove = () => {
+    pendingMoveFrame = 0;
+    const payload = pendingMove;
+    pendingMove = null;
+    if (!payload) return false;
+    return emitPointer(payload);
+  };
+
+  const hide = () => {
+    pendingMove = null;
+    if (pendingMoveFrame && typeof globalThis.cancelAnimationFrame === 'function') {
+      globalThis.cancelAnimationFrame(pendingMoveFrame);
+    }
+    pendingMoveFrame = 0;
+    const cameraHandle = cameraHandleForSend() || lastCameraHandle;
+    if (!cameraHandle || !pointerVisible) {
+      setSystemCursorHidden(false);
+      return false;
+    }
+    return emitPointer({
+      cameraHandle,
+      type: 'pointerleave',
+      x: lastX,
+      y: lastY,
+      buttons: 0,
+      modifiers: 0,
+      cursor: 'hidden',
+    });
+  };
+
+  const send = (event, type = event?.type ?? 'pointermove', cursor = defaultCursor) => {
+    if (!isEnabled()) {
+      hide();
+      return false;
+    }
+    const bridge = bridgeForSend();
+    if (typeof bridge?.viewportUiPointer !== 'function') return false;
+    const cameraHandle = cameraHandleForSend();
+    if (!cameraHandle) {
+      hide();
+      return false;
+    }
+    const clientX = Number(event?.clientX);
+    const clientY = Number(event?.clientY);
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
+
+    const hitRect = normalizeRect(getHitRect?.() ?? getRenderRect?.());
+    if (hitRect && !pointInRect({ clientX, clientY }, hitRect)) {
+      hide();
+      return false;
+    }
+
+    const renderRect = normalizeRect(getRenderRect?.() ?? hitRect);
+    if (!renderRect || renderRect.renderWidth <= 0 || renderRect.renderHeight <= 0) return false;
+
+    const x = (clientX - renderRect.left) * (renderRect.renderWidth / renderRect.width);
+    const y = (clientY - renderRect.top) * (renderRect.renderHeight / renderRect.height);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+
+    lastCameraHandle = cameraHandle;
+    lastX = Math.max(0, Math.min(renderRect.renderWidth - 1, x));
+    lastY = Math.max(0, Math.min(renderRect.renderHeight - 1, y));
+    const payload = {
+      cameraHandle,
+      type,
+      x: lastX,
+      y: lastY,
+      buttons: Number(event?.buttons ?? 0) || 0,
+      modifiers: pointerModifiers(event),
+      cursor: normalizeViewportUiCursorShape(cursor),
+    };
+
+    if (type === 'pointermove' && typeof globalThis.requestAnimationFrame === 'function') {
+      pendingMove = payload;
+      if (!pendingMoveFrame) {
+        pendingMoveFrame = globalThis.requestAnimationFrame(flushPendingMove);
+      }
+      return true;
+    }
+
+    return emitPointer(payload);
+  };
+
+  return {
+    send,
+    hide,
+    dispose: hide,
+  };
+};
+
 export const createViewportUiCursorController = ({ getTarget } = {}) => {
   let restoreCursor = null;
   const targetFor = () => getTarget?.() ?? globalThis.document?.body ?? null;

@@ -182,6 +182,41 @@ void UiLayoutManager::end_dockspace() {
     }
 }
 
+void UiFrameRunner::apply_system_cursor_visibility(SDL_Window* main_window, int active_tab_id) {
+    bool should_hide = false;
+    SDL_Window* mouse_window = SDL_GetMouseFocus();
+    const SDL_WindowID mouse_window_id = mouse_window ? SDL_GetWindowID(mouse_window) : 0;
+
+    if (mouse_window_id != 0) {
+        for (const auto& [tab_id, tab] : BrowserManager::instance().get_tabs()) {
+            if (!tab || !tab->open || tab->minimized) {
+                continue;
+            }
+            if (tab->camera_view && tab->platform_window_id == mouse_window_id) {
+                should_hide = tab->hide_system_cursor.load(std::memory_order_relaxed);
+                break;
+            }
+            if (!tab->camera_view && tab->docking_pos == "main" && main_window &&
+                mouse_window == main_window && tab_id == active_tab_id) {
+                should_hide = tab->hide_system_cursor.load(std::memory_order_relaxed);
+                break;
+            }
+        }
+    }
+
+    if (should_hide) {
+        // ImGui_ImplSDL3_NewFrame() may restore the OS cursor every frame.
+        // Keep reapplying hidden while an Optics 3D cursor owns this viewport.
+        SDL_HideCursor();
+        system_cursor_hidden_ = true;
+        return;
+    }
+
+    if (system_cursor_hidden_) {
+        SDL_ShowCursor();
+        system_cursor_hidden_ = false;
+    }
+}
 // ============================================================================
 // UiFrameRunner 实现
 // ============================================================================
@@ -291,6 +326,7 @@ void UiFrameRunner::run_frame(UiFrameContext& context) {
 
     context.vulkan_backend->new_frame();
     ImGui_ImplSDL3_NewFrame();
+    apply_system_cursor_visibility(context.window, *context.active_tab_id);
 
     // Ensure RendererHasTextures stays disabled — our custom renderer does not
     // implement the ImGui texture management API (font atlas is manual).

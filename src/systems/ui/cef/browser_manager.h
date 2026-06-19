@@ -5,6 +5,7 @@
 #include <imgui.h>
 #include <include/internal/cef_types.h>
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <functional>
@@ -59,6 +60,7 @@ struct BrowserTab {
     bool has_focus = false;
     bool camera_view = false;
     bool transparent_overlay = false;
+    std::atomic_bool hide_system_cursor{false};
     bool preserve_camera_open_on_close = false;
     SDL_WindowID platform_window_id = 0;
     void* platform_handle_raw = nullptr;

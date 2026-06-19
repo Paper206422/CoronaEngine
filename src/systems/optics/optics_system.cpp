@@ -741,6 +741,7 @@ bool OpticsSystem::initialize_render_pipelines() {
         hardware_->debugResolvePipeline.emplace();
         hardware_->actorPickPipeline.emplace();
         hardware_->opticsOverlayPipeline.emplace();
+        hardware_->opticsCursorPipeline.emplace();
         hardware_->opticsUiWarpPipeline.emplace();
         hardware_->opticsCompositePipeline.emplace();
 #ifdef CORONA_ENABLE_VISION
@@ -1012,7 +1013,8 @@ void OpticsSystem::update() {
     if (!hardware_->shaderHasInit || !hardware_->lightingPipeline ||
         !hardware_->skyPipeline || !hardware_->tonemapPipeline ||
         !hardware_->debugResolvePipeline || !hardware_->opticsOverlayPipeline ||
-        !hardware_->opticsUiWarpPipeline || !hardware_->opticsCompositePipeline) {
+        !hardware_->opticsCursorPipeline || !hardware_->opticsUiWarpPipeline ||
+        !hardware_->opticsCompositePipeline) {
         return;
     }
 
@@ -1027,6 +1029,8 @@ void OpticsSystem::update() {
 }
 
 void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
+    drain_viewport_ui_pointer_commands();
+
     auto& lighting = *hardware_->lightingPipeline;
     auto& sky = *hardware_->skyPipeline;
     auto& tonemap = *hardware_->tonemapPipeline;
@@ -1455,6 +1459,37 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
     evict_idle_ui_view_resources(frame_index);
 }
 
+void OpticsSystem::drain_viewport_ui_pointer_commands() {
+    auto commands = SharedDataHub::instance().drain_viewport_ui_pointer_commands();
+    for (const auto& command : commands) {
+        if (command.camera_handle == 0) {
+            continue;
+        }
+
+        auto& state = viewport_cursor_states_[command.camera_handle];
+        if (command.sequence < state.sequence) {
+            continue;
+        }
+
+        std::string event_type = command.event_type;
+        std::transform(event_type.begin(), event_type.end(), event_type.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        const bool hide_event =
+            event_type == "leave" || event_type == "mouseout" ||
+            event_type == "pointerleave" || event_type == "cancel" ||
+            event_type == "pointercancel" || event_type == "blur";
+
+        state.x = command.x;
+        state.y = command.y;
+        state.buttons = command.buttons;
+        state.modifiers = command.modifiers;
+        state.cursor_shape = command.cursor_shape;
+        state.sequence = command.sequence;
+        state.visible = !hide_event && command.cursor_shape != ViewportUiCursorShape::Hidden;
+    }
+}
+
 HardwareImage* OpticsSystem::compose_surface_ui_overlay(
     std::uintptr_t camera_handle,
     const CameraDevice& camera,
@@ -1468,11 +1503,14 @@ HardwareImage* OpticsSystem::compose_surface_ui_overlay(
 
     auto& uiVisibility = *hardware_->uiVisibilityPipeline;
     auto& opticsOverlay = *hardware_->opticsOverlayPipeline;
+    auto& opticsCursor = *hardware_->opticsCursorPipeline;
     auto& opticsUiWarp = *hardware_->opticsUiWarpPipeline;
     auto& opticsComposite = *hardware_->opticsCompositePipeline;
 
     const uint32_t dispatchX = (hardware_->gbufferSize.x + 7u) / 8u;
     const uint32_t dispatchY = (hardware_->gbufferSize.y + 7u) / 8u;
+    uint32_t cursorDispatchX = dispatchX;
+    uint32_t cursorDispatchY = dispatchY;
 
     // follow-camera UI 使用正交投影：把跟随相机的 actor 以屏幕贴合方式光栅化。
     const ktm::fmat4x4 camera_basis = make_camera_basis_matrix(camera);
@@ -1500,11 +1538,20 @@ HardwareImage* OpticsSystem::compose_surface_ui_overlay(
                                                &camera_basis, uiBatch);
 
     const bool stereo_ui = mode == ViewportUiMode::Stereo3D;
+    const auto cursor_it = viewport_cursor_states_.find(camera_handle);
+    const bool cursor_visible =
+        stereo_ui && cursor_it != viewport_cursor_states_.end() && cursor_it->second.visible &&
+        cursor_it->second.cursor_shape != ViewportUiCursorShape::Hidden &&
+        std::isfinite(cursor_it->second.x) && std::isfinite(cursor_it->second.y);
+    const ViewportCursorState* cursor_state =
+        cursor_visible ? &cursor_it->second : nullptr;
+
     const auto ui_instance_count = static_cast<std::uint32_t>(uiBatch.instances.size());
     auto& ui_log_state = ui_pass_log_states_[camera_handle];
     if (!ui_log_state.has_state ||
         ui_log_state.has_follow_camera_instances != has_follow_camera_instances ||
         ui_log_state.stereo_ui != stereo_ui ||
+        ui_log_state.cursor_visible != cursor_visible ||
         ui_log_state.instance_count != ui_instance_count ||
         ui_log_state.width != hardware_->gbufferSize.x ||
         ui_log_state.height != hardware_->gbufferSize.y) {
@@ -1512,37 +1559,75 @@ HardwareImage* OpticsSystem::compose_surface_ui_overlay(
             .has_state = true,
             .has_follow_camera_instances = has_follow_camera_instances,
             .stereo_ui = stereo_ui,
+            .cursor_visible = cursor_visible,
             .instance_count = ui_instance_count,
             .width = hardware_->gbufferSize.x,
             .height = hardware_->gbufferSize.y,
         };
-        CFW_LOG_INFO("Optics UI pass: camera={} mode={} follow_camera_instances={} output={}x{} warp={}",
+        CFW_LOG_INFO("Optics UI pass: camera={} mode={} follow_camera_instances={} cursor={} output={}x{} warp={}",
                      camera_handle,
                      stereo_ui ? "stereo3d" : "flat2d",
                      ui_instance_count,
+                     cursor_visible ? "visible" : "hidden",
                      hardware_->gbufferSize.x,
                      hardware_->gbufferSize.y,
-                     (stereo_ui && has_follow_camera_instances) ? "submitted" : "skipped");
+                     (stereo_ui && (has_follow_camera_instances || cursor_visible)) ? "submitted" : "skipped");
     }
 
-    if (!has_follow_camera_instances) {
+    if (!has_follow_camera_instances && !cursor_visible) {
         return &background;
     }
 
-    upload_instance_tables(uiBatch,
-                           hardware_->uiInstanceInfoBuffer,
-                           hardware_->uiMaterialTableBuffer);
-
     const uint32_t overlayDescriptor = target.ui_overlay.storeDescriptor();
-    opticsOverlay.pushConsts.gbufferSize = hardware_->gbufferSize;
-    opticsOverlay.pushConsts.visibilityImageIndex =
-        hardware_->uiVisibilityImage.storeDescriptor();
-    opticsOverlay.pushConsts.instanceInfoBufferIndex =
-        hardware_->uiInstanceInfoBuffer.storeDescriptor();
-    opticsOverlay.pushConsts.materialTableBufferIndex =
-        hardware_->uiMaterialTableBuffer.storeDescriptor();
-    opticsOverlay.pushConsts.vpBufferIndex = uiVpDescriptor;
-    opticsOverlay.pushConsts.outputImage = overlayDescriptor;
+    if (has_follow_camera_instances) {
+        upload_instance_tables(uiBatch,
+                               hardware_->uiInstanceInfoBuffer,
+                               hardware_->uiMaterialTableBuffer);
+
+        opticsOverlay.pushConsts.gbufferSize = hardware_->gbufferSize;
+        opticsOverlay.pushConsts.visibilityImageIndex =
+            hardware_->uiVisibilityImage.storeDescriptor();
+        opticsOverlay.pushConsts.instanceInfoBufferIndex =
+            hardware_->uiInstanceInfoBuffer.storeDescriptor();
+        opticsOverlay.pushConsts.materialTableBufferIndex =
+            hardware_->uiMaterialTableBuffer.storeDescriptor();
+        opticsOverlay.pushConsts.vpBufferIndex = uiVpDescriptor;
+        opticsOverlay.pushConsts.outputImage = overlayDescriptor;
+    }
+
+    if (cursor_visible && cursor_state != nullptr) {
+        const bool preserve_existing_overlay = has_follow_camera_instances;
+        uint32_t cursor_origin_x = 0;
+        uint32_t cursor_origin_y = 0;
+        uint32_t cursor_width = hardware_->gbufferSize.x;
+        uint32_t cursor_height = hardware_->gbufferSize.y;
+        if (preserve_existing_overlay && hardware_->gbufferSize.x > 0u &&
+            hardware_->gbufferSize.y > 0u) {
+            constexpr int32_t kCursorPadding = 4;
+            constexpr uint32_t kCursorExtent = 32;
+            const auto cursor_x = static_cast<int32_t>(std::floor(cursor_state->x));
+            const auto cursor_y = static_cast<int32_t>(std::floor(cursor_state->y));
+            cursor_origin_x = static_cast<uint32_t>(std::max(cursor_x - kCursorPadding, 0));
+            cursor_origin_y = static_cast<uint32_t>(std::max(cursor_y - kCursorPadding, 0));
+            cursor_origin_x = std::min(cursor_origin_x, hardware_->gbufferSize.x - 1u);
+            cursor_origin_y = std::min(cursor_origin_y, hardware_->gbufferSize.y - 1u);
+            cursor_width = std::min(kCursorExtent, hardware_->gbufferSize.x - cursor_origin_x);
+            cursor_height = std::min(kCursorExtent, hardware_->gbufferSize.y - cursor_origin_y);
+        }
+
+        opticsCursor.pushConsts.outputImage = overlayDescriptor;
+        opticsCursor.pushConsts.outputWidth = hardware_->gbufferSize.x;
+        opticsCursor.pushConsts.outputHeight = hardware_->gbufferSize.y;
+        opticsCursor.pushConsts.originX = cursor_origin_x;
+        opticsCursor.pushConsts.originY = cursor_origin_y;
+        opticsCursor.pushConsts.cursorX = cursor_state->x;
+        opticsCursor.pushConsts.cursorY = cursor_state->y;
+        opticsCursor.pushConsts.cursorShape =
+            static_cast<std::uint32_t>(cursor_state->cursor_shape);
+        opticsCursor.pushConsts.preserveExisting = preserve_existing_overlay ? 1u : 0u;
+        cursorDispatchX = (cursor_width + 7u) / 8u;
+        cursorDispatchY = (cursor_height + 7u) / 8u;
+    }
 
     uint32_t compositeOverlayDescriptor = overlayDescriptor;
     if (stereo_ui) {
@@ -1569,8 +1654,13 @@ HardwareImage* OpticsSystem::compose_surface_ui_overlay(
     opticsComposite.pushConsts.outputWidth = hardware_->gbufferSize.x;
     opticsComposite.pushConsts.outputHeight = hardware_->gbufferSize.y;
 
-    hardware_->executor << uiVisibility(hardware_->gbufferSize.x, hardware_->gbufferSize.y)
-                        << opticsOverlay(dispatchX, dispatchY, 1);
+    if (has_follow_camera_instances) {
+        hardware_->executor << uiVisibility(hardware_->gbufferSize.x, hardware_->gbufferSize.y)
+                            << opticsOverlay(dispatchX, dispatchY, 1);
+    }
+    if (cursor_visible) {
+        hardware_->executor << opticsCursor(cursorDispatchX, cursorDispatchY, 1);
+    }
     if (stereo_ui) {
         hardware_->executor << opticsUiWarp(dispatchX, dispatchY, 1);
     }

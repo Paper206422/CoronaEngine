@@ -35,6 +35,10 @@ if(CORONA_BUILD_VISION)
     target_link_libraries(corona_optics_system PRIVATE vision-all_libs)
 endif()
 
+set(OPTICS_CURSOR_SHADER "${PROJECT_SOURCE_DIR}/assets/shaders/optics_cursor.comp.glsl")
+set_source_files_properties("${OPTICS_CURSOR_SHADER}" PROPERTIES HEADER_FILE_ONLY TRUE)
+target_sources(corona_optics_system PRIVATE "${OPTICS_CURSOR_SHADER}")
+
 # ------------------------------------------------------------------------------
 # Vision import-scene verification demo (OFF by default)
 # When enabled (and Vision is built), the optics system loads a known-good scene

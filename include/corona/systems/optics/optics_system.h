@@ -5,6 +5,7 @@
 #include <corona/kernel/event/i_event_bus.h>
 #include <corona/kernel/event/i_event_stream.h>
 #include <corona/kernel/system/system_base.h>
+#include <corona/shared_data_hub.h>
 
 #include <cstdint>
 #include <memory>
@@ -151,6 +152,17 @@ class OpticsSystem : public Kernel::SystemBase {
     void complete_actor_pick(const ActorPickRequest& request,
                              const std::vector<std::uintptr_t>& scene_actor_handles);
 
+    struct ViewportCursorState {
+        bool visible = false;
+        float x = 0.0f;
+        float y = 0.0f;
+        std::uint32_t buttons = 0;
+        std::uint32_t modifiers = 0;
+        ViewportUiCursorShape cursor_shape = ViewportUiCursorShape::Arrow;
+        std::uint64_t sequence = 0;
+    };
+    void drain_viewport_ui_pointer_commands();
+
     // ========================================================================
     // Per-surface render output (改造1: optics 输出 per-surface 化)
     // ========================================================================
@@ -201,11 +213,13 @@ class OpticsSystem : public Kernel::SystemBase {
         bool has_state = false;
         bool has_follow_camera_instances = false;
         bool stereo_ui = false;
+        bool cursor_visible = false;
         std::uint32_t instance_count = 0;
         std::uint32_t width = 0;
         std::uint32_t height = 0;
     };
     std::unordered_map<std::uintptr_t, UiPassLogState> ui_pass_log_states_;
+    std::unordered_map<std::uintptr_t, ViewportCursorState> viewport_cursor_states_;
 
     struct NativeViewResources;
     std::unordered_map<std::uintptr_t, std::unique_ptr<NativeViewResources>>

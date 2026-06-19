@@ -50,6 +50,25 @@ struct CameraWindowModeState {
 
 static std::unordered_map<int, CameraWindowModeState> s_camera_window_modes;
 
+bool set_browser_tab_system_cursor_hidden(CefRefPtr<CefBrowser> browser, bool hidden) {
+    if (!browser) {
+        return false;
+    }
+
+    const int browser_id = browser->GetIdentifier();
+    for (const auto& [tab_id, tab] : BrowserManager::instance().get_tabs()) {
+        if (!tab || !tab->client) {
+            continue;
+        }
+        auto tab_browser = tab->client->GetBrowser();
+        if (tab_browser && tab_browser->GetIdentifier() == browser_id) {
+            tab->hide_system_cursor.store(hidden, std::memory_order_relaxed);
+            return true;
+        }
+    }
+    return false;
+}
+
 void request_camera_window_rect(int tab_id, BrowserTab* tab, int x, int y, int width, int height) {
     tab->initial_x = x;
     tab->initial_y = y;
@@ -756,6 +775,28 @@ bool handle_viewport_ui_mode(const CefRefPtr<CefProcessMessage>& message) {
     CFW_LOG_INFO("ViewportUiMode set: camera={} mode={}",
                  camera_handle,
                  mode == Corona::ViewportUiMode::Stereo3D ? "stereo3d" : "flat2d");
+    return true;
+}
+
+bool handle_viewport_system_cursor(CefRefPtr<CefBrowser> browser,
+                                   const CefRefPtr<CefProcessMessage>& message) {
+    auto args = message->GetArgumentList();
+    if (!args || args->GetSize() < 1) {
+        CFW_LOG_WARNING("ViewportSystemCursor dropped: expected (hidden)");
+        return true;
+    }
+
+    bool hidden = false;
+    if (args->GetType(0) == VTYPE_BOOL) {
+        hidden = args->GetBool(0);
+    } else {
+        double numeric = 0.0;
+        hidden = get_numeric_arg(args, 0, numeric) && numeric != 0.0;
+    }
+
+    if (!set_browser_tab_system_cursor_hidden(browser, hidden)) {
+        CFW_LOG_WARNING("ViewportSystemCursor dropped: browser tab not found");
+    }
     return true;
 }
 
@@ -1639,6 +1680,10 @@ bool handle_realtime_process_message(CefRefPtr<CefBrowser> browser,
 
     if (message->GetName() == "ViewportUiPointer") {
         return handle_viewport_ui_pointer(message);
+    }
+
+    if (message->GetName() == "ViewportSystemCursor") {
+        return handle_viewport_system_cursor(browser, message);
     }
 
     if (message->GetName() == "ViewportUiCalibration") {

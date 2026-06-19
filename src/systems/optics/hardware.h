@@ -18,6 +18,7 @@ using uint = uint32_t;
 #include GLSL(../../../assets/shaders/debug_resolve.comp.glsl)
 #include GLSL(../../../assets/shaders/actor_pick.comp.glsl)
 #include GLSL(../../../assets/shaders/optics_overlay.comp.glsl)
+#include GLSL(../../../assets/shaders/optics_cursor.comp.glsl)
 #include GLSL(../../../assets/shaders/optics_ui_warp.comp.glsl)
 #include GLSL(../../../assets/shaders/optics_composite.comp.glsl)
 #ifdef CORONA_ENABLE_VISION
@@ -58,6 +59,7 @@ struct Hardware {
     std::optional<ComputePipeline<debug_resolve_comp_glsl>> debugResolvePipeline;
     std::optional<ComputePipeline<actor_pick_comp_glsl>> actorPickPipeline;
     std::optional<ComputePipeline<optics_overlay_comp_glsl>> opticsOverlayPipeline;
+    std::optional<ComputePipeline<optics_cursor_comp_glsl>> opticsCursorPipeline;
     std::optional<ComputePipeline<optics_ui_warp_comp_glsl>> opticsUiWarpPipeline;
     std::optional<ComputePipeline<optics_composite_comp_glsl>> opticsCompositePipeline;
 #ifdef CORONA_ENABLE_VISION

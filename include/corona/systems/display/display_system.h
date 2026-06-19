@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Corona::Systems {
@@ -91,6 +92,7 @@ class DisplaySystem : public Kernel::SystemBase {
     std::unordered_map<uint64_t, HardwareDisplayer> displayers_;
     std::unordered_map<uint64_t, SurfaceState> surface_states_;
     std::unordered_map<uint64_t, CompositeResources> composite_resources_;
+    std::unordered_set<uint64_t> removed_surfaces_;
     std::vector<void*> pending_surfaces_;  ///< Surfaces awaiting displayer creation (deferred to update thread)
 
     // Surfaces awaiting teardown (ImGui secondary viewport closed). The removal event
