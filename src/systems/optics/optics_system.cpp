@@ -3091,7 +3091,7 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 const auto ui_state =
                     SharedDataHub::instance().viewport_ui_state(cam_handle);
                 HardwareImage* presented = compose_surface_ui_overlay(
-                    cam_handle, *camera, scene, target, target.final_output,
+                    cam_handle, camera, scene, target, target.final_output,
                     ui_state.mode, ui_state.calibration, frame_index);
 
                 hardware_->executor << hardware_->executor.commit();
