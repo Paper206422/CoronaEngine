@@ -75,7 +75,22 @@ assertIncludes(
 assertIncludes(
   networkPanel,
   'broadcastCurrentSceneSnapshot(sceneName, true, true)',
-  'Host must still include actor create events when answering explicit snapshot requests'
+  'Host must include actor create events when answering explicit snapshot requests so late joiners can fetch missing files'
+);
+assertIncludes(
+  networkPanel,
+  'rememberActorCreateBroadcast(targetScene, actorGuid, modelPath)',
+  'Snapshot actor-create fallback must remember sent actors across requests instead of clearing and rebroadcasting everything'
+);
+assertIncludes(
+  networkPanel,
+  'rememberActorCreateBroadcast(sceneName, actorGuid, modelPath)',
+  'Realtime actor-create broadcasts must share the snapshot fallback dedupe cache'
+);
+assertIncludes(
+  networkPanel,
+  'forgetActorCreateBroadcast(sceneName, actorGuid)',
+  'Actor delete broadcasts must clear actor-create dedupe state so recreates can sync files again'
 );
 assertIncludes(
   networkPanel,

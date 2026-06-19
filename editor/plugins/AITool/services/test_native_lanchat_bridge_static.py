@@ -128,11 +128,20 @@ def test_network_host_periodic_snapshot_does_not_rebroadcast_actor_creates() -> 
     source = _read("editor/Frontend/src/views/sidebar/Network.vue")
     expected = (
         "if (count > 0 && sessionRole.value === 'host') {\n"
-        "        await broadcastCurrentSceneSnapshot(currentSceneName.value, false);"
+        "        await broadcastCurrentSceneSnapshot(currentSceneName.value, false, false);"
     )
     assert expected in source, "host polling must not rebroadcast actor create every 2 seconds"
-    assert "await broadcastCurrentSceneSnapshot(sceneName, true);" in source, (
+    assert "await broadcastCurrentSceneSnapshot(sceneName, true, true);" in source, (
         "host must still send actor creates when a client explicitly requests a full snapshot"
+    )
+    assert "rememberActorCreateBroadcast(targetScene, actorGuid, modelPath)" in source, (
+        "snapshot fallback actor creates must be deduped across explicit snapshot requests"
+    )
+    assert "rememberActorCreateBroadcast(sceneName, actorGuid, modelPath)" in source, (
+        "realtime actor create broadcasts must share snapshot fallback dedupe state"
+    )
+    assert "forgetActorCreateBroadcast(sceneName, actorGuid)" in source, (
+        "actor deletes must clear snapshot fallback actor-create dedupe state"
     )
 
 

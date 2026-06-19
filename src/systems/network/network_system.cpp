@@ -610,10 +610,8 @@ bool NetworkSystem::start_session(const std::string& instance_name,
                                   uint64_t project_id, uint16_t port,
                                   SessionRole role) {
     if (impl_->session_state == SessionState::Active) {
-        CFW_LOG_WARNING("NetworkSystem: Session already active");
-        if (role != SessionRole::None) {
-            impl_->session_role = role;
-        }
+        CFW_LOG_WARNING("NetworkSystem: Session already active; keeping role={} and ignoring requested role={}",
+                        session_role_label(impl_->session_role), session_role_label(role));
         return true;
     }
 

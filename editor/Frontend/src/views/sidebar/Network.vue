@@ -240,6 +240,29 @@ function resetSessionInfo() {
   snapshotActorCreateKeys.clear();
 }
 
+function nativeRoleLabel(role) {
+  if (role === 'host') return '房主';
+  if (role === 'client') return '客户端';
+  return '未知角色';
+}
+
+async function attachExistingSession({ showErrors = false } = {}) {
+  try {
+    const info = await networkService.getSessionInfo();
+    if (!info || !info.active) {
+      return null;
+    }
+    applySessionInfo(info);
+    startPolling();
+    return info;
+  } catch (e) {
+    if (showErrors) {
+      errorMsg.value = e?.message || '读取网络会话失败';
+    }
+    return null;
+  }
+}
+
 async function ensureProjectRoot() {
   try {
     const mod = await import('@/utils/bridge');
@@ -257,6 +280,16 @@ async function ensureProjectRoot() {
 async function startSessionAsRole(role) {
   errorMsg.value = '';
   try {
+    const existingSession = await attachExistingSession({ showErrors: true });
+    if (existingSession?.active) {
+      const existingRole = existingSession.role || sessionRole.value || 'none';
+      if (existingRole !== 'none' && existingRole !== role) {
+        errorMsg.value = `已有网络会话正在运行（当前角色：${nativeRoleLabel(existingRole)}），请先停止当前会话后再切换角色。`;
+        return false;
+      }
+      return true;
+    }
+
     await ensureProjectRoot();
     const res = await networkService.startSession(instanceName.value, 0, port.value, role);
     if (res && res.ok) {
@@ -582,6 +615,25 @@ function rememberSceneName(sceneName) {
   return currentSceneName.value || 'Scene/default.scene';
 }
 
+function actorCreateBroadcastKey(sceneName, actorGuid, modelPath) {
+  return `${sceneName}:${actorGuid}:${modelPath}`;
+}
+
+function rememberActorCreateBroadcast(sceneName, actorGuid, modelPath) {
+  if (!sceneName || !actorGuid || !modelPath) return;
+  snapshotActorCreateKeys.add(actorCreateBroadcastKey(sceneName, actorGuid, modelPath));
+}
+
+function forgetActorCreateBroadcast(sceneName, actorGuid) {
+  if (!sceneName || !actorGuid) return;
+  const prefix = `${sceneName}:${actorGuid}:`;
+  for (const key of [...snapshotActorCreateKeys]) {
+    if (key.startsWith(prefix)) {
+      snapshotActorCreateKeys.delete(key);
+    }
+  }
+}
+
 function closeFloat() {
   closeDockPanel();
 }
@@ -601,18 +653,20 @@ async function broadcastCurrentSceneSnapshot(sceneName, includeActorCreates, for
   if (!snapshot || snapshot.status === 'error') return;
   const actors = Array.isArray(snapshot.actors) ? snapshot.actors : [];
   if (includeActorCreates) {
-    snapshotActorCreateKeys.clear();
     for (const actor of actors) {
       if (!isActorSyncable(actor)) continue;
       const actorGuid = actor.actor_guid || '';
       const modelPath = actor.path || actor.model || '';
       if (!actorGuid || !modelPath) continue;
-      const snapshotCreateKey = `${targetScene}:${actorGuid}:${modelPath}`;
+      const snapshotCreateKey = actorCreateBroadcastKey(targetScene, actorGuid, modelPath);
       if (snapshotActorCreateKeys.has(snapshotCreateKey)) continue;
-      snapshotActorCreateKeys.add(snapshotCreateKey);
-      await networkService
+      const sent = await networkService
         .broadcastActorCreate(actorGuid, targetScene, modelPath, { ...actor, scene: targetScene })
-        .catch(() => {});
+        .then(() => true)
+        .catch(() => false);
+      if (sent) {
+        rememberActorCreateBroadcast(targetScene, actorGuid, modelPath);
+      }
     }
   }
   const snapshotHash = hashString(stableStringify(snapshot));
@@ -707,6 +761,8 @@ onMounted(() => {
     instanceName.value = 'Editor-' + Math.random().toString(36).slice(2, 8);
   }
 
+  attachExistingSession();
+
   // Listen for actor-sync-broadcast from Python (Actor creation triggered locally,
   // needs to be forwarded to remote peers)
   coronaEventBus.on('actor-sync-broadcast', (actorData) => {
@@ -721,7 +777,12 @@ onMounted(() => {
       `actor-${hashString(`${sceneName}|${modelPath}|${actorData.name || ''}`)}`;
     actorData.actor_guid = actorGuid;
     registerActorIdentityFromData(actorData);
-    networkService.broadcastActorCreate(actorGuid, sceneName, modelPath, actorData).catch(() => {});
+    networkService
+      .broadcastActorCreate(actorGuid, sceneName, modelPath, actorData)
+      .then(() => {
+        rememberActorCreateBroadcast(sceneName, actorGuid, modelPath);
+      })
+      .catch(() => {});
   });
 
   coronaEventBus.on('actor-transform-sync-broadcast', (actorData) => {
@@ -747,6 +808,7 @@ onMounted(() => {
     const actorName = actorData.actor_name || actorData.name || '';
     if (!actorGuid && !actorName) return;
     const sceneName = rememberSceneName(actorData.scene || 'Scene/default.scene');
+    forgetActorCreateBroadcast(sceneName, actorGuid);
     networkService.broadcastActorDelete(actorGuid, sceneName, actorName).catch(() => {});
   });
 
