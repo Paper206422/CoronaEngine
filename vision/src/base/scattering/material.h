@@ -17,7 +17,20 @@ class ParamSchema;
 
 class MaterialLut {
 private:
-    std::map<string, RegistrableTexture3D> lut_map_;
+    struct LutKey {
+        string name;
+        const BindlessArray *bindless_array{};
+
+        [[nodiscard]] friend bool operator<(const LutKey &lhs,
+                                            const LutKey &rhs) noexcept {
+            if (lhs.name != rhs.name) {
+                return lhs.name < rhs.name;
+            }
+            return lhs.bindless_array < rhs.bindless_array;
+        }
+    };
+
+    std::map<LutKey, RegistrableTexture3D> lut_map_;
     OC_MAKE_INSTANCE_CONSTRUCTOR(MaterialLut, s_material_lut)
 
 public:
@@ -25,13 +38,20 @@ public:
     void load_lut(const string &name, uint2 res, PixelStorage storage, const void *data) noexcept {
         load_lut(name, make_uint3(res, 1u), storage, data);
     }
+    void load_lut(const string &name, uint2 res, PixelStorage storage, const void *data,
+                  BindlessArray &bindless_array, Device &device) noexcept {
+        load_lut(name, make_uint3(res, 1u), storage, data, bindless_array, device);
+    }
     void load_lut(const string &name, uint3 res, PixelStorage storage, const void *data) noexcept;
+    void load_lut(const string &name, uint3 res, PixelStorage storage, const void *data,
+                  BindlessArray &bindless_array, Device &device) noexcept;
     void unload_lut(const string &name) noexcept;
     template<typename... Args>
     [[nodiscard]] float_array sample(const string &name, Args &&...args) const noexcept {
         return get_lut(name).sample(OC_FORWARD(args)...);
     }
     [[nodiscard]] const RegistrableTexture3D &get_lut(const string &name) const noexcept;
+    [[nodiscard]] const BindlessArray &bindless_array(const string &name) const noexcept;
     [[nodiscard]] const EncodedData<uint> &get_index(const string &name) const noexcept;
 };
 

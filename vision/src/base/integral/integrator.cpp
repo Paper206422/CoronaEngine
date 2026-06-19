@@ -13,10 +13,8 @@ using namespace ocarina;
 
 void Integrator::invalidation() const noexcept {
     cur_stage_profile_ = {};
-    if (frame_buffer().enable_accumulation()) {
-        frame_index_ = 0u;
-        render_time_ = 0;
-    }
+    frame_index_ = 0u;
+    render_time_ = 0;
 }
 
 template<typename SF, typename SS>

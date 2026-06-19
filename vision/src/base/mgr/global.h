@@ -17,13 +17,32 @@ class Global {
     ~Global();
 
 private:
+    struct SceneGpuContext {
+        BindlessArray *bindless_array{};
+        Device *device{};
+    };
+
     weak_ptr<Pipeline> pipeline_{};
     Device *device_{nullptr};
+    SceneGpuContext scene_gpu_context_{};
     fs::path scene_path_;
 
 public:
+    class SceneGpuContextScope {
+    private:
+        Global &global_;
+        SceneGpuContext previous_{};
+
+    public:
+        SceneGpuContextScope(BindlessArray &bindless_array, Device &device) noexcept;
+        SceneGpuContextScope(const SceneGpuContextScope &) = delete;
+        SceneGpuContextScope &operator=(const SceneGpuContextScope &) = delete;
+        ~SceneGpuContextScope();
+    };
+
     OC_MAKE_INSTANCE_FUNC_DECL(Global)
     void set_pipeline(SP<Pipeline> pipeline);
+    [[nodiscard]] SP<Pipeline> pipeline_shared();
     [[nodiscard]] Pipeline *pipeline();
     [[nodiscard]] ImagePool &image_pool() {
         return ImagePool::instance();
@@ -31,6 +50,15 @@ public:
     [[nodiscard]] Device &device() noexcept { return *device_; }
     void set_device(Device *val) noexcept { device_ = val; }
     [[nodiscard]] BindlessArray &bindless_array();
+    [[nodiscard]] BindlessArray *scene_bindless_array() noexcept {
+        return scene_gpu_context_.bindless_array;
+    }
+    [[nodiscard]] Device *scene_device() noexcept {
+        return scene_gpu_context_.device;
+    }
+    [[nodiscard]] SceneGpuContext push_scene_gpu_context(BindlessArray &bindless_array,
+                                                        Device &device) noexcept;
+    void restore_scene_gpu_context(SceneGpuContext context) noexcept;
     void set_scene_path(const fs::path &sp) noexcept;
     [[nodiscard]] fs::path scene_path() const noexcept;
     [[nodiscard]] fs::path scene_cache_path() const noexcept;

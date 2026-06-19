@@ -14,8 +14,14 @@ public:
         : Importer(desc) {}
 
     [[nodiscard]] SP<Pipeline> read_file(const fs::path &fn) override {
+        return read_file(fn, {});
+    }
+
+    [[nodiscard]] SP<Pipeline> read_file(const fs::path &fn,
+                                         const ImportSceneOptions &options) override {
         auto project_desc = ProjectDesc::from_json(fn);
         SP<Pipeline> ret = Node::create_shared<Pipeline>(project_desc.pipeline_desc);
+        bind_shared_scene_resources(*ret, options);
         ret->init_project(project_desc);
         ret->init_postprocessor(project_desc.renderer_desc.denoiser_desc);
         return ret;

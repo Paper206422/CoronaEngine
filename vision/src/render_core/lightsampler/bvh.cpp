@@ -17,6 +17,11 @@ public:
     explicit BVHLightSampler(const LightSamplerDesc &desc)
         : LightSampler(desc) {}
 
+    void prepare(BindlessArray &bindless_array, Device &device) noexcept override {
+        LightSampler::prepare(bindless_array, device);
+        build_bvh();
+    }
+
     void prepare() noexcept override {
         LightSampler::prepare();
         build_bvh();

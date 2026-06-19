@@ -9,12 +9,17 @@
 namespace vision {
 using namespace ocarina;
 EncodedObject::EncodedObject() {
-    Global::instance().pipeline()->register_encoded_object(this);
+    if (auto rp = Global::instance().pipeline_shared()) {
+        datas_.set_bindless_array(rp->bindless_array());
+        rp->register_encoded_object(this);
+        owner_pipeline_ = rp;
+    } else if (auto *bindless = Global::instance().scene_bindless_array()) {
+        datas_.set_bindless_array(*bindless);
+    }
 }
 
 EncodedObject::~EncodedObject() {
-    Pipeline *rp = Global::instance().pipeline();
-    if (rp) {
+    if (auto rp = owner_pipeline_.lock()) {
         rp->deregister_encoded_object(this);
     }
 }

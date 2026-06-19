@@ -271,6 +271,8 @@ class Camera {
     [[nodiscard]] std::string get_output_mode() const;
     void set_render_backend(const std::string& mode);
     [[nodiscard]] std::string get_render_backend() const;
+    void set_vision_render_mode(const std::string& mode);
+    [[nodiscard]] std::string get_vision_render_mode() const;
     void set_view_state(bool open, int x, int y, int width, int height, float move_speed);
     [[nodiscard]] std::array<float, 6> get_view_state() const;
 
@@ -402,6 +404,12 @@ void set_render_backend(const std::string& mode, std::uintptr_t camera_handle = 
 
 /// 获取当前请求的渲染后端，返回 "native" 或 "vision"。
 [[nodiscard]] std::string get_render_backend(std::uintptr_t camera_handle = 0);
+
+/// 设置 Vision 后端的渲染技术。mode: "path_tracing", "svgf" 或 "ssat"。
+void set_vision_render_mode(const std::string& mode, std::uintptr_t camera_handle = 0);
+
+/// 获取当前 camera 请求的 Vision 渲染技术。
+[[nodiscard]] std::string get_vision_render_mode(std::uintptr_t camera_handle = 0);
 
 /// 请求加载一个外部 Vision 场景文件（.json）。仅当 Vision 后端可用且处于激活
 /// 状态时生效；实际导入在光学系统渲染线程执行。

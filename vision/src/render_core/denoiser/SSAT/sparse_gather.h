@@ -11,8 +11,7 @@
 
 #include "math/basic_types.h"
 #include "dsl/dsl.h"
-#include "base/mgr/global.h"
-#include "base/mgr/pipeline.h"
+#include "base/mgr/geometry.h"
 #include "phase_space.h"
 #include "utils.h"
 #include "ssat_config.h"
@@ -294,6 +293,7 @@ public:
     /// @param neighbor_radius Search radius
     /// @return Gathered radiance with geometry-aware weighting
     [[nodiscard]] static Float4 gather_with_geometry(
+        const Geometry &geometry,
         const BufferVar<float4> &buffer,
         const BufferVar<TriangleHit> &visibility,
         const PhaseSpaceCoordVar &target,
@@ -352,8 +352,7 @@ public:
                         Float3 neighbor_normal = center_normal;
                         
                         $if(neighbor_valid) {
-                            Interaction neighbor_it = Global::instance().pipeline()->geometry()
-                                .compute_surface_interaction(neighbor_hit, false);
+                            Interaction neighbor_it = geometry.compute_surface_interaction(neighbor_hit, false);
                             neighbor_depth = length(neighbor_it.pos - camera_pos);
                             neighbor_normal = neighbor_it.ng;
                         };

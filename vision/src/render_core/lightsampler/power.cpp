@@ -30,8 +30,7 @@ public:
         return ret;
     }
 
-    void prepare() noexcept override {
-        LightSampler::prepare();
+    void prepare_warper() noexcept {
         warper_ = renderer().load_warper();
         vector<float> weights;
         if (env_separate_) {
@@ -50,6 +49,16 @@ public:
         warper_->allocate(weights.size());
         warper_->build(std::move(weights));
         warper_->upload_immediately();
+    }
+
+    void prepare(BindlessArray &bindless_array, Device &device) noexcept override {
+        LightSampler::prepare(bindless_array, device);
+        prepare_warper();
+    }
+
+    void prepare() noexcept override {
+        LightSampler::prepare();
+        prepare_warper();
     }
 };
 }// namespace vision

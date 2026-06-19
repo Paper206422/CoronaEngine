@@ -13,34 +13,71 @@ using namespace ocarina;
 
 OC_MAKE_INSTANCE_FUNC_DEF_WITH_HOTFIX(MaterialLut, s_material_lut)
 
+namespace {
+
+[[nodiscard]] BindlessArray &active_material_lut_bindless() noexcept {
+    if (auto *bindless = Global::instance().scene_bindless_array()) {
+        return *bindless;
+    }
+    OC_ASSERT(false);
+    return *Global::instance().scene_bindless_array();
+}
+
+}  // namespace
+
 void MaterialLut::load_lut(const string &name, uint3 res,
                            PixelStorage storage, const void *data) noexcept {
-    if (lut_map_.contains(name)) {
+    if (auto *bindless = Global::instance().scene_bindless_array()) {
+        if (auto *device = Global::instance().scene_device()) {
+            load_lut(name, res, storage, data, *bindless, *device);
+            return;
+        }
+    }
+    OC_ASSERT(false);
+}
+
+void MaterialLut::load_lut(const string &name, uint3 res,
+                           PixelStorage storage, const void *data,
+                           BindlessArray &bindless_array, Device &device) noexcept {
+    const LutKey key{.name = name, .bindless_array = &bindless_array};
+    auto iter = lut_map_.find(key);
+    if (iter != lut_map_.end()) {
         return;
     }
-    Pipeline *ppl = Global::instance().pipeline();
-    RegistrableTexture3D texture{ppl->bindless_array()};
-    texture.device_tex() = ppl->device().create_texture3d(res,
-                                                          storage,
-                                                          name);
+    RegistrableTexture3D texture{bindless_array};
+    texture.device_tex() = device.create_texture3d(res, storage, name);
     texture.device_tex().upload_immediately(data);
     texture.register_self();
-    lut_map_.insert(std::make_pair(name, std::move(texture)));
+    lut_map_.insert(std::make_pair(key, std::move(texture)));
 }
 
 void MaterialLut::unload_lut(const std::string &name) noexcept {
-    if (lut_map_.contains(name)) {
-        lut_map_.erase(name);
+    for (auto iter = lut_map_.begin(); iter != lut_map_.end();) {
+        if (iter->first.name != name) {
+            ++iter;
+            continue;
+        }
+        iter->second.unregister();
+        iter = lut_map_.erase(iter);
     }
 }
 
 const RegistrableTexture3D &MaterialLut::get_lut(const std::string &name) const noexcept {
-    OC_ASSERT(lut_map_.contains(name));
-    return lut_map_.at(name);
+    const auto &bindless = active_material_lut_bindless();
+    const LutKey key{.name = name, .bindless_array = &bindless};
+    auto iter = lut_map_.find(key);
+    OC_ASSERT(iter != lut_map_.end());
+    return iter->second;
+}
+
+const BindlessArray &MaterialLut::bindless_array(const std::string &name) const noexcept {
+    const auto *bindless = get_lut(name).bindless_array();
+    OC_ASSERT(bindless != nullptr);
+    return *bindless;
 }
 
 const EncodedData<uint> &MaterialLut::get_index(const std::string &name) const noexcept {
-    return lut_map_.at(name).index();
+    return get_lut(name).index();
 }
 
 ///#region MaterialEvaluator

@@ -38,8 +38,11 @@ void Photosensory::update_runtime_object(const vision::IObjectConstructor *const
 
 void Photosensory::render_sub_UI(Widgets *widgets) noexcept {
     if (medium_id_.hv() != InvalidUI32) {
-        auto medium = MediumRegistry::instance().elements()[medium_id_.hv()];
-        medium->render_UI(widgets);
+        auto &mediums = scene().mediums();
+        if (medium_id_.hv() < mediums.size()) {
+            auto medium = mediums[medium_id_.hv()];
+            medium->render_UI(widgets);
+        }
     }
 }
 

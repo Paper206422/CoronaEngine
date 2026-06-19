@@ -5,6 +5,31 @@ from ..corona_editor import CoronaEditor
 
 CoronaEngine = CoronaEditor.CoronaEngine
 
+DEFAULT_VISION_RENDER_MODE = "path_tracing"
+VISION_RENDER_MODES = frozenset(("path_tracing", "svgf", "ssat"))
+VISION_RENDER_MODE_ALIASES = {
+    "pt": "path_tracing",
+    "path-tracing": "path_tracing",
+    "path tracing": "path_tracing",
+    "vision_path_tracing": "path_tracing",
+    "vision pt": "path_tracing",
+    "vision svgf": "svgf",
+    "vision_svgf": "svgf",
+    "vision ssat": "ssat",
+    "vision_ssat": "ssat",
+}
+
+
+def normalize_vision_render_mode(mode: Optional[str]) -> str:
+    value = str(mode or DEFAULT_VISION_RENDER_MODE).strip().lower()
+    value = VISION_RENDER_MODE_ALIASES.get(value, value)
+    if value not in VISION_RENDER_MODES:
+        raise ValueError(
+            f"Invalid Vision render mode '{mode}'. "
+            f"Expected one of: {', '.join(sorted(VISION_RENDER_MODES))}"
+        )
+    return value
+
 
 class Camera:
     """
@@ -16,6 +41,7 @@ class Camera:
                  world_up: Optional[List[float]] = None, fov: Optional[float] = None, name: str = "Camera",
                  width: int = 1920, height: int = 1080, camera_id: Optional[str] = None,
                  render_backend: str = "native", output_mode: str = "final_color",
+                 vision_render_mode: str = DEFAULT_VISION_RENDER_MODE,
                  move_speed: float = 1.0, view_open: bool = False,
                  view_x: int = 120, view_y: int = 120,
                  view_width: int = 960, view_height: int = 540,
@@ -46,6 +72,7 @@ class Camera:
         self.height = height
         self.render_backend = render_backend
         self.output_mode = output_mode
+        self.vision_render_mode = normalize_vision_render_mode(vision_render_mode)
         self.move_speed = float(move_speed)
         self.view_open = bool(view_open)
         self.view_x = int(view_x)
@@ -56,6 +83,8 @@ class Camera:
         self.engine_obj.set_size(width, height)
         self.engine_obj.set_output_mode(output_mode)
         self.engine_obj.set_render_backend(render_backend)
+        if hasattr(self.engine_obj, 'set_vision_render_mode'):
+            self.engine_obj.set_vision_render_mode(self.vision_render_mode)
         self._flush_view_state()
         # 持有强引用，避免 ImageEffects 被 GC 后底层句柄被释放
         self._image_effects_ref = None
@@ -128,6 +157,14 @@ class Camera:
 
     def get_render_backend(self) -> str:
         return self.render_backend
+
+    def set_vision_render_mode(self, mode: str):
+        self.vision_render_mode = normalize_vision_render_mode(mode)
+        if hasattr(self.engine_obj, 'set_vision_render_mode'):
+            self.engine_obj.set_vision_render_mode(self.vision_render_mode)
+
+    def get_vision_render_mode(self) -> str:
+        return self.vision_render_mode
 
     def _flush_view_state(self):
         self.engine_obj.set_view_state(
@@ -219,6 +256,7 @@ class Camera:
             'height': self.height,
             'output_mode': self.get_output_mode(),
             'render_backend': self.get_render_backend(),
+            'vision_render_mode': self.get_vision_render_mode(),
             'move_speed': self.move_speed,
             'view_open': self.view_open,
             'view_x': self.view_x,

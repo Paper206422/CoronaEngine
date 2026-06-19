@@ -9,6 +9,7 @@ using Cfg = SVGFConfig;
 void Modulator::prepare() noexcept {}
 
 void Modulator::compile() noexcept {
+Pipeline *pipeline_ref = pipeline();
 auto safe_value = [](Float x, Float epsilon) -> Float {
     return sqrt(x * x + epsilon * epsilon);
 };
@@ -35,15 +36,16 @@ auto linear_modulate = [&](RadType3Var value, Float3 albedo,
     return make_RadType3(value * safe_a);
 };
 
-    Kernel demodulate_kernel = [&](Var<ModulatorParam> param) noexcept {
+    Kernel demodulate_kernel = [&, pipeline_ref](Var<ModulatorParam> param) noexcept {
         Uint idx = dispatch_id();
 
         TriangleHitVar cur_hit = param.visibility_buffer.read(idx);
 
-        $if(!PixelStateUtils::is_sky(cur_hit) && !PixelStateUtils::is_emissive(cur_hit)) {
+        $if(!PixelStateUtils::is_sky(cur_hit) &&
+            !PixelStateUtils::is_emissive(pipeline_ref, cur_hit)) {
             RadType4Var radiance_direct = param.radiance_direct.read(idx);
             RadType4Var radiance_indirect = param.radiance_indirect.read(idx);
-            Float3 albedo = PixelStateUtils::query_albedo(cur_hit, param.camera_pos.as_vec3());
+            Float3 albedo = PixelStateUtils::query_albedo(pipeline_ref, cur_hit, param.camera_pos.as_vec3());
 
             param.radiance_direct.write(idx, make_RadType4(
                                                  linear_demodulate(radiance_direct.xyz(), albedo,
@@ -57,15 +59,16 @@ auto linear_modulate = [&](RadType3Var value, Float3 albedo,
     };
     demodulate_ = device().compile(demodulate_kernel, "SVGF-Demodulate");
 
-    Kernel modulate_kernel = [&](Var<ModulatorParam> param) noexcept {
+    Kernel modulate_kernel = [&, pipeline_ref](Var<ModulatorParam> param) noexcept {
         Uint idx = dispatch_id();
 
         TriangleHitVar cur_hit = param.visibility_buffer.read(idx);
 
-        $if(!PixelStateUtils::is_sky(cur_hit) && !PixelStateUtils::is_emissive(cur_hit)) {
+        $if(!PixelStateUtils::is_sky(cur_hit) &&
+            !PixelStateUtils::is_emissive(pipeline_ref, cur_hit)) {
             RadType4Var direct_filtered = param.radiance_direct.read(idx);
             RadType4Var indirect_filtered = param.radiance_indirect.read(idx);
-            Float3 albedo = PixelStateUtils::query_albedo(cur_hit, param.camera_pos.as_vec3());
+            Float3 albedo = PixelStateUtils::query_albedo(pipeline_ref, cur_hit, param.camera_pos.as_vec3());
 
             param.radiance_direct.write(idx, make_RadType4(
                                                  linear_modulate(direct_filtered.xyz(), albedo,

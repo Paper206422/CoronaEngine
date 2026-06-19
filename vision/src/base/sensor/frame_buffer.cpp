@@ -305,6 +305,15 @@ CommandBatch FrameBuffer::render_final(uint frame_index) const noexcept {
     return ret;
 }
 
+CommandBatch FrameBuffer::clear_accumulation_history() const noexcept {
+    CommandBatch ret;
+    if (accumulation_buffer_.device_buffer().size() != 0) {
+        ret << pipeline()->reset_buffer(accumulation_buffer_.view(), make_float4(0.f),
+                                        "FrameBuffer::clear_accumulation_history");
+    }
+    return ret;
+}
+
 CommandBatch FrameBuffer::gamma_correct() const noexcept {
     return gamma_correct(view_texture_, view_texture_);
 }

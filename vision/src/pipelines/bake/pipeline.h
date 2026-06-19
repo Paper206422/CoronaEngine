@@ -48,7 +48,7 @@ public:
     void preprocess() noexcept override;
     template<typename Func>
     void for_each_need_bake(Func &&func) {
-        auto &instances = scene_.instances();
+        auto &instances = scene().instances();
         std::for_each(instances.begin(), instances.end(), [&](SP<ShapeInstance> item) {
             if (item->has_emission()) {
                 return;

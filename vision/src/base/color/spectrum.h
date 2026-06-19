@@ -254,9 +254,18 @@ class Spectrum : public Node, public GUIRenderable {
 public:
     using Desc = SpectrumDesc;
 
+private:
+    bool scene_has_dispersive_materials_{false};
+
 public:
     Spectrum() = default;
     explicit Spectrum(const SpectrumDesc &desc) : Node(desc) {}
+    void set_scene_has_dispersive_materials(bool has_dispersive) noexcept {
+        scene_has_dispersive_materials_ = has_dispersive;
+    }
+    [[nodiscard]] bool scene_has_dispersive_materials() const noexcept {
+        return scene_has_dispersive_materials_;
+    }
     [[nodiscard]] SampledSpectrum zero() const noexcept { return SampledSpectrum::zero(dimension()); }
     [[nodiscard]] SampledSpectrum one() const noexcept { return SampledSpectrum::one(dimension()); }
     bool render_UI(Widgets *widgets) noexcept override;

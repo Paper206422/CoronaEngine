@@ -19,12 +19,40 @@ void Global::set_pipeline(SP<Pipeline> pipeline) {
     pipeline_ = pipeline;
 }
 
+SP<Pipeline> Global::pipeline_shared() {
+    return pipeline_.lock();
+}
+
+Global::SceneGpuContextScope::SceneGpuContextScope(BindlessArray &bindless_array,
+                                                   Device &device) noexcept
+    : global_(Global::instance()),
+      previous_(global_.push_scene_gpu_context(bindless_array, device)) {}
+
+Global::SceneGpuContextScope::~SceneGpuContextScope() {
+    global_.restore_scene_gpu_context(previous_);
+}
+
 Pipeline *Global::pipeline() {
-    return pipeline_.lock().get();
+    return pipeline_shared().get();
 }
 
 BindlessArray &Global::bindless_array() {
-    return pipeline()->bindless_array();
+    auto *rp = pipeline();
+    if (rp->scene().geometry().has_gpu_resource()) {
+        return rp->scene().geometry().bindless_array();
+    }
+    return rp->bindless_array();
+}
+
+Global::SceneGpuContext Global::push_scene_gpu_context(BindlessArray &bindless_array,
+                                                       Device &device) noexcept {
+    SceneGpuContext previous = scene_gpu_context_;
+    scene_gpu_context_ = {.bindless_array = &bindless_array, .device = &device};
+    return previous;
+}
+
+void Global::restore_scene_gpu_context(SceneGpuContext context) noexcept {
+    scene_gpu_context_ = context;
 }
 
 void Global::set_scene_path(const fs::path &sp) noexcept {

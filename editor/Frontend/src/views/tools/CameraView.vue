@@ -22,6 +22,24 @@
           <button :disabled="!visionAvailable" @click="selectBackend('vision')">Vision</button>
         </div>
       </div>
+      <div v-if="backend === 'vision'" class="dropdown no-drag">
+        <button
+          class="control dropdown-trigger vision-mode-trigger"
+          aria-label="Vision render mode"
+          @click.stop="visionModeMenuOpen = !visionModeMenuOpen"
+        >
+          {{ visionRenderModes.find((mode) => mode.value === visionRenderMode)?.label || 'Vision Path Tracing' }}
+        </button>
+        <div v-if="visionModeMenuOpen" class="dropdown-menu vision-mode-menu">
+          <button
+            v-for="mode in visionRenderModes"
+            :key="mode.value"
+            @click="selectVisionRenderMode(mode.value)"
+          >
+            {{ mode.label }}
+          </button>
+        </div>
+      </div>
       <div class="dropdown no-drag">
         <button
           class="control dropdown-trigger"
@@ -102,6 +120,7 @@ const cameraId = String(route.query.camera || '');
 const camera = ref(null);
 const cameraName = ref('Camera');
 const backend = ref('native');
+const visionRenderMode = ref('path_tracing');
 const outputMode = ref('final_color');
 const moveSpeed = ref(1);
 const renderWidth = ref(960);
@@ -112,6 +131,7 @@ const errorText = ref('');
 const toolbarRef = ref(null);
 const inputLayerRef = ref(null);
 const backendMenuOpen = ref(false);
+const visionModeMenuOpen = ref(false);
 const outputMenuOpen = ref(false);
 const borderlessFullscreen = ref(false);
 let borderlessTogglePending = false;
@@ -123,6 +143,11 @@ const outputModes = [
   { value: 'position', label: 'Position' },
   { value: 'object_id', label: 'Object ID' },
   { value: 'visibility_buffer', label: 'Visibility' },
+];
+const visionRenderModes = [
+  { value: 'path_tracing', label: 'Vision Path Tracing' },
+  { value: 'svgf', label: 'Vision SVGF' },
+  { value: 'ssat', label: 'Vision SSAT' },
 ];
 
 const viewportUiModeStore = createViewportUiModeStore();
@@ -148,12 +173,34 @@ const loadCamera = async () => {
   visionAvailable.value = !!unwrap(visionResult)?.available;
   cameraName.value = camera.value.name;
   backend.value = camera.value.render_backend || 'native';
+  visionRenderMode.value = camera.value.vision_render_mode || 'path_tracing';
   outputMode.value = backend.value === 'vision'
     ? 'final_color'
     : camera.value.output_mode || 'final_color';
   moveSpeed.value = camera.value.move_speed || 1;
   renderWidth.value = camera.value.width || 960;
   renderHeight.value = camera.value.height || 540;
+};
+
+const handleVisionSceneImported = async (payload = {}) => {
+  if (payload?.sceneId && String(payload.sceneId) !== sceneId) return;
+  const importedCameraId = payload?.cameraId ? String(payload.cameraId) : '';
+  const importedCameraName = payload?.cameraName ? String(payload.cameraName) : '';
+  if (importedCameraId && importedCameraId !== cameraId) return;
+  if (!importedCameraId && importedCameraName && importedCameraName !== cameraName.value) return;
+  if (payload?.visionRenderMode) {
+    backend.value = 'vision';
+    visionRenderMode.value = payload.visionRenderMode;
+    if (camera.value) {
+      camera.value.render_backend = 'vision';
+      camera.value.vision_render_mode = payload.visionRenderMode;
+    }
+  }
+  try {
+    await loadCamera();
+  } catch (error) {
+    errorText.value = error.message;
+  }
 };
 
 const renameCamera = async () => {
@@ -175,6 +222,7 @@ const changeBackend = async () => {
     if (backend.value === 'vision') {
       outputMode.value = 'final_color';
       await sceneService.setOutputMode(sceneId, cameraId, 'final_color');
+      await sceneService.setVisionRenderMode(sceneId, cameraId, visionRenderMode.value);
     }
   } catch (error) {
     errorText.value = error.message;
@@ -183,9 +231,24 @@ const changeBackend = async () => {
 
 const selectBackend = async (mode) => {
   backendMenuOpen.value = false;
+  visionModeMenuOpen.value = false;
   if (backend.value === mode) return;
   backend.value = mode;
   await changeBackend();
+};
+
+const selectVisionRenderMode = async (mode) => {
+  visionModeMenuOpen.value = false;
+  if (visionRenderMode.value === mode) return;
+  try {
+    const result = unwrap(await sceneService.setVisionRenderMode(sceneId, cameraId, mode));
+    visionRenderMode.value = result.mode || mode;
+    if (camera.value) {
+      camera.value.vision_render_mode = visionRenderMode.value;
+    }
+  } catch (error) {
+    errorText.value = error.message;
+  }
 };
 
 const changeOutput = async () => {
@@ -607,6 +670,7 @@ onMounted(async () => {
   window.addEventListener('keyup', onKeyUp);
   window.addEventListener('storage', handleViewportUiCalibrationStorage);
   coronaEventBus.on('viewport-ui-calibration-changed', handleViewportUiCalibrationChanged);
+  coronaEventBus.on('vision-scene-imported', handleVisionSceneImported);
   animationFrame = requestAnimationFrame(movementFrame);
 });
 
@@ -621,6 +685,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('storage', handleViewportUiCalibrationStorage);
   coronaEventBus.off('viewport-ui-calibration-changed', handleViewportUiCalibrationChanged);
   viewportUiPointerController.dispose();
+  coronaEventBus.off('vision-scene-imported', handleVisionSceneImported);
 });
 </script>
 
@@ -706,6 +771,12 @@ onBeforeUnmount(() => {
 .control { padding: 0 5px; }
 .dropdown { position: relative; }
 .dropdown-trigger { min-width: 66px; cursor: pointer; }
+.vision-mode-trigger {
+  max-width: 146px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .dropdown-menu {
   position: absolute;
   z-index: 5;
@@ -734,6 +805,7 @@ onBeforeUnmount(() => {
 .dropdown-menu button:hover { background: rgba(255, 255, 255, 0.12); }
 .dropdown-menu button:disabled { color: #777; cursor: default; }
 .output-menu { min-width: 92px; }
+.vision-mode-menu { min-width: 148px; }
 .speed, .resolution { display: flex; align-items: center; gap: 3px; font-size: 10px; }
 .speed input { width: 54px; padding: 0 4px; }
 .resolution input { width: 58px; padding: 0 4px; }

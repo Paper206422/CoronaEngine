@@ -46,19 +46,19 @@ void update_accel_transforms(const GeometryData &data, Accel &accel) {
     }
 }
 
-void rebuild_accel(GeometryData &data, Pipeline &pipeline, Accel &accel) {
+void rebuild_accel(GeometryData &data, Device &device, BindlessArray &bindless_array,
+                   Stream &stream, Accel &accel) {
     accel.clear();
     if (data.instances().empty()) {
         return;
     }
 
-    Stream &stream = pipeline.stream();
     for (const auto &inst : data.instances()) {
         uint mesh_id = inst.mesh_id;
         const auto &mesh_handle = data.mesh_handles()[mesh_id];
-        BufferView<Vertex> vert_buffer = pipeline.bindless_array().buffer_view<Vertex>(mesh_handle.vertex_buffer);
-        BufferView<Triangle> tri_buffer = pipeline.bindless_array().buffer_view<Triangle>(mesh_handle.triangle_buffer);
-        ocarina::RHIMesh mesh = pipeline.device().create_mesh(vert_buffer, tri_buffer);
+        BufferView<Vertex> vert_buffer = bindless_array.buffer_view<Vertex>(mesh_handle.vertex_buffer);
+        BufferView<Triangle> tri_buffer = bindless_array.buffer_view<Triangle>(mesh_handle.triangle_buffer);
+        ocarina::RHIMesh mesh = device.create_mesh(vert_buffer, tri_buffer);
         stream << mesh.build_bvh();
         accel.add_instance(ocarina::move(mesh), inst.o2w());
     }
@@ -71,8 +71,8 @@ void rebuild_accel(GeometryData &data, Pipeline &pipeline, Accel &accel) {
 
 }// namespace
 
-GeometryData::GeometryData(BindlessArray &bindless) noexcept
-    : instances_(bindless), mesh_handles_(bindless) {}
+GeometryData::GeometryData(Device &device, BindlessArray &bindless) noexcept
+    : device_(&device), bindless_array_(&bindless), instances_(bindless), mesh_handles_(bindless) {}
 
 void GeometryData::add_instance(InstanceData instance) noexcept {
     instances_.push_back(std::move(instance));
@@ -82,9 +82,9 @@ void GeometryData::add_mesh_handle(MeshHandle handle) noexcept {
     mesh_handles_.push_back(handle);
 }
 
-void GeometryData::reset_gpu_buffers(Device &device) noexcept {
-    instances_.reset_device_buffer_immediately(device, "Geometry::instances_");
-    mesh_handles_.reset_device_buffer_immediately(device, "Geometry::mesh_handles_");
+void GeometryData::reset_gpu_buffers() noexcept {
+    instances_.reset_device_buffer_immediately(device(), "Geometry::instances_");
+    mesh_handles_.reset_device_buffer_immediately(device(), "Geometry::mesh_handles_");
     instances_.register_self();
     mesh_handles_.register_self();
 }
@@ -109,6 +109,7 @@ bool GeometryData::contain_mesh(uint64_t hash) noexcept {
 SP<Mesh> GeometryData::register_mesh(SP<Mesh> mesh) noexcept {
     uint64_t hash = mesh->hash();
     if (!contain_mesh(hash)) {
+        mesh->update_data(device(), bindless_array());
         mesh_map_.insert(make_pair(hash, mesh));
         meshes_.push_back(mesh.get());
     }
@@ -188,79 +189,101 @@ void GeometryData::clear_meshes() noexcept {
 
 Geometry::Geometry() = default;
 
-void Geometry::init(Pipeline *rp) {
-    rp_ = rp;
-    data_ = make_unique<GeometryData>(rp_->bindless_array());
-    accel_ = rp_->device().create_accel(FAST_UPDATE);
+GeometryGpuResource::GeometryGpuResource(Device &device) noexcept
+    : device_(&device),
+      bindless_array_(device.create_bindless_array()),
+      data_(device, bindless_array_),
+      accel_(device.create_accel(FAST_UPDATE)) {}
+
+void Geometry::init(Device &device) {
+    bind_gpu_resource(make_shared<GeometryGpuResource>(device));
+}
+
+void Geometry::bind_gpu_resource(SP<GeometryGpuResource> resource) noexcept {
+    gpu_resource_ = std::move(resource);
 }
 
 void Geometry::update_instances(const vector<SP<ShapeInstance>> &instances) {
-    data_->clear_host();
+    auto &geometry_data = gpu_resource_->data();
+    geometry_data.clear_host();
 
-    data_->for_each_mesh([&](const Mesh *mesh, uint i) {
+    geometry_data.for_each_mesh([&](const Mesh *mesh, uint i) {
         MeshHandle mesh_handle{.vertex_buffer = mesh->vertex_buffer().index().hv(),
                                .triangle_buffer = mesh->triangle_buffer().index().hv()};
-        data_->add_mesh_handle(mesh_handle);
+        geometry_data.add_mesh_handle(mesh_handle);
     });
 
     std::for_each(instances.begin(), instances.end(), [&](SP<const ShapeInstance> instance) {
-        data_->add_instance(instance->handle());
+        geometry_data.add_instance(instance->handle());
     });
 }
 
-void Geometry::update_accel() {
+void Geometry::update_accel(Stream &stream) {
     TIMER(update_accel);
-    vector<uint> current_mesh_ids = collect_instance_mesh_ids(*data_);
-    if (data_->instances().empty()) {
-        accel_.clear();
-        accel_mesh_ids_.clear();
+    auto &resource = *gpu_resource_;
+    auto &geometry_data = resource.data();
+    auto &accel = resource.accel();
+    auto &accel_mesh_ids = resource.accel_mesh_ids();
+    vector<uint> current_mesh_ids = collect_instance_mesh_ids(geometry_data);
+    if (geometry_data.instances().empty()) {
+        accel.clear();
+        accel_mesh_ids.clear();
         return;
     }
-    if (!can_update_tlas(*data_, accel_mesh_ids_, accel_)) {
-        rebuild_accel(*data_, *rp_, accel_);
-        accel_mesh_ids_ = ocarina::move(current_mesh_ids);
+    if (!can_update_tlas(geometry_data, accel_mesh_ids, accel)) {
+        rebuild_accel(geometry_data, resource.device(), resource.bindless_array(), stream, accel);
+        accel_mesh_ids = ocarina::move(current_mesh_ids);
         return;
     }
 
-    update_accel_transforms(*data_, accel_);
-    Stream &stream = rp_->stream();
-    stream << accel_.update_bvh();
+    update_accel_transforms(geometry_data, accel);
+    stream << accel.update_bvh();
     stream << synchronize();
     stream << commit();
-    accel_mesh_ids_ = ocarina::move(current_mesh_ids);
+    accel_mesh_ids = ocarina::move(current_mesh_ids);
 }
 
-void Geometry::build_accel() {
+void Geometry::build_accel(Stream &stream) {
     TIMER(build_accel);
-    rebuild_accel(*data_, *rp_, accel_);
-    accel_mesh_ids_ = collect_instance_mesh_ids(*data_);
+    auto &resource = *gpu_resource_;
+    rebuild_accel(resource.data(), resource.device(), resource.bindless_array(), stream, resource.accel());
+    resource.accel_mesh_ids() = collect_instance_mesh_ids(resource.data());
 }
 
 void Geometry::reset_device_buffer() {
-    data_->reset_gpu_buffers(rp_->device());
+    gpu_resource_->data().reset_gpu_buffers();
 }
 
-void Geometry::upload() const {
-    Stream &stream = rp_->stream();
-    stream << data_->upload_meshes()
-           << data_->mesh_handles().upload()
-           << data_->instances().upload()
+void Geometry::upload(Stream &stream) {
+    auto &geometry_data = gpu_resource_->data();
+    stream << geometry_data.upload_meshes()
+           << geometry_data.mesh_handles().upload()
+           << geometry_data.instances().upload()
            << synchronize();
     stream << commit();
 }
 
+void Geometry::upload_bindless_array(Stream &stream) {
+    auto &bindless = gpu_resource_->bindless_array();
+    stream << bindless.update_slotSOA() << synchronize() << commit();
+    stream << bindless.upload_handles() << synchronize() << commit();
+}
+
 void Geometry::clear() noexcept {
-    data_->clear_all();
-    accel_.clear();
-    accel_mesh_ids_.clear();
+    if (!gpu_resource_) {
+        return;
+    }
+    gpu_resource_->data().clear_all();
+    gpu_resource_->accel().clear();
+    gpu_resource_->accel_mesh_ids().clear();
 }
 
 Interaction Geometry::compute_surface_interaction(const TriangleHitVar &hit, bool is_complete) const noexcept {
-    Interaction it{Global::instance().pipeline()->scene().process_mediums()};
+    Interaction it{process_mediums_};
     it.prim_id = hit.prim_id;
-    Var inst = data_->instances().read(hit.inst_id);
+    Var inst = data()->instances().read(hit.inst_id);
     it.inst_id = hit.inst_id;
-    Var mesh = data_->mesh_handles().read(inst.mesh_id);
+    Var mesh = data()->mesh_handles().read(inst.mesh_id);
     auto o2w = Transform(inst->o2w());
     Var tri = get_triangle(mesh.triangle_buffer, hit.prim_id);
     auto [v0, v1, v2] = get_vertices(mesh.vertex_buffer, tri);
@@ -346,11 +369,11 @@ Interaction Geometry::compute_surface_interaction(const TriangleHitVar &hit, boo
 }
 
 TriangleHitVar Geometry::trace_closest(const RayVar &ray) const noexcept {
-    return accel_.trace_closest(ray);
+    return gpu_resource_->accel().trace_closest(ray);
 }
 
 Bool Geometry::trace_occlusion(const RayVar &ray) const noexcept {
-    return accel_.trace_occlusion(ray);
+    return gpu_resource_->accel().trace_occlusion(ray);
 }
 
 Bool Geometry::occluded(const Interaction &it, const Float3 &pos, RayState *rs) const noexcept {
@@ -378,12 +401,12 @@ SampledSpectrum Geometry::Tr(Scene &scene, TSampler &sampler, const SampledWavel
 }
 
 TriangleVar Geometry::get_triangle(const Uint &buffer_index, const Uint &index) const noexcept {
-    return rp_->bindless_array().buffer_var<Triangle>(buffer_index).read(index);
+    return bindless_array().buffer_var<Triangle>(buffer_index).read(index);
 }
 
 array<Var<Vertex>, 3> Geometry::get_vertices(const Uint &buffer_index,
                                              const Var<Triangle> &tri) const noexcept {
-    BindlessArrayBuffer<Vertex> buffer = rp_->bindless_array().buffer_var<Vertex>(buffer_index);
+    BindlessArrayBuffer<Vertex> buffer = bindless_array().buffer_var<Vertex>(buffer_index);
     return {buffer.read(tri.i),
             buffer.read(tri.j),
             buffer.read(tri.k)};

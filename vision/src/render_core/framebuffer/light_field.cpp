@@ -672,6 +672,16 @@ public:
         return enable_accumulation() ? encoded_accum_buffer_.view() : encoded_buffer_.view();
     }
 
+    [[nodiscard]] CommandBatch clear_accumulation_history() const noexcept override {
+        CommandBatch ret;
+        ret << FrameBuffer::clear_accumulation_history();
+        if (encoded_accum_buffer_.device_buffer().size() != 0) {
+            ret << pipeline()->reset_buffer(encoded_accum_buffer_.view(), make_float4(0.f),
+                                            "LightField::clear_encoded_accum_history");
+        }
+        return ret;
+    }
+
     /// Final presentation stage for light field:
     /// post_path_tracing() has already executed encode_lightfield() into encoded_buffer_.
     /// Here we optionally accumulate (pixel-sized) then tone-map into output buffer.

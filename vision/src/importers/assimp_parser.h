@@ -13,6 +13,8 @@
 
 namespace vision {
 
+class Scene;
+
 namespace assimp {
 
 [[nodiscard]] float2 from_vec2(aiVector2D vec) noexcept {
@@ -38,8 +40,11 @@ private:
     Assimp::Importer ai_importer_;
     const aiScene *ai_scene_{};
     fs::path directory_;
+    Scene *target_scene_{};
 
 public:
+    void set_target_scene(Scene *scene) noexcept { target_scene_ = scene; }
+    [[nodiscard]] Scene *target_scene() const noexcept { return target_scene_; }
     const aiScene *load_scene(const fs::path &fn,
                               bool swap_handed = false, bool smooth = true,
                               bool flip_uv = false);

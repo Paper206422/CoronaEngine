@@ -50,12 +50,28 @@ void LightSampler::update_runtime_object(const vision::IObjectConstructor *const
     light_manager_->update_runtime_object(constructor);
 }
 
-void LightSampler::prepare() noexcept {
+void LightSampler::prepare(BindlessArray &bindless_array, Device &device) noexcept {
     for_each([&](TLight light, uint index) noexcept {
         light->prepare();
     });
+    lights().prepare(bindless_array, device);
+}
+
+void LightSampler::prepare() noexcept {
+    if (auto *bindless = Global::instance().scene_bindless_array()) {
+        if (auto *device = Global::instance().scene_device()) {
+            prepare(*bindless, *device);
+            return;
+        }
+    }
     auto rp = pipeline();
-    lights().prepare(rp->bindless_array(), rp->device());
+    OC_ASSERT(rp != nullptr);
+    if (rp->scene().geometry().has_gpu_resource()) {
+        prepare(rp->scene().geometry().bindless_array(),
+                rp->scene().geometry().gpu_resource()->device());
+        return;
+    }
+    prepare(rp->bindless_array(), rp->device());
 }
 
 void LightSampler::update_device_data() const noexcept {

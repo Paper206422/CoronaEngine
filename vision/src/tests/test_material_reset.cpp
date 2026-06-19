@@ -168,6 +168,7 @@ int main() {
     pipeline->scene().add_material(diffuse);
     pipeline->scene().add_material(principled);
     pipeline->scene().prepare_materials();
+    pipeline->upload_scene_bindless_array();
     pipeline->upload_bindless_array();
 
     uint before_id = material_set.encode_id(0u, principled.get());
@@ -179,6 +180,7 @@ int main() {
     bool replaced = material_set.replace(1, replacement);
     expect(replaced, "replace must succeed");
     pipeline->scene().prepare_materials();
+    pipeline->upload_scene_bindless_array();
     pipeline->upload_bindless_array();
 
     uint after_id = material_set.encode_id(0u, replacement.get());
