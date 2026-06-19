@@ -1,8 +1,16 @@
 #include "imgui_ui.h"
 
 #include <corona/kernel/core/i_logger.h>
+#include <corona/resource/resource_manager.h>
+#include <corona/resource/types/image.h>
 #include <corona/systems/ui/vulkan_backend.h>
 #include <imgui_impl_sdl3.h>
+
+#include <algorithm>
+#include <filesystem>
+#include <optional>
+#include <system_error>
+#include <vector>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -12,6 +20,93 @@
 #include "cef/cef_client.h"
 
 namespace Corona::Systems::UI {
+
+namespace {
+constexpr int kViewportCursorPixels = 48;
+constexpr char kMouseIconRelativePath[] = "assets/icon/mouse_icon.png";
+
+struct CursorIconPixels {
+    std::vector<unsigned char> rgba;
+    int width = 0;
+    int height = 0;
+};
+
+std::filesystem::path find_mouse_icon_path() {
+    std::error_code ec;
+    auto current = std::filesystem::current_path(ec);
+    if (!ec) {
+        for (auto dir = current; !dir.empty(); dir = dir.parent_path()) {
+            auto candidate = dir / kMouseIconRelativePath;
+            if (std::filesystem::exists(candidate, ec) && !ec) {
+                return candidate;
+            }
+            ec.clear();
+            if (dir == dir.parent_path()) {
+                break;
+            }
+        }
+    }
+    return std::filesystem::path(kMouseIconRelativePath);
+}
+
+std::optional<CursorIconPixels> load_mouse_icon_pixels() {
+    const auto icon_path = find_mouse_icon_path();
+    const auto image_id = Resource::ResourceManager::get_instance().import_sync(icon_path);
+    if (image_id == Resource::IResource::INVALID_UID) {
+        CFW_LOG_WARNING("Viewport cursor icon load failed: {}", icon_path.string());
+        return std::nullopt;
+    }
+
+    auto image = Resource::ResourceManager::get_instance().acquire_read<Resource::Image>(image_id);
+    if (!image || image->get_width() <= 0 || image->get_height() <= 0 || image->get_data() == nullptr) {
+        CFW_LOG_WARNING("Viewport cursor icon data invalid: {}", icon_path.string());
+        return std::nullopt;
+    }
+
+    CursorIconPixels pixels;
+    pixels.width = image->get_width();
+    pixels.height = image->get_height();
+    const int channels = image->get_channels();
+    const auto pixel_count = static_cast<size_t>(pixels.width) * static_cast<size_t>(pixels.height);
+    pixels.rgba.resize(pixel_count * 4);
+    const unsigned char* src = image->get_data();
+    if (channels == 4) {
+        std::copy(src, src + pixel_count * 4, pixels.rgba.begin());
+    } else if (channels == 3) {
+        for (size_t i = 0; i < pixel_count; ++i) {
+            pixels.rgba[i * 4 + 0] = src[i * 3 + 0];
+            pixels.rgba[i * 4 + 1] = src[i * 3 + 1];
+            pixels.rgba[i * 4 + 2] = src[i * 3 + 2];
+            pixels.rgba[i * 4 + 3] = 255;
+        }
+    } else if (channels == 1) {
+        for (size_t i = 0; i < pixel_count; ++i) {
+            pixels.rgba[i * 4 + 0] = src[i];
+            pixels.rgba[i * 4 + 1] = src[i];
+            pixels.rgba[i * 4 + 2] = src[i];
+            pixels.rgba[i * 4 + 3] = 255;
+        }
+    } else {
+        CFW_LOG_WARNING("Viewport cursor icon has unsupported channel count: {}", channels);
+        return std::nullopt;
+    }
+    return pixels;
+}
+
+std::vector<unsigned char> resize_cursor_icon(const CursorIconPixels& src, int width, int height) {
+    std::vector<unsigned char> dst(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+    for (int y = 0; y < height; ++y) {
+        const int src_y = std::min(src.height - 1, (y * src.height) / height);
+        for (int x = 0; x < width; ++x) {
+            const int src_x = std::min(src.width - 1, (x * src.width) / width);
+            const size_t src_offset = (static_cast<size_t>(src_y) * src.width + src_x) * 4;
+            const size_t dst_offset = (static_cast<size_t>(y) * width + x) * 4;
+            std::copy_n(src.rgba.data() + src_offset, 4, dst.data() + dst_offset);
+        }
+    }
+    return dst;
+}
+}  // namespace
 
 // ============================================================================
 // SDL/ImGui 生命周期管理
@@ -182,8 +277,39 @@ void UiLayoutManager::end_dockspace() {
     }
 }
 
+SDL_Cursor* UiFrameRunner::ensure_viewport_system_cursor() {
+    if (viewport_system_cursor_ || viewport_system_cursor_load_attempted_) {
+        return viewport_system_cursor_;
+    }
+    viewport_system_cursor_load_attempted_ = true;
+
+    auto pixels = load_mouse_icon_pixels();
+    if (!pixels) {
+        return nullptr;
+    }
+
+    auto resized = resize_cursor_icon(*pixels, kViewportCursorPixels, kViewportCursorPixels);
+    SDL_Surface* surface = SDL_CreateSurfaceFrom(kViewportCursorPixels,
+                                                 kViewportCursorPixels,
+                                                 SDL_PIXELFORMAT_RGBA32,
+                                                 resized.data(),
+                                                 kViewportCursorPixels * 4);
+    if (!surface) {
+        CFW_LOG_WARNING("Viewport cursor SDL surface creation failed: {}", SDL_GetError());
+        return nullptr;
+    }
+
+    viewport_system_cursor_ = SDL_CreateColorCursor(surface, 0, 0);
+    SDL_DestroySurface(surface);
+    if (!viewport_system_cursor_) {
+        CFW_LOG_WARNING("Viewport cursor creation failed: {}", SDL_GetError());
+    }
+    return viewport_system_cursor_;
+}
+
 void UiFrameRunner::apply_system_cursor_visibility(SDL_Window* main_window, int active_tab_id) {
     bool should_hide = false;
+    bool should_use_custom = false;
     SDL_Window* mouse_window = SDL_GetMouseFocus();
     const SDL_WindowID mouse_window_id = mouse_window ? SDL_GetWindowID(mouse_window) : 0;
 
@@ -194,11 +320,13 @@ void UiFrameRunner::apply_system_cursor_visibility(SDL_Window* main_window, int 
             }
             if (tab->camera_view && tab->platform_window_id == mouse_window_id) {
                 should_hide = tab->hide_system_cursor.load(std::memory_order_relaxed);
+                should_use_custom = tab->use_custom_system_cursor.load(std::memory_order_relaxed);
                 break;
             }
             if (!tab->camera_view && tab->docking_pos == "main" && main_window &&
                 mouse_window == main_window && tab_id == active_tab_id) {
                 should_hide = tab->hide_system_cursor.load(std::memory_order_relaxed);
+                should_use_custom = tab->use_custom_system_cursor.load(std::memory_order_relaxed);
                 break;
             }
         }
@@ -215,6 +343,21 @@ void UiFrameRunner::apply_system_cursor_visibility(SDL_Window* main_window, int 
     if (system_cursor_hidden_) {
         SDL_ShowCursor();
         system_cursor_hidden_ = false;
+    }
+
+    if (should_use_custom) {
+        if (SDL_Cursor* cursor = ensure_viewport_system_cursor()) {
+            SDL_SetCursor(cursor);
+            system_cursor_custom_ = true;
+            return;
+        }
+    }
+
+    if (system_cursor_custom_) {
+        if (SDL_Cursor* default_cursor = SDL_GetDefaultCursor()) {
+            SDL_SetCursor(default_cursor);
+        }
+        system_cursor_custom_ = false;
     }
 }
 // ============================================================================

@@ -86,6 +86,7 @@ class OpticsSystem : public Kernel::SystemBase {
     bool initialize_vision_backend_if_enabled();
     bool initialize_hardware_resources();
     bool initialize_render_pipelines();
+    bool ensure_cursor_icon_texture();
 
     void bind_native_view_resources(std::uintptr_t camera_handle,
                                     uint32_t width,

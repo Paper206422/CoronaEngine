@@ -50,7 +50,7 @@ struct CameraWindowModeState {
 
 static std::unordered_map<int, CameraWindowModeState> s_camera_window_modes;
 
-bool set_browser_tab_system_cursor_hidden(CefRefPtr<CefBrowser> browser, bool hidden) {
+bool set_browser_tab_system_cursor_state(CefRefPtr<CefBrowser> browser, bool hidden, bool custom) {
     if (!browser) {
         return false;
     }
@@ -63,6 +63,7 @@ bool set_browser_tab_system_cursor_hidden(CefRefPtr<CefBrowser> browser, bool hi
         auto tab_browser = tab->client->GetBrowser();
         if (tab_browser && tab_browser->GetIdentifier() == browser_id) {
             tab->hide_system_cursor.store(hidden, std::memory_order_relaxed);
+            tab->use_custom_system_cursor.store(custom, std::memory_order_relaxed);
             return true;
         }
     }
@@ -782,7 +783,7 @@ bool handle_viewport_system_cursor(CefRefPtr<CefBrowser> browser,
                                    const CefRefPtr<CefProcessMessage>& message) {
     auto args = message->GetArgumentList();
     if (!args || args->GetSize() < 1) {
-        CFW_LOG_WARNING("ViewportSystemCursor dropped: expected (hidden)");
+        CFW_LOG_WARNING("ViewportSystemCursor dropped: expected (hidden[, custom])");
         return true;
     }
 
@@ -794,7 +795,17 @@ bool handle_viewport_system_cursor(CefRefPtr<CefBrowser> browser,
         hidden = get_numeric_arg(args, 0, numeric) && numeric != 0.0;
     }
 
-    if (!set_browser_tab_system_cursor_hidden(browser, hidden)) {
+    bool custom = hidden;
+    if (args->GetSize() > 1) {
+        if (args->GetType(1) == VTYPE_BOOL) {
+            custom = args->GetBool(1);
+        } else {
+            double numeric = 0.0;
+            custom = get_numeric_arg(args, 1, numeric) && numeric != 0.0;
+        }
+    }
+
+    if (!set_browser_tab_system_cursor_state(browser, hidden, custom)) {
         CFW_LOG_WARNING("ViewportSystemCursor dropped: browser tab not found");
     }
     return true;

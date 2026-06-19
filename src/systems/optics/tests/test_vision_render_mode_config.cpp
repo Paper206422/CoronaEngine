@@ -3,6 +3,7 @@
 #include "base/import/json_util.h"
 #include "base/import/project_desc.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -20,6 +21,12 @@ using Corona::CameraVisionRenderMode;
 
 void expect(bool condition, std::string_view message) {
     if (!condition) {
+        fail(message);
+    }
+}
+
+void expect_near(float actual, float expected, std::string_view message) {
+    if (std::abs(actual - expected) > 0.0001f) {
         fail(message);
     }
 }
@@ -142,6 +149,75 @@ void missing_blocks_are_created_for_requested_mode() {
            "missing render block should be created for svgf denoiser");
 }
 
+void ssat_defaults_from_cbox_lf_are_applied_to_minimal_scene() {
+    vision::DataWrap data = vision::DataWrap::object();
+    Corona::Systems::Vision::configure_vision_scene_for_mode(
+        data, CameraVisionRenderMode::SSAT);
+
+    auto& denoiser_param =
+        data["render"]["integrator"]["param"]["denoiser"]["param"];
+    expect_near(denoiser_param["rho_base"].get<float>(), 1.0f,
+                "SSAT should default rho_base from cbox-lf");
+    expect_near(denoiser_param["sigma_lum"].get<float>(), 6.0f,
+                "SSAT should default sigma_lum from cbox-lf");
+    expect_near(denoiser_param["sigma_depth_angular"].get<float>(), 100.0f,
+                "SSAT should default sigma_depth_angular from cbox-lf");
+    expect_near(denoiser_param["sigma_x"].get<float>(), 3.0f,
+                "SSAT should default sigma_x from cbox-lf");
+    expect_near(denoiser_param["sigma_u"].get<float>(), 0.5f,
+                "SSAT should default sigma_u from cbox-lf");
+    expect_near(denoiser_param["angular_range"].get<float>(), 1.0f,
+                "SSAT should default angular_range from cbox-lf");
+    expect(denoiser_param["spatial_radius"].get<int>() == 1,
+           "SSAT should default spatial_radius from cbox-lf");
+    expect(denoiser_param["angular_samples"].get<int>() == 7,
+           "SSAT should default angular_samples from cbox-lf");
+    expect(denoiser_param["enabled"].get<bool>(),
+           "SSAT should default enabled from cbox-lf");
+    expect(denoiser_param["use_adaptive_sampling"].get<bool>(),
+           "SSAT should default adaptive sampling from cbox-lf");
+
+    auto& frame_buffer_param = data["pipeline"]["param"]["frame_buffer"]["param"];
+    expect(frame_buffer_param["accumulation"].get<bool>(),
+           "SSAT lightfield framebuffer should default accumulation from cbox-lf");
+    expect(frame_buffer_param["lenticular"]["num_views"].get<int>() == 48,
+           "SSAT lightfield framebuffer should default num_views from cbox-lf");
+    expect(frame_buffer_param["lenticular"]["res_w"].get<int>() == 1280,
+           "SSAT lightfield framebuffer should default res_w from cbox-lf");
+    expect(frame_buffer_param["lenticular"]["res_h"].get<int>() == 720,
+           "SSAT lightfield framebuffer should default res_h from cbox-lf");
+    expect_near(frame_buffer_param["geometry"]["d_f"].get<float>(), 4.2f,
+                "SSAT lightfield framebuffer should default d_f from cbox-lf");
+    expect_near(frame_buffer_param["geometry"]["array_angle_deg"].get<float>(),
+                5.0f,
+                "SSAT lightfield framebuffer should default array angle from cbox-lf");
+}
+
+void ssat_defaults_do_not_override_existing_values() {
+    auto data = make_base_scene();
+    data["render"]["integrator"]["param"]["denoiser"]["param"]["sigma_lum"] = 2.5f;
+    data["render"]["integrator"]["param"]["denoiser"]["param"]
+        ["angular_samples"] = 5;
+    data["pipeline"]["param"]["frame_buffer"]["param"]["lenticular"]
+        ["num_views"] = 24;
+
+    Corona::Systems::Vision::configure_vision_scene_for_mode(
+        data, CameraVisionRenderMode::SSAT);
+
+    auto& denoiser_param =
+        data["render"]["integrator"]["param"]["denoiser"]["param"];
+    expect_near(denoiser_param["sigma_lum"].get<float>(), 2.5f,
+                "SSAT defaults should not override custom sigma_lum");
+    expect(denoiser_param["angular_samples"].get<int>() == 5,
+           "SSAT defaults should not override custom angular_samples");
+    expect(data["pipeline"]["param"]["frame_buffer"]["param"]["lenticular"]
+               ["num_views"]
+                   .get<int>() == 24,
+           "SSAT framebuffer defaults should not override custom num_views");
+    expect_near(denoiser_param["sigma_depth_angular"].get<float>(), 100.0f,
+                "SSAT defaults should still fill missing denoiser values");
+}
+
 void mode_names_and_denoise_flags_are_stable() {
     expect(Corona::Systems::Vision::vision_render_mode_name(
                CameraVisionRenderMode::PathTracing) == "path_tracing",
@@ -211,6 +287,8 @@ int main() {
     svgf_rewrites_ssat_scene_to_normal_svgf();
     ssat_rewrites_svgf_scene_to_lightfield_ssat();
     missing_blocks_are_created_for_requested_mode();
+    ssat_defaults_from_cbox_lf_are_applied_to_minimal_scene();
+    ssat_defaults_do_not_override_existing_values();
     cbox_lf_scene_supports_pt_and_ssat_mode_import();
     return 0;
 }

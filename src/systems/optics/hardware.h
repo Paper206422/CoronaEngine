@@ -35,6 +35,8 @@ struct Hardware {
 
     // === Final composited output ===
     HardwareImage finalOutputImage;
+    HardwareImage cursorIconImage;
+    bool cursorIconLoadAttempted = false;
     HardwareExecutor executor;
 
     // === Uniform buffers ===

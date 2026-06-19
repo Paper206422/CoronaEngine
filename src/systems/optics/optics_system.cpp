@@ -17,6 +17,8 @@
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <optional>
+#include <utility>
 #include <system_error>
 #include <string>
 #include <string_view>
@@ -61,6 +63,76 @@ struct RenderInstanceBatch {
         actorHandles.clear();
     }
 };
+
+constexpr char kMouseIconRelativePath[] = "assets/icon/mouse_icon.png";
+
+struct CursorIconPixels {
+    std::vector<unsigned char> rgba;
+    int width = 0;
+    int height = 0;
+};
+
+std::filesystem::path find_mouse_icon_path() {
+    std::error_code ec;
+    auto current = std::filesystem::current_path(ec);
+    if (!ec) {
+        for (auto dir = current; !dir.empty(); dir = dir.parent_path()) {
+            auto candidate = dir / kMouseIconRelativePath;
+            if (std::filesystem::exists(candidate, ec) && !ec) {
+                return candidate;
+            }
+            ec.clear();
+            if (dir == dir.parent_path()) {
+                break;
+            }
+        }
+    }
+    return std::filesystem::path(kMouseIconRelativePath);
+}
+
+std::optional<CursorIconPixels> load_mouse_icon_pixels() {
+    const auto icon_path = find_mouse_icon_path();
+    const auto image_id = Corona::Resource::ResourceManager::get_instance().import_sync(icon_path);
+    if (image_id == Corona::Resource::IResource::INVALID_UID) {
+        CFW_LOG_WARNING("Optics cursor icon load failed: {}", icon_path.string());
+        return std::nullopt;
+    }
+
+    auto image = Corona::Resource::ResourceManager::get_instance().acquire_read<Corona::Resource::Image>(image_id);
+    if (!image || image->get_width() <= 0 || image->get_height() <= 0 || image->get_data() == nullptr) {
+        CFW_LOG_WARNING("Optics cursor icon data invalid: {}", icon_path.string());
+        return std::nullopt;
+    }
+
+    CursorIconPixels pixels;
+    pixels.width = image->get_width();
+    pixels.height = image->get_height();
+    const int channels = image->get_channels();
+    const auto pixel_count = static_cast<size_t>(pixels.width) * static_cast<size_t>(pixels.height);
+    pixels.rgba.resize(pixel_count * 4);
+    const unsigned char* src = image->get_data();
+    if (channels == 4) {
+        std::copy(src, src + pixel_count * 4, pixels.rgba.begin());
+    } else if (channels == 3) {
+        for (size_t i = 0; i < pixel_count; ++i) {
+            pixels.rgba[i * 4 + 0] = src[i * 3 + 0];
+            pixels.rgba[i * 4 + 1] = src[i * 3 + 1];
+            pixels.rgba[i * 4 + 2] = src[i * 3 + 2];
+            pixels.rgba[i * 4 + 3] = 255;
+        }
+    } else if (channels == 1) {
+        for (size_t i = 0; i < pixel_count; ++i) {
+            pixels.rgba[i * 4 + 0] = src[i];
+            pixels.rgba[i * 4 + 1] = src[i];
+            pixels.rgba[i * 4 + 2] = src[i];
+            pixels.rgba[i * 4 + 3] = 255;
+        }
+    } else {
+        CFW_LOG_WARNING("Optics cursor icon has unsupported channel count: {}", channels);
+        return std::nullopt;
+    }
+    return pixels;
+}
 
 [[nodiscard]] std::string normalize_scene_path_key(const std::string& raw_path) {
     if (raw_path.empty()) {
@@ -1301,6 +1373,45 @@ bool OpticsSystem::initialize_render_pipelines() {
     return true;
 }
 
+bool OpticsSystem::ensure_cursor_icon_texture() {
+    if (!hardware_) {
+        return false;
+    }
+    if (hardware_->cursorIconImage) {
+        return true;
+    }
+    if (hardware_->cursorIconLoadAttempted) {
+        return false;
+    }
+    hardware_->cursorIconLoadAttempted = true;
+
+    auto pixels = load_mouse_icon_pixels();
+    if (!pixels) {
+        return false;
+    }
+
+    HardwareImageCreateInfo create_info{};
+    create_info.width = static_cast<uint32_t>(pixels->width);
+    create_info.height = static_cast<uint32_t>(pixels->height);
+    create_info.arrayLayers = 1;
+    create_info.mipLevels = 1;
+    create_info.format = ImageFormat::RGBA8_UNORM;
+    create_info.usage = ImageUsage::SampledImage;
+
+    HardwareImage icon(create_info);
+    if (!icon) {
+        CFW_LOG_WARNING("Optics cursor icon GPU image creation failed");
+        return false;
+    }
+
+    HardwareExecutor executor;
+    executor << icon.copyFrom(pixels->rgba.data()) << executor.commit();
+    executor.waitForDeferredResources();
+    hardware_->cursorIconImage = std::move(icon);
+    CFW_LOG_INFO("Optics cursor icon uploaded ({}x{})", pixels->width, pixels->height);
+    return true;
+}
+
 void OpticsSystem::bind_native_view_resources(std::uintptr_t camera_handle,
                                               uint32_t width,
                                               uint32_t height,
@@ -2083,9 +2194,10 @@ HardwareImage* OpticsSystem::compose_surface_ui_overlay(
                                                &camera_basis, uiBatch);
 
     const bool stereo_ui = mode == ViewportUiMode::Stereo3D;
+    const bool cursor_icon_ready = stereo_ui && ensure_cursor_icon_texture();
     const auto cursor_it = viewport_cursor_states_.find(camera_handle);
     const bool cursor_visible =
-        stereo_ui && cursor_it != viewport_cursor_states_.end() && cursor_it->second.visible &&
+        stereo_ui && cursor_icon_ready && cursor_it != viewport_cursor_states_.end() && cursor_it->second.visible &&
         cursor_it->second.cursor_shape != ViewportUiCursorShape::Hidden &&
         std::isfinite(cursor_it->second.x) && std::isfinite(cursor_it->second.y);
     const ViewportCursorState* cursor_state =
@@ -2149,7 +2261,7 @@ HardwareImage* OpticsSystem::compose_surface_ui_overlay(
         if (preserve_existing_overlay && hardware_->gbufferSize.x > 0u &&
             hardware_->gbufferSize.y > 0u) {
             constexpr int32_t kCursorPadding = 4;
-            constexpr uint32_t kCursorExtent = 32;
+            constexpr uint32_t kCursorExtent = 56;
             const auto cursor_x = static_cast<int32_t>(std::floor(cursor_state->x));
             const auto cursor_y = static_cast<int32_t>(std::floor(cursor_state->y));
             cursor_origin_x = static_cast<uint32_t>(std::max(cursor_x - kCursorPadding, 0));
@@ -2169,6 +2281,8 @@ HardwareImage* OpticsSystem::compose_surface_ui_overlay(
         opticsCursor.pushConsts.cursorY = cursor_state->y;
         opticsCursor.pushConsts.cursorShape =
             static_cast<std::uint32_t>(cursor_state->cursor_shape);
+        opticsCursor.pushConsts.cursorImage = hardware_->cursorIconImage.storeDescriptor();
+        opticsCursor.pushConsts.cursorSize = 48.0f;
         opticsCursor.pushConsts.preserveExisting = preserve_existing_overlay ? 1u : 0u;
         cursorDispatchX = (cursor_width + 7u) / 8u;
         cursorDispatchY = (cursor_height + 7u) / 8u;

@@ -149,7 +149,7 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
 
             if (name == "setViewportSystemCursorHidden") {
                 if (arguments.empty() || !arguments[0] || !arguments[0]->IsBool()) {
-                    exception = "setViewportSystemCursorHidden(hidden) requires (boolean)";
+                    exception = "setViewportSystemCursorHidden(hidden[, custom]) requires (boolean[, boolean])";
                     retval = CefV8Value::CreateBool(false);
                     return true;
                 }
@@ -158,9 +158,15 @@ class SubprocessRenderHandler : public CefRenderProcessHandler {
                     retval = CefV8Value::CreateBool(false);
                     return true;
                 }
+                const bool hidden = arguments[0]->GetBoolValue();
+                bool custom = hidden;
+                if (arguments.size() > 1 && arguments[1] && arguments[1]->IsBool()) {
+                    custom = arguments[1]->GetBoolValue();
+                }
                 CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("ViewportSystemCursor");
                 CefRefPtr<CefListValue> args = msg->GetArgumentList();
-                args->SetBool(0, arguments[0]->GetBoolValue());
+                args->SetBool(0, hidden);
+                args->SetBool(1, custom);
                 ctx->GetFrame()->SendProcessMessage(PID_BROWSER, msg);
                 retval = CefV8Value::CreateBool(true);
                 return true;

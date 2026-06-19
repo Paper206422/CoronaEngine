@@ -94,7 +94,7 @@ let pointerEnabled = true;
 const gatedPointerController = createViewportUiPointerController({
   getBridge: () => ({
     viewportUiPointer: (...args) => gatedPointerCalls.push(args),
-    setViewportSystemCursorHidden: (hidden) => gatedCursorCalls.push(hidden),
+    setViewportSystemCursorHidden: (...args) => gatedCursorCalls.push(args),
   }),
   getCameraHandle: () => 888,
   getEnabled: () => pointerEnabled,
@@ -107,20 +107,26 @@ assert.equal(gatedPointerController.send({
   clientY: 30,
 }, undefined, 'arrow'), true);
 assert.deepEqual(gatedPointerCalls.at(-1), [888, 'pointermove', 20, 30, 0, 0, 'arrow']);
-assert.deepEqual(gatedCursorCalls, [true]);
+assert.deepEqual(gatedCursorCalls, [[true, true]]);
 pointerEnabled = false;
 assert.equal(gatedPointerController.send({
   type: 'pointermove',
   clientX: 21,
   clientY: 31,
 }, undefined, 'arrow'), false);
-assert.deepEqual(gatedPointerCalls.at(-1), [888, 'pointerleave', 20, 30, 0, 0, 'hidden']);
-assert.deepEqual(gatedCursorCalls, [true, false]);
+assert.deepEqual(gatedPointerCalls.at(-1), [888, 'pointermove', 20, 30, 0, 0, 'arrow']);
+assert.deepEqual(gatedCursorCalls, [[true, true], [false, true]]);
 const callsAfterDisableHide = gatedPointerCalls.length;
+assert.equal(gatedPointerController.hide(), true);
+assert.deepEqual(gatedPointerCalls.at(-1), [888, 'pointerleave', 20, 30, 0, 0, 'hidden']);
+assert.deepEqual(gatedCursorCalls, [[true, true], [false, true], [false, false]]);
+const callsAfterExplicitHide = gatedPointerCalls.length;
 assert.equal(gatedPointerController.send({
   type: 'pointermove',
   clientX: 22,
   clientY: 32,
 }, undefined, 'arrow'), false);
-assert.equal(gatedPointerCalls.length, callsAfterDisableHide);
+assert.equal(gatedPointerCalls.length, callsAfterExplicitHide);
+assert.equal(callsAfterExplicitHide, callsAfterDisableHide + 1);
+assert.deepEqual(gatedCursorCalls, [[true, true], [false, true], [false, false], [false, true]]);
 console.log('viewport UI mode tests passed');
