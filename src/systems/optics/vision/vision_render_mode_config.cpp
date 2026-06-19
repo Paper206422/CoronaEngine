@@ -31,6 +31,51 @@ namespace {
     return parent[name];
 }
 
+template <typename T>
+void set_default_vision_json_value(::vision::DataWrap& parent, std::string_view key,
+                                   T value) {
+    const auto name = std::string(key);
+    if (!parent.contains(name)) {
+        parent[name] = value;
+    }
+}
+
+void apply_ssat_denoiser_defaults(::vision::DataWrap& denoiser_param) {
+    set_default_vision_json_value(denoiser_param, "rho_base", 1.0f);
+    set_default_vision_json_value(denoiser_param, "alpha_shear", 1.0f);
+    set_default_vision_json_value(denoiser_param, "sigma_lum", 6.0f);
+    set_default_vision_json_value(denoiser_param, "sigma_normal", 128.0f);
+    set_default_vision_json_value(denoiser_param, "sigma_depth_angular", 100.0f);
+    set_default_vision_json_value(denoiser_param, "sigma_x", 3.0f);
+    set_default_vision_json_value(denoiser_param, "sigma_u", 0.5f);
+    set_default_vision_json_value(denoiser_param, "beta", 1.0f);
+    set_default_vision_json_value(denoiser_param, "angular_range", 1.0f);
+    set_default_vision_json_value(denoiser_param, "spatial_radius", 1);
+    set_default_vision_json_value(denoiser_param, "angular_samples", 7);
+    set_default_vision_json_value(denoiser_param, "alpha_base", 0.1f);
+    set_default_vision_json_value(denoiser_param, "angular_bandwidth", 0.1f);
+    set_default_vision_json_value(denoiser_param, "enabled", true);
+    set_default_vision_json_value(denoiser_param, "use_adaptive_sampling", true);
+}
+
+void apply_ssat_framebuffer_defaults(::vision::DataWrap& frame_buffer_param) {
+    set_default_vision_json_value(frame_buffer_param, "accumulation", true);
+
+    auto& lenticular = ensure_vision_json_object(frame_buffer_param, "lenticular");
+    set_default_vision_json_value(lenticular, "pe", 19.1849f);
+    set_default_vision_json_value(lenticular, "angle", 0.2333f);
+    set_default_vision_json_value(lenticular, "offset", 10.0f);
+    set_default_vision_json_value(lenticular, "num_views", 48);
+    set_default_vision_json_value(lenticular, "res_w", 1280);
+    set_default_vision_json_value(lenticular, "res_h", 720);
+
+    auto& geometry = ensure_vision_json_object(frame_buffer_param, "geometry");
+    set_default_vision_json_value(geometry, "d_f", 4.2f);
+    set_default_vision_json_value(geometry, "fov_h_deg", 45.0f);
+    set_default_vision_json_value(geometry, "aspect", 0.75f);
+    set_default_vision_json_value(geometry, "array_angle_deg", 5.0f);
+}
+
 }  // namespace
 
 void configure_vision_scene_for_mode(::vision::DataWrap& data,
@@ -43,14 +88,20 @@ void configure_vision_scene_for_mode(::vision::DataWrap& data,
     auto& integrator_param = ensure_vision_json_object(integrator, "param");
     auto& denoiser = ensure_vision_json_object(integrator_param, "denoiser");
     denoiser["type"] = mode == CameraVisionRenderMode::SSAT ? "SSAT" : "svgf";
-    ensure_vision_json_object(denoiser, "param");
+    auto& denoiser_param = ensure_vision_json_object(denoiser, "param");
+    if (mode == CameraVisionRenderMode::SSAT) {
+        apply_ssat_denoiser_defaults(denoiser_param);
+    }
 
     auto& pipeline = ensure_vision_json_object(data, "pipeline");
     auto& pipeline_param = ensure_vision_json_object(pipeline, "param");
     auto& frame_buffer = ensure_vision_json_object(pipeline_param, "frame_buffer");
     frame_buffer["type"] =
         mode == CameraVisionRenderMode::SSAT ? "lightfield" : "normal";
-    ensure_vision_json_object(frame_buffer, "param");
+    auto& frame_buffer_param = ensure_vision_json_object(frame_buffer, "param");
+    if (mode == CameraVisionRenderMode::SSAT) {
+        apply_ssat_framebuffer_defaults(frame_buffer_param);
+    }
 }
 
 }  // namespace Corona::Systems::Vision
