@@ -354,12 +354,32 @@ class SceneTools(PluginBase):
                     continue
                 create_data = dict(actor_data)
                 create_data["_suppress_network_broadcast"] = True
-                result = SceneTools.create_actor_internal(
-                    scene_name,
-                    asset_path,
-                    create_data.get("actor_type", "model"),
-                    create_data,
-                )
+                try:
+                    result = SceneTools.create_actor_internal(
+                        scene_name,
+                        asset_path,
+                        create_data.get("actor_type", "model"),
+                        create_data,
+                    )
+                except FileNotFoundError as exc:
+                    logger.info(
+                        "apply_actor_sync_snapshot_internal: skip actor with missing asset "
+                        "scene=%s actor=%s guid=%s path=%s error=%s",
+                        scene_name,
+                        actor_data.get("name", ""),
+                        actor_guid,
+                        asset_path,
+                        exc,
+                    )
+                    warnings.append({
+                        "status": "warning",
+                        "code": "missing_asset",
+                        "actor_guid": actor_guid,
+                        "actor": actor_data.get("name", ""),
+                        "path": asset_path,
+                        "message": str(exc),
+                    })
+                    continue
                 actor_result = result.get("actor") if isinstance(result, dict) else None
                 if actor_result:
                     created.append(actor_result)

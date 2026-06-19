@@ -17,9 +17,18 @@ import json
 import logging
 import os
 import re
+import time
+import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_generated_asset_name(value: str, fallback: str = "scene") -> str:
+    text = re.sub(r"[^0-9A-Za-z_.\-\u4e00-\u9fff]+", "_", str(value or "").strip())
+    text = text.strip("._-")
+    return (text or fallback)[:48]
 
 
 def _build_room_box_obj(width: float, height: float, depth: float,
@@ -1337,6 +1346,27 @@ class SceneComposer:
         self._last_zone_decompose_text = ""
         self._fallback_room_aspects = []
         self._fallback_room_style_context = {}
+        self._generated_asset_abs_dir = None
+        self._generated_asset_rel_dir = None
+
+    def _generated_asset_dir(self) -> Tuple[Path, str]:
+        if self._generated_asset_abs_dir is not None and self._generated_asset_rel_dir:
+            return self._generated_asset_abs_dir, self._generated_asset_rel_dir
+
+        try:
+            from Quasar.ai_config.paths_config import _get_active_project_path
+            project_root = Path(_get_active_project_path()).resolve()
+        except Exception:
+            project_root = Path(os.getcwd()).resolve()
+
+        scene_slug = _safe_generated_asset_name(self.scene_name, "scene")
+        unique = f"{scene_slug}_{int(time.time() * 1000)}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+        abs_dir = project_root / "Resource" / "generated" / "scene_composer" / unique
+        abs_dir.mkdir(parents=True, exist_ok=True)
+        rel_dir = abs_dir.relative_to(project_root).as_posix()
+        self._generated_asset_abs_dir = abs_dir
+        self._generated_asset_rel_dir = rel_dir
+        return abs_dir, rel_dir
 
     def _get_room_zone(self):
         """返回用于"物体布局"的 Zone（物体摆进它的体积里）。
@@ -2354,17 +2384,17 @@ class SceneComposer:
         物体怎么碰撞都撑不开。盒内空心，物体在里面自由摆放。
         可在盒子四个上顶点放置观察摄像头供 VLM 审核调整视角。
         """
-        import os as _os, tempfile as _tf, time as _t
+        import os as _os, time as _t
 
         # M2 步骤 14a：尺寸从根 Zone 的 Volume 读（退化时等价于旧 room_size）。
         zone = self._get_room_zone()
         width, depth, height = zone.volume.size[0], zone.volume.size[1], zone.volume.size[2]
 
         # 1. 生成空心盒子 OBJ（六面体，面法向内）
-        tmp_dir = _os.path.join(_tf.gettempdir(), "corona_room_box")
-        _os.makedirs(tmp_dir, exist_ok=True)
-        mtl_path = _os.path.join(tmp_dir, "box.mtl")
-        obj_path = _os.path.join(tmp_dir, "box.obj")
+        asset_dir, asset_rel_dir = self._generated_asset_dir()
+        mtl_path = asset_dir / "box.mtl"
+        obj_path = asset_dir / "box.obj"
+        box_route = f"{asset_rel_dir}/box.obj"
         surface_params = _aspect_params(zone, "interior_surface")
         skin = _derive_room_skin_materials(
             surface_params,
@@ -2425,7 +2455,7 @@ class SceneComposer:
 
         # 3. 单个盒子 Actor
         try:
-            actor = Actor(name="__room_box", route=obj_path, actor_type="mesh",
+            actor = Actor(name="__room_box", route=box_route, actor_type="mesh",
                           parent_scene=scene)
             # 盒子中心在房间中心，底部 Y=0
             actor.set_position([0.0, height / 2.0, 0.0], True)
@@ -2451,7 +2481,7 @@ class SceneComposer:
         的 footprint 范围）强制 h=0，保护建筑/家具落点；平台外按 terrain_profile 起伏。
         关键：mesh 用世界坐标，Actor scale=[1,1,1]（不再缩放，否则 h 不随 x/z 缩放会错乱）。
         """
-        import os as _os, tempfile as _tf, time as _t
+        import time as _t
 
         size = zone.volume.size
         width = size[0] if len(size) > 0 else 20.0
@@ -2501,11 +2531,11 @@ class SceneComposer:
             "openness": _float_param(profile_params, "openness", 0.5),
         })
 
-        tmp_dir = _os.path.join(_tf.gettempdir(), "corona_room_box")
-        _os.makedirs(tmp_dir, exist_ok=True)
+        asset_dir, asset_rel_dir = self._generated_asset_dir()
         terrain_mtl_name = "terrain_style.mtl"
-        grass_mtl_path = _os.path.join(tmp_dir, terrain_mtl_name)
-        terrain_path = _os.path.join(tmp_dir, "terrain.obj")
+        grass_mtl_path = asset_dir / terrain_mtl_name
+        terrain_path = asset_dir / "terrain.obj"
+        terrain_route = f"{asset_rel_dir}/terrain.obj"
         material = str(getattr(profile, "material", "neutral") or "neutral")
         secondary_material = str(getattr(profile, "secondary_material", "") or "")
         scatter = str(getattr(profile, "scatter", "none") or "none")
@@ -2536,7 +2566,7 @@ class SceneComposer:
             return
 
         try:
-            actor = Actor(name="__room_terrain", route=terrain_path, actor_type="mesh",
+            actor = Actor(name="__room_terrain", route=terrain_route, actor_type="mesh",
                           parent_scene=scene)
             # 引擎把 mesh 归一化成单位盒（max_extent→1）→ 世界大小只认 scale，mesh 真实坐标无效。
             # 均匀 scale = mesh 真实最大边（width，因 width≫height）→ 还原真实尺寸 + 保持坡度比例。
@@ -2572,8 +2602,9 @@ class SceneComposer:
         # 会在 terrain+box 混合场景误挡盒子）。
         if _has_aspect(zone, "ground_cover") and scatter != "none" and "__terrain_grass" not in existing:
             try:
-                grass_mtl_path = _os.path.join(tmp_dir, "grass_blade.mtl")
-                grass_obj_path = _os.path.join(tmp_dir, "grass_blade.obj")
+                grass_mtl_path = asset_dir / "grass_blade.mtl"
+                grass_obj_path = asset_dir / "grass_blade.obj"
+                grass_route = f"{asset_rel_dir}/grass_blade.obj"
                 with open(grass_mtl_path, "w", encoding="ascii") as f:
                     f.write(_scatter_mtl_text(scatter, material))
                 with open(grass_obj_path, "w", encoding="ascii") as f:
@@ -2583,7 +2614,7 @@ class SceneComposer:
                         width, depth, profile, platform_radius,
                         count=scatter_count, scatter=scatter,
                     ))
-                gactor = Actor(name="__terrain_grass", route=grass_obj_path,
+                gactor = Actor(name="__terrain_grass", route=grass_route,
                                actor_type="mesh", parent_scene=scene)
                 # 同 terrain：引擎归一化 mesh 成单位盒 → 世界大小只认 scale。
                 # 均匀 scale = max(width,depth) 还原草簇散布的真实范围（否则压成 1m）。
@@ -2621,7 +2652,7 @@ class SceneComposer:
         引擎归一化 mesh 成单位盒 → 世界大小只认 scale；scale=2*ring_r 还原环径 + 抬地。
         __terrain_ 前缀 → 已在 AI 编辑排除列表（选项 B，背景环境不可手调）。
         """
-        import os as _os, tempfile as _tf, time as _t, math as _math
+        import time as _t, math as _math
 
         boundary_params = dict(boundary_params or {})
         kind = str(boundary_params.get("kind") or "fence").strip().lower()
@@ -2655,10 +2686,10 @@ class SceneComposer:
         if "__terrain_boundary" in existing or "__terrain_fence" in existing:
             return
 
-        tmp_dir = _os.path.join(_tf.gettempdir(), "corona_room_box")
-        _os.makedirs(tmp_dir, exist_ok=True)
-        fence_mtl_path = _os.path.join(tmp_dir, "boundary.mtl")
-        fence_obj_path = _os.path.join(tmp_dir, "boundary.obj")
+        asset_dir, asset_rel_dir = self._generated_asset_dir()
+        fence_mtl_path = asset_dir / "boundary.mtl"
+        fence_obj_path = asset_dir / "boundary.obj"
+        boundary_route = f"{asset_rel_dir}/boundary.obj"
         try:
             with open(fence_mtl_path, "w", encoding="ascii") as f:
                 f.write(_boundary_mtl_text(kind, material))
@@ -2670,7 +2701,7 @@ class SceneComposer:
                                          mtl_lib="boundary.mtl",
                                          kind=kind,
                                          height=height))
-            factor = Actor(name="__terrain_boundary", route=fence_obj_path,
+            factor = Actor(name="__terrain_boundary", route=boundary_route,
                            actor_type="mesh", parent_scene=scene)
             # 归一化后环径=单位盒 max 边=1 → scale=2*ring_r 让世界环半径=ring_r。
             s = 2.0 * ring_r
@@ -2709,7 +2740,7 @@ class SceneComposer:
         而非抽象 volume——这是修"地毯与蒙古包不贴合、露天空缝"穿模的关键。
         无真实足迹时（shell 未放/测量失败）兜底回抽象 volume × INSCRIBE。
         """
-        import os as _os, tempfile as _tf, time as _t
+        import time as _t
 
         INSCRIBE = 0.96  # 贴边：地毯铺到 shell 真实足迹近边缘。圆盘地板配圆底建筑，
         # 不再有"方角戳穿圆壳"顾虑，故从 0.85 放大到 0.96（留 4% 余量防曲面壁微穿）。
@@ -2730,10 +2761,10 @@ class SceneComposer:
         floor_mat = str(surface_params.get("floor_material") or "neutral")
         floor_shape = _select_interior_floor_shape(width, depth, surface_params)
 
-        tmp_dir = _os.path.join(_tf.gettempdir(), "corona_room_box")
-        _os.makedirs(tmp_dir, exist_ok=True)
-        carpet_mtl_path = _os.path.join(tmp_dir, "carpet.mtl")
-        carpet_obj_path = _os.path.join(tmp_dir, "carpet.obj")
+        asset_dir, asset_rel_dir = self._generated_asset_dir()
+        carpet_mtl_path = asset_dir / "carpet.mtl"
+        carpet_obj_path = asset_dir / "carpet.obj"
+        carpet_route = f"{asset_rel_dir}/carpet.obj"
         with open(carpet_mtl_path, "w", encoding="ascii") as f:
             f.write(_surface_mtl_text(floor_mat))
         with open(carpet_obj_path, "w", encoding="ascii") as f:
@@ -2760,7 +2791,7 @@ class SceneComposer:
             return
 
         try:
-            actor = Actor(name="__interior_floor", route=carpet_obj_path,
+            actor = Actor(name="__interior_floor", route=carpet_route,
                           actor_type="mesh", parent_scene=scene)
             # 略抬 1cm 压在 terrain 之上，避免与地面 z-fighting
             actor.set_position([0.0, 0.01, 0.0], True)
@@ -2780,7 +2811,7 @@ class SceneComposer:
 
     def _generate_foundation_surface(self, zone) -> None:
         """Generate an exterior foundation/paving pad from foundation_surface."""
-        import os as _os, tempfile as _tf, time as _t
+        import time as _t
 
         if not _has_aspect(zone, "foundation_surface"):
             return
@@ -2809,10 +2840,10 @@ class SceneComposer:
         foundation_w = max(0.5, width + padding * 2.0)
         foundation_d = max(0.5, depth + padding * 2.0)
 
-        tmp_dir = _os.path.join(_tf.gettempdir(), "corona_room_box")
-        _os.makedirs(tmp_dir, exist_ok=True)
-        mtl_path = _os.path.join(tmp_dir, "foundation_surface.mtl")
-        obj_path = _os.path.join(tmp_dir, "foundation_surface.obj")
+        asset_dir, asset_rel_dir = self._generated_asset_dir()
+        mtl_path = asset_dir / "foundation_surface.mtl"
+        obj_path = asset_dir / "foundation_surface.obj"
+        foundation_route = f"{asset_rel_dir}/foundation_surface.obj"
         with open(mtl_path, "w", encoding="ascii") as f:
             f.write(_surface_mtl_text(material))
         with open(obj_path, "w", encoding="ascii") as f:
@@ -2840,7 +2871,7 @@ class SceneComposer:
             return
 
         try:
-            actor = Actor(name=actor_name, route=obj_path, actor_type="mesh",
+            actor = Actor(name=actor_name, route=foundation_route, actor_type="mesh",
                           parent_scene=scene)
             actor.set_position([center_x, height_offset, center_z], True)
             actor.set_scale([foundation_w, 1.0, foundation_d], True)

@@ -134,6 +134,15 @@ def test_network_host_periodic_snapshot_does_not_rebroadcast_actor_creates() -> 
     assert "await broadcastCurrentSceneSnapshot(sceneName, true, true);" in source, (
         "host must still send actor creates when a client explicitly requests a full snapshot"
     )
+    assert "rememberActorCreateBroadcast(targetScene, actorGuid, modelPath)" in source, (
+        "snapshot fallback actor creates must be deduped across explicit snapshot requests"
+    )
+    assert "rememberActorCreateBroadcast(sceneName, actorGuid, modelPath)" in source, (
+        "realtime actor create broadcasts must share snapshot fallback dedupe state"
+    )
+    assert "forgetActorCreateBroadcast(sceneName, actorGuid)" in source, (
+        "actor deletes must clear snapshot fallback actor-create dedupe state"
+    )
 
 
 def test_lanchat_room_panel_exposes_validation_agent_bundle() -> None:

@@ -763,8 +763,10 @@ void test_project_relative_path_validation() {
 void test_project_relative_path_uses_utf8_for_non_ascii_segments() {
     const auto root = std::filesystem::temp_directory_path() /
         "corona_network_utf8_path_test";
+    const std::string relative =
+        reinterpret_cast<const char*>(u8"Resource/models/绿植/base.obj");
     const auto expected = root /
-        std::filesystem::u8path(u8"Resource/models/绿植/base.obj");
+        std::filesystem::u8path(relative);
     std::filesystem::remove_all(root);
     std::filesystem::create_directories(expected.parent_path());
     {
@@ -773,7 +775,7 @@ void test_project_relative_path_uses_utf8_for_non_ascii_segments() {
     }
 
     auto resolved = Corona::Network::resolve_project_relative_path(
-        root, u8"Resource/models/绿植/base.obj");
+        root, relative);
     expect_true(resolved.has_value(), "utf8 project relative path accepted");
     expect_true(resolved && std::filesystem::exists(*resolved),
                 "utf8 project relative path resolves to existing file");
@@ -788,6 +790,38 @@ void test_network_system_session_role_defaults_to_none() {
                 "network system default session role is none");
     expect_true(sys.session_role_name() == "none",
                 "network system default session role label");
+}
+
+void test_network_system_repeated_start_preserves_active_role() {
+    Corona::Systems::NetworkSystem sys;
+
+    expect_true(sys.start_session("client", 0, 0,
+                                  Corona::Systems::NetworkSystem::SessionRole::Client),
+                "network system starts client session on ephemeral port");
+    expect_true(sys.session_role() == Corona::Systems::NetworkSystem::SessionRole::Client,
+                "network system active role starts as client");
+
+    expect_true(sys.start_session("host", 0, 27960,
+                                  Corona::Systems::NetworkSystem::SessionRole::Host),
+                "network system repeated start succeeds idempotently");
+    expect_true(sys.session_role() == Corona::Systems::NetworkSystem::SessionRole::Client,
+                "network system repeated start keeps active client role");
+
+    sys.stop_session();
+}
+
+void test_lanchat_start_room_reuses_active_network_session_role() {
+    Corona::Systems::NetworkSystem sys;
+
+    expect_true(sys.start_session("host", 0, 0,
+                                  Corona::Systems::NetworkSystem::SessionRole::Host),
+                "network system starts host session before lanchat room");
+    expect_true(sys.lanchat_start_room("room-id", "host-user", 27960),
+                "lanchat start room reuses active network session");
+    expect_true(sys.session_role() == Corona::Systems::NetworkSystem::SessionRole::Host,
+                "lanchat start room keeps active host role");
+
+    sys.stop_session();
 }
 
 void test_actor_device_follow_camera_defaults_false_and_round_trips() {
@@ -1329,6 +1363,8 @@ int main() {
     test_project_relative_path_validation();
     test_project_relative_path_uses_utf8_for_non_ascii_segments();
     test_network_system_session_role_defaults_to_none();
+    test_network_system_repeated_start_preserves_active_role();
+    test_lanchat_start_room_reuses_active_network_session_role();
     test_actor_device_follow_camera_defaults_false_and_round_trips();
     test_network_identity_registry_resolves_actor_components();
     test_network_identity_registry_tracks_local_ownership();

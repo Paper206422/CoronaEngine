@@ -349,6 +349,44 @@ class ActorAliasRenameTests(unittest.TestCase):
         self.assertEqual(result["warnings"][0]["code"], "actor_type_actor")
         self.assertEqual(result["warnings"][0]["actor_guid"], "actor-config")
 
+    def test_apply_actor_sync_snapshot_warns_and_skips_actor_with_missing_asset(self):
+        scene = FakeScene([])
+        snapshot = {
+            "actors": [
+                {
+                    "actor_guid": "actor-ball",
+                    "name": "Ball",
+                    "actor_type": "model",
+                    "path": "Resource/Ball.obj",
+                    "model": "Resource/Ball.obj",
+                    "model_dependencies": ["Resource/Ball.mtl"],
+                    "visible": True,
+                    "follow_camera": False,
+                    "geometry": {
+                        "position": [0.0, 0.0, 0.0],
+                        "rotation": [0.0, 0.0, 0.0],
+                        "scale": [1.0, 1.0, 1.0],
+                    },
+                },
+            ],
+        }
+
+        def missing_actor_factory(*_args, **_kwargs):
+            raise FileNotFoundError("模型文件不存在: Resource/Ball.obj")
+
+        with (
+            patch.object(scene_tools_main, "scene_manager", FakeSceneManager(scene)),
+            patch.object(scene_tools_main, "Actor", side_effect=missing_actor_factory),
+        ):
+            result = scene_tools_main.SceneTools.apply_actor_sync_snapshot_internal(
+                "Demo.scene", snapshot)
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["created"], [])
+        self.assertEqual(scene.get_actors(), [])
+        self.assertEqual(result["warnings"][0]["code"], "missing_asset")
+        self.assertEqual(result["warnings"][0]["actor_guid"], "actor-ball")
+
 
 if __name__ == "__main__":
     unittest.main()
