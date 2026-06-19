@@ -90,18 +90,16 @@ void spectrum_accepts_scene_material_state() {
 void svgf_helpers_accept_explicit_scene_resources() {
     static_assert(std::is_same_v<
                   decltype(&vision::svgf::PixelStateUtils::is_emissive),
-                  vision::Bool (*)(const vision::Geometry&,
+                  vision::Bool (*)(const vision::Pipeline*,
                                    const vision::TriangleHitVar&) noexcept>);
     static_assert(std::is_same_v<
                   decltype(&vision::svgf::PixelStateUtils::query_albedo),
-                  vision::Float3 (*)(vision::Scene&,
-                                     vision::Geometry&,
-                                     vision::TSpectrum&,
+                  vision::Float3 (*)(vision::Pipeline*,
                                      const vision::TriangleHitVar&,
                                      const vision::Float3&) noexcept>);
     static_assert(std::is_same_v<
                   decltype(&vision::svgf::BoundaryUtils::compute_boundary_weight),
-                  vision::Float (*)(const vision::Geometry&,
+                  vision::Float (*)(const vision::Pipeline*,
                                     const vision::TriangleHitVar&,
                                     const vision::TriangleHitVar&) noexcept>);
 }
