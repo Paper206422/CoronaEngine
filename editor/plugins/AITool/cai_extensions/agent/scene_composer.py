@@ -1346,6 +1346,8 @@ class SceneComposer:
         self._last_zone_decompose_text = ""
         self._fallback_room_aspects = []
         self._fallback_room_style_context = {}
+        self._last_element_classification = []
+        self._last_element_classification_summary = ""
         self._generated_asset_abs_dir = None
         self._generated_asset_rel_dir = None
 
@@ -1661,7 +1663,37 @@ class SceneComposer:
             seen.add(name)
             filtered.append(it)
 
-        filtered = self._ensure_minimum_scene_inventory(text, filtered)
+        expanded_candidates = self._ensure_minimum_scene_inventory(text, filtered)
+        classification_candidates: List[Dict[str, Any]] = []
+        classified_seen = set()
+        for it in list(filtered) + list(expanded_candidates):
+            name = str(it.get("name") or "").strip()
+            if not name or name in classified_seen:
+                continue
+            classified_seen.add(name)
+            classification_candidates.append(it)
+        try:
+            try:
+                from .scene_element_classifier import route_model_items, summarize_classification
+            except Exception:
+                from scene_element_classifier import route_model_items, summarize_classification  # type: ignore
+
+            filtered, classified = route_model_items(text, classification_candidates)
+            self._last_element_classification = [item.as_dict() for item in classified]
+            self._last_element_classification_summary = summarize_classification(classified)
+            for routed in classified:
+                logger.info(
+                    "[SceneElementClassifier] %s -> %s/%s (%.2f)",
+                    routed.name,
+                    routed.category,
+                    routed.target_pipeline,
+                    routed.confidence,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[SceneComposer] SceneElementClassifier skipped: %s", exc)
+            filtered = expanded_candidates
+            self._last_element_classification = []
+            self._last_element_classification_summary = ""
         logger.info("[SceneComposer] 提取到 %d 个物体（过滤前 %d）: %s",
                     len(filtered), len(items), [it.get("name") for it in filtered])
         return filtered
@@ -2044,6 +2076,12 @@ class SceneComposer:
             return {"items": [], "imported": [], "failed": [],
                     "extracted_count": 0, "model_count": 0,
                     "error": "未能从描述中提取出物体清单"}
+        classification_summary = getattr(self, "_last_element_classification_summary", "")
+        if classification_summary and progress_sink:
+            try:
+                progress_sink(classification_summary)
+            except Exception:  # noqa: BLE001
+                pass
         if _has_resolved_plan_context(generation_text) and _looks_generic_inventory(items):
             names = [str(item.get("name") or "") for item in items]
             logger.warning(
@@ -2219,6 +2257,8 @@ class SceneComposer:
         result["shell_expected"] = sorted(shell_names)
         result["shell_degraded"] = degraded
         result["zone_decompose_snapshot"] = getattr(self, "_last_zone_decompose_snapshot", None)
+        result["element_classification"] = getattr(self, "_last_element_classification", [])
+        result["element_classification_summary"] = classification_summary
         result["memory_context_used"] = bool(memory_context)
         result["memory_context_entry_count"] = int(memory_context.get("entry_count") or 0) if memory_context else 0
         emit_stage(96, "完成自动检查", "已汇总摆放结果、用户介入信息和可选外观审查。")
