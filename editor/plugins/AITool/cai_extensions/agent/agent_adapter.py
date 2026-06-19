@@ -36,13 +36,23 @@ try:
         agent_progress_sink,
         get_current_progress_sink,
     )
+    from plugins.AITool.services.intent_understanding import get_intent_understanding_service
     from plugins.AITool.services.lanchat_scene_runtime import get_lanchat_scene_runtime
+    from plugins.AITool.services.workflow_command_policy import (
+        DEPRECATED_WORKFLOW_COMMAND_MESSAGE,
+        is_deprecated_user_workflow_command,
+    )
 except Exception:  # noqa: BLE001
     from services.agent_progress_context import (  # type: ignore
         agent_progress_sink,
         get_current_progress_sink,
     )
+    from services.intent_understanding import get_intent_understanding_service  # type: ignore
     from services.lanchat_scene_runtime import get_lanchat_scene_runtime  # type: ignore
+    from services.workflow_command_policy import (  # type: ignore
+        DEPRECATED_WORKFLOW_COMMAND_MESSAGE,
+        is_deprecated_user_workflow_command,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -543,11 +553,24 @@ def classify_intent(text: str) -> str:
         if re.match(pat, t):
             return "chat"
     # LLM 结构化路由（权威）：普通角色对话即使提到想象场景，也不能写入 3D 场景。
-    decision = _llm_classify_scene_intent(t)
-    r = _intent_from_scene_intent_decision(decision)
+    service = get_intent_understanding_service()
+    decision = service.classify(t)
+    if decision.intent in ("generation_start", "plan_drafting", "plan_revision"):
+        return "compose"
+    if decision.intent in (
+        "intervention_add",
+        "intervention_modify",
+        "intervention_delete",
+        "post_generation_add",
+        "final_adjustment_request",
+    ):
+        return "edit"
+    if decision.reason != "fallback default":
+        return "chat"
+    legacy_decision = _llm_classify_scene_intent(t)
+    r = _intent_from_scene_intent_decision(legacy_decision)
     if r in ("compose", "edit", "chat"):
         return r
-    # 兼容旧分类：只在结构化判断不可用时使用。
     r = _llm_classify_intent(t)
     if r in ("compose", "edit", "chat"):
         return r
@@ -882,6 +905,11 @@ class MasterAgent:
         try:
             trigger = self._extract_trigger_text(messages)
             logger.info("[MasterAgent] __call__ trigger=%r persona=%r", trigger[:80], (system or "")[:40])
+
+            slash_command = trigger.strip().split(maxsplit=1)[0] if trigger.strip().startswith("/") else ""
+            if slash_command and is_deprecated_user_workflow_command(slash_command):
+                logger.info("[MasterAgent] deprecated workflow command blocked: %s", slash_command)
+                return DEPRECATED_WORKFLOW_COMMAND_MESSAGE
 
             # 0. 显式文件路径导入 → 跳过 LLM，直接调引擎 import_model
             file_path = self._extract_file_path(trigger)

@@ -46,6 +46,8 @@ __pycache__/
 # Thoth local dashboard/runtime cache
 /research.db
 /research.db-*
+/.tmp/
+/temp/
 /.pytest_cache/
 /.pre-commit-config.yaml
 /scripts/

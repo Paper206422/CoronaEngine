@@ -18,8 +18,26 @@ sys.modules[_SPEC.name] = _MODULE
 _SPEC.loader.exec_module(_MODULE)
 
 
+def _test_temp_root() -> Path:
+    root = Path(__file__).resolve().parents[2] / ".tmp" / "test-temp"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _named_test_dir(name: str) -> Path:
+    path = _test_temp_root() / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _write_log(text: str) -> Path:
-    handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix="_corona.log", delete=False)
+    handle = tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        suffix="_corona.log",
+        delete=False,
+        dir=_test_temp_root(),
+    )
     with handle:
         handle.write(text)
     return Path(handle.name)
@@ -41,44 +59,44 @@ def test_report_writer_records_probe_summary():
             ]
         )
     )
-    with tempfile.TemporaryDirectory() as temp_dir:
-        original_dir = _MODULE.REPORT_DIR
-        try:
-            _MODULE.REPORT_DIR = Path(temp_dir)
-            report_path = _MODULE._write_report(log_path, verify_exit=None)
-        finally:
-            _MODULE.REPORT_DIR = original_dir
+    temp_dir = _named_test_dir("v3_f5_quick_gate_report")
+    original_dir = _MODULE.REPORT_DIR
+    try:
+        _MODULE.REPORT_DIR = Path(temp_dir)
+        report_path = _MODULE._write_report(log_path, verify_exit=None)
+    finally:
+        _MODULE.REPORT_DIR = original_dir
 
-        report = report_path.read_text(encoding="utf-8")
-        assert "V3 F5 运行报告" in report
-        assert str(log_path) in report
-        assert "非 native 总门禁：skipped" in report
-        assert "日志新鲜度：" in report
-        assert "F5_READY: PASS=9 WARN=0 FAIL=0" in report
-        assert "| 级别 | 检查项 | 说明 | 处置建议 |" in report
-        assert "| PASS | actor-create |" in report
-        assert "actor create 去重" in report
+    report = report_path.read_text(encoding="utf-8")
+    assert "V3 F5 运行报告" in report
+    assert str(log_path) in report
+    assert "非 native 总门禁：skipped" in report
+    assert "日志新鲜度：" in report
+    assert "F5_READY: PASS=9 WARN=0 FAIL=0" in report
+    assert "| 级别 | 检查项 | 说明 | 处置建议 |" in report
+    assert "| PASS | actor-create |" in report
+    assert "actor create 去重" in report
     print("[OK] V3 F5 quick gate writes Markdown report")
 
 
 def test_freshness_status_detects_stale_log():
-    with tempfile.TemporaryDirectory() as temp_dir:
-        sentinel = Path(temp_dir) / "sentinel.py"
-        log_path = _write_log("[2026-06-19T04:00:00.000000][1][INFO] empty")
-        sentinel.write_text("# changed after log\n", encoding="utf-8")
-        now = time.time()
-        os.utime(log_path, (now - 10, now - 10))
-        os.utime(sentinel, (now, now))
+    temp_dir = _named_test_dir("v3_f5_quick_gate_freshness")
+    sentinel = Path(temp_dir) / "sentinel.py"
+    log_path = _write_log("[2026-06-19T04:00:00.000000][1][INFO] empty")
+    sentinel.write_text("# changed after log\n", encoding="utf-8")
+    now = time.time()
+    os.utime(log_path, (now - 10, now - 10))
+    os.utime(sentinel, (now, now))
 
-        original_sentinels = _MODULE.FRESHNESS_SENTINELS
-        try:
-            _MODULE.FRESHNESS_SENTINELS = (sentinel,)
-            level, detail = _MODULE._freshness_status(log_path)
-        finally:
-            _MODULE.FRESHNESS_SENTINELS = original_sentinels
+    original_sentinels = _MODULE.FRESHNESS_SENTINELS
+    try:
+        _MODULE.FRESHNESS_SENTINELS = (sentinel,)
+        level, detail = _MODULE._freshness_status(log_path)
+    finally:
+        _MODULE.FRESHNESS_SENTINELS = original_sentinels
 
-        assert level == "STALE"
-        assert "重新 F5" in detail
+    assert level == "STALE"
+    assert "重新 F5" in detail
     print("[OK] V3 F5 quick gate detects stale logs")
 
 

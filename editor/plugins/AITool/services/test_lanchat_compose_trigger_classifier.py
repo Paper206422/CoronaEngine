@@ -12,6 +12,7 @@ for path in (EDITOR_ROOT, AI_TOOL_ROOT):
 
 from plugins.AITool.cai_extensions.agent.agent_adapter import MasterAgent  # noqa: E402
 from plugins.AITool.services.agent_progress_context import agent_progress_sink  # noqa: E402
+from plugins.AITool.services.workflow_command_policy import DEPRECATED_WORKFLOW_COMMAND_MESSAGE  # noqa: E402
 
 
 def test_lanchat_progress_context_blocks_direct_roleagent_compose() -> None:
@@ -27,7 +28,14 @@ def test_lanchat_progress_context_blocks_direct_roleagent_compose() -> None:
     assert "通过生成队列执行" in reply
 
 
+def test_deprecated_workflow_command_is_not_executed_by_role_agent() -> None:
+    agent = MasterAgent(fallback_chat=lambda _system, _messages: "fallback")
+    reply = agent("小女孩", ["房主: @小女孩 /scene_composition 做一个卧室"])
+    assert reply == DEPRECATED_WORKFLOW_COMMAND_MESSAGE
+
+
 if __name__ == "__main__":
     test_lanchat_progress_context_blocks_direct_roleagent_compose()
+    test_deprecated_workflow_command_is_not_executed_by_role_agent()
     print("[OK] LANChat compose requests do not enter direct RoleAgent compose")
     print("\n=== LANChat compose trigger classifier ALL PASS ===")

@@ -14,6 +14,11 @@ from importlib import import_module
 from pathlib import Path
 from typing import Iterable
 
+try:
+    from plugins.AITool.services.workflow_command_policy import should_register_workflow_command
+except Exception:  # noqa: BLE001
+    from services.workflow_command_policy import should_register_workflow_command  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 
@@ -115,6 +120,7 @@ class CabbageWorkflowPlugin:
         command_registry = runtime.get_registry("workflow_command")
         registered_flows: list[int] = []
         registered_commands: list[str] = []
+        hidden_commands: list[str] = []
 
         for module_name in self.flow_modules:
             try:
@@ -144,6 +150,9 @@ class CabbageWorkflowPlugin:
                 for command, function_id in commands.items():
                     if not isinstance(command, str) or not isinstance(function_id, int):
                         continue
+                    if not should_register_workflow_command(command):
+                        hidden_commands.append(command)
+                        continue
                     try:
                         command_registry.register(command, function_id, overwrite=True)
                         registered_commands.append(command)
@@ -158,9 +167,19 @@ class CabbageWorkflowPlugin:
         runtime.metadata.setdefault("cabbage_adapter", {})[self.name] = {
             "flows": registered_flows,
             "commands": registered_commands,
+            "hidden_commands": hidden_commands,
         }
-        logger.info("[cai_extensions] commands registered: %s", registered_commands)
-        return {"name": self.name, "flows": registered_flows, "commands": registered_commands}
+        logger.info(
+            "[cai_extensions] commands registered: %s hidden: %s",
+            registered_commands,
+            hidden_commands,
+        )
+        return {
+            "name": self.name,
+            "flows": registered_flows,
+            "commands": registered_commands,
+            "hidden_commands": hidden_commands,
+        }
 
 
 class CabbageWorkflowSyncPlugin:

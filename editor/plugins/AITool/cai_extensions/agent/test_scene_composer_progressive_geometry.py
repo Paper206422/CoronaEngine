@@ -7,7 +7,6 @@
 """
 import os
 import sys
-import tempfile
 import types
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -37,6 +36,18 @@ from cai_extensions.agent.scene_composer import SceneComposer, apply_scene_seman
 from cai_extensions.agent.scene_session import SceneSession  # noqa: E402
 from cai_extensions.data_model.zone_tree import Connector, Volume, Zone, ZoneAspect, ZoneTree  # noqa: E402
 from services.terrain_component_resolver import TerrainComponentResolver  # noqa: E402
+
+
+def _test_temp_root() -> str:
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "..", ".tmp", "test-temp"))
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _named_test_dir(name: str) -> str:
+    path = os.path.join(_test_temp_root(), name)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 @dataclass
@@ -878,20 +889,20 @@ def test_scene_composer_passes_generated_images_to_model_retrieval_workflow():
     try:
         sys.modules[module_name] = fake_module
         sys.modules[helpers_name] = fake_helpers
-        with tempfile.TemporaryDirectory() as tmp:
-            model_path = os.path.join(tmp, "angel.glb")
-            with open(model_path, "wb") as f:
-                f.write(b"glb")
-            captured["model_path"] = model_path
+        tmp = _named_test_dir("scene_composer_generated_image")
+        model_path = os.path.join(tmp, "angel.glb")
+        with open(model_path, "wb") as f:
+            f.write(b"glb")
+        captured["model_path"] = model_path
 
-            composer = SceneComposer(scene_name="image_stage_test", max_items=1)
-            progress_messages = []
-            composer._model_retrieval_progress_sink = progress_messages.append
-            resolved = composer._run_model_retrieval([{
-                "name": "天使雕像",
-                "keywords": "fantasy angel statue",
-                "image_url": "fileid://angel-image",
-            }])
+        composer = SceneComposer(scene_name="image_stage_test", max_items=1)
+        progress_messages = []
+        composer._model_retrieval_progress_sink = progress_messages.append
+        resolved = composer._run_model_retrieval([{
+            "name": "天使雕像",
+            "keywords": "fantasy angel statue",
+            "image_url": "fileid://angel-image",
+        }])
     finally:
         if old_module is None:
             sys.modules.pop(module_name, None)

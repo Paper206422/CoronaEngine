@@ -7,6 +7,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from .intent_understanding import get_intent_understanding_service
+
 
 _DIRECT_GENERATE_WORDS = (
     "直接生成", "现在生成", "马上生成", "开始生成", "确认开始", "按这个方案",
@@ -37,6 +39,13 @@ _PLAN_SUPPLEMENT_WORDS = (
     "补充", "再加", "增加", "我希望", "希望", "更", "不要", "别", "不能",
     "风格", "统一", "一致", "温暖", "灯光", "灯笼", "休息区", "暗黑风",
     "不要太恐怖", "不太恐怖", "适合", "整体",
+)
+
+_DISCLOSURE_CANDIDATE_TERMS = (
+    "草原", "天空", "森林", "树林", "地形", "地面", "地板", "墙面", "天花板",
+    "床", "柜", "桌", "椅", "灯", "灯笼", "台灯", "雕像", "玩偶", "摊位",
+    "导视牌", "展示架", "绿植", "植物", "地毯", "沙发", "小狗", "狗", "猫",
+    "入口", "通道", "主街", "边界", "休息区",
 )
 
 MODE_DISCUSSING = "DISCUSSING"
@@ -90,33 +99,23 @@ class LanChatSceneRuntime:
 
     @staticmethod
     def is_direct_generate(text: str) -> bool:
-        return any(word in str(text or "") for word in _DIRECT_GENERATE_WORDS)
+        return get_intent_understanding_service().is_generation_start(text)
 
     @staticmethod
     def is_plan_like(text: str) -> bool:
-        value = str(text or "")
-        return bool(value.strip()) and any(word in value for word in _PLAN_WORDS)
+        return get_intent_understanding_service().is_plan_like(text)
 
     @staticmethod
     def is_pending_scene_note(text: str) -> bool:
-        value = str(text or "")
-        return any(word in value for word in (_GENERATION_DELTA_WORDS + _LAYOUT_CONSTRAINT_WORDS + _EDIT_WORDS))
+        return get_intent_understanding_service().scene_note_kind(text) != "chat"
 
     @staticmethod
     def classify_scene_note(text: str) -> str:
-        value = str(text or "")
-        if any(word in value for word in _EDIT_WORDS):
-            return "edit_existing"
-        if any(word in value for word in _LAYOUT_CONSTRAINT_WORDS):
-            return "layout_constraint"
-        if any(word in value for word in _GENERATION_DELTA_WORDS):
-            return "generation_delta"
-        return "chat"
+        return get_intent_understanding_service().scene_note_kind(text)
 
     @staticmethod
     def is_plan_supplement(text: str) -> bool:
-        value = str(text or "")
-        return bool(value.strip()) and any(word in value for word in _PLAN_SUPPLEMENT_WORDS)
+        return get_intent_understanding_service().is_plan_supplement(text)
 
     def set_mode(self, mode: str) -> str:
         normalized = str(mode or "").strip().upper()
@@ -294,6 +293,9 @@ class LanChatSceneRuntime:
             "- 补充：...",
             "- 直接生成",
         ]
+        disclosure = self._classification_disclosure(confirmation.scene_goal, confirmation.proposed_items)
+        if disclosure:
+            lines.extend(["", "提炼结果：", disclosure])
         return "\n".join(lines)
 
     @staticmethod
@@ -329,6 +331,9 @@ class LanChatSceneRuntime:
     @classmethod
     def _seed_items_from_text(cls, text: str) -> list[str]:
         items = cls._extract_requested_items(text)
+        for item in cls._candidate_items_from_text(text):
+            if item not in items:
+                items.append(item)
         generic = ["主体建筑或摊位", "环境主体", "功能物件", "灯光装饰", "导视牌", "小型道具", "活动区装饰"]
         for item in generic:
             if len(items) >= 8:
@@ -336,6 +341,30 @@ class LanChatSceneRuntime:
             if item not in items:
                 items.append(item)
         return items
+
+    @staticmethod
+    def _candidate_items_from_text(text: str) -> list[str]:
+        value = str(text or "")
+        out: list[str] = []
+        for term in _DISCLOSURE_CANDIDATE_TERMS:
+            if term in value and term not in out:
+                out.append(term)
+        return out[:8]
+
+    @staticmethod
+    def _classification_disclosure(scene_goal: str, proposed_items: list[str]) -> str:
+        try:
+            from plugins.AITool.cai_extensions.agent.scene_element_classifier import (
+                route_model_items,
+                summarize_classification,
+            )
+        except Exception:
+            return ""
+        rows = [{"name": item} for item in proposed_items if str(item or "").strip()]
+        if not rows:
+            return ""
+        _, routes = route_model_items(scene_goal, rows)
+        return summarize_classification(routes)
 
 
 _RUNTIME = LanChatSceneRuntime()
