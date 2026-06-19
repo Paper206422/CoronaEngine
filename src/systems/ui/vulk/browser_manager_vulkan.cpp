@@ -1,24 +1,47 @@
 #include <corona/systems/ui/vulkan_backend.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <mutex>
+#include <utility>
 
 #include "cef/browser_manager.h"
 #include "cef/cef_client.h"
 
 namespace Corona::Systems::UI {
+namespace {
+constexpr uint64_t kDeferredTextureDestroyFrames = 4;
+}
+
 void BrowserManager::destroy_tab_texture(BrowserTab* tab) {
     if (!tab || !is_valid_texture_id(tab->texture_id)) {
         return;
     }
 
+    const ImTextureID texture_id = tab->texture_id;
+    tab->texture_id = k_invalid_texture_id;
+
     texture_executor_.waitForDeferredResources();
-    auto it = owned_images_.find(tab->texture_id);
+    auto it = owned_images_.find(texture_id);
     if (it != owned_images_.end()) {
-        owned_images_.erase(it);
+        deferred_texture_destroys_.push_back(
+            DeferredTextureDestroy{std::move(it->second), frame_index_});
+        owned_images_.erase(texture_id);
+    }
+}
+
+void BrowserManager::retire_deferred_tab_textures(bool force) {
+    if (deferred_texture_destroys_.empty()) {
+        return;
     }
 
-    tab->texture_id = k_invalid_texture_id;
+    texture_executor_.waitForDeferredResources();
+    std::erase_if(
+        deferred_texture_destroys_,
+        [this, force](const DeferredTextureDestroy& pending) {
+            return force ||
+                   frame_index_ >= pending.queued_frame + kDeferredTextureDestroyFrames;
+        });
 }
 
 ImTextureID BrowserManager::create_browser_texture(int width, int height) {

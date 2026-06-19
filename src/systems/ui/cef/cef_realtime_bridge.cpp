@@ -2172,7 +2172,9 @@ bool handle_dock_command(CefRefPtr<CefBrowser> browser,
 
             int tab_id = find_tab_id_for_browser(browser);
             if (tab_id >= 0) {
-                bm.remove_tab(tab_id);
+                bm.enqueue_main_thread_task([tab_id] {
+                    BrowserManager::instance().remove_tab(tab_id);
+                });
             }
             return true;
         }
@@ -2181,7 +2183,9 @@ bool handle_dock_command(CefRefPtr<CefBrowser> browser,
             int tab_id = command.value("tabId", -1);
             std::string panel_id = command.value("panelId", "");
             if (tab_id >= 0) {
-                bm.remove_tab(tab_id);
+                bm.enqueue_main_thread_task([tab_id] {
+                    BrowserManager::instance().remove_tab(tab_id);
+                });
             }
 
             nlohmann::json payload;
