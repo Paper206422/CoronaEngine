@@ -554,7 +554,7 @@ def classify_intent(text: str) -> str:
             return "chat"
     # LLM 结构化路由（权威）：普通角色对话即使提到想象场景，也不能写入 3D 场景。
     service = get_intent_understanding_service()
-    decision = service.classify(t)
+    decision = service.classify(t, allow_llm=False)
     if decision.intent in ("generation_start", "plan_drafting", "plan_revision"):
         return "compose"
     if decision.intent in (
