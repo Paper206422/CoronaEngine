@@ -38,10 +38,6 @@ void configure_vision_scene_for_mode(::vision::DataWrap& data,
     auto& output = ensure_vision_json_object(data, "output");
     output["denoise"] = vision_render_mode_uses_denoise(mode);
 
-    if (mode == CameraVisionRenderMode::PathTracing) {
-        return;
-    }
-
     auto& render = ensure_vision_json_object(data, "render");
     auto& integrator = ensure_vision_json_object(render, "integrator");
     auto& integrator_param = ensure_vision_json_object(integrator, "param");

@@ -124,6 +124,52 @@ def _extract_vision_camera_pose(document: dict):
     }
 
 
+def _infer_vision_render_mode(document: dict) -> str:
+    if not isinstance(document, dict):
+        return "path_tracing"
+
+    output = document.get("output")
+    output_denoise = (
+        bool(output.get("denoise"))
+        if isinstance(output, dict) and "denoise" in output
+        else False
+    )
+    render = document.get("render")
+    integrator = render.get("integrator") if isinstance(render, dict) else {}
+    integrator_param = (
+        integrator.get("param") if isinstance(integrator, dict) else {}
+    )
+    denoiser = (
+        integrator_param.get("denoiser")
+        if isinstance(integrator_param, dict)
+        else {}
+    )
+    denoiser_type = (
+        str(denoiser.get("type") or "").strip().lower()
+        if isinstance(denoiser, dict)
+        else ""
+    )
+
+    pipeline = document.get("pipeline")
+    pipeline_param = pipeline.get("param") if isinstance(pipeline, dict) else {}
+    frame_buffer = (
+        pipeline_param.get("frame_buffer")
+        if isinstance(pipeline_param, dict)
+        else {}
+    )
+    frame_buffer_type = (
+        str(frame_buffer.get("type") or "").strip().lower()
+        if isinstance(frame_buffer, dict)
+        else ""
+    )
+
+    if frame_buffer_type == "lightfield" or denoiser_type == "ssat":
+        return "ssat"
+    if output_denoise and denoiser_type == "svgf":
+        return "svgf"
+    return "path_tracing"
+
+
 def _vision_scene_data(document: dict) -> dict:
     return document.get("scene", document) if isinstance(document, dict) else {}
 
@@ -1305,6 +1351,10 @@ class SceneTools(PluginBase):
 
             active_camera = scene.get_active_camera()
 
+            imported_vision_render_mode = _infer_vision_render_mode(document)
+            if active_camera is not None:
+                active_camera.set_vision_render_mode(imported_vision_render_mode)
+
             if "vision" not in scene.file_data:
                 scene.file_data["vision"] = {}
             scene.vision_source_path = abs_path
@@ -1454,6 +1504,7 @@ class SceneTools(PluginBase):
                 "path": abs_path,
                 "runtime_path": runtime_path or abs_path,
                 "import_mode": "external_live",
+                "vision_render_mode": imported_vision_render_mode,
                 "camera_imported": camera_imported,
                 "camera": active_camera.to_dict() if active_camera is not None else None,
                 "proxy_actors_created": created_proxy_count,

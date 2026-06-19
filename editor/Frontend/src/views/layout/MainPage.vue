@@ -965,6 +965,18 @@ const syncSceneCameraBinding = async (sceneId) => {
   }
 };
 
+const handleVisionSceneImported = async (payload = {}) => {
+  const sceneId = payload?.sceneId || tabs.value[activeTab.value]?.id || DEFAULT_SCENE_NAME;
+  if (sceneId !== (tabs.value[activeTab.value]?.id || DEFAULT_SCENE_NAME)) {
+    return;
+  }
+  if (payload?.visionRenderMode) {
+    mainRenderBackend.value = 'vision';
+    mainVisionRenderMode.value = payload.visionRenderMode;
+  }
+  await syncSceneCameraBinding(sceneId);
+};
+
 const restoreCameraViews = async (sceneId) => {
   if (!sceneId) return;
   try {
@@ -1961,6 +1973,7 @@ onMounted(async () => {
     const panelId = payload?.panelId;
     if (panelId) dockStore.popIn(panelId);
   });
+  coronaEventBus.on('vision-scene-imported', handleVisionSceneImported);
   coronaEventBus.on('actor-pick-result', handleActorPickResult);
   coronaEventBus.on('actor-gizmo-state', handleGizmoStateResult);
   coronaEventBus.on('actor-gizmo-transform', handleGizmoTransformResult);
@@ -1987,6 +2000,7 @@ onUnmounted(() => {
   coronaEventBus.off('scene-add');
   coronaEventBus.off('scene-rename');
   coronaEventBus.off('panel-closed');
+  coronaEventBus.off('vision-scene-imported', handleVisionSceneImported);
   coronaEventBus.off('actor-pick-result', handleActorPickResult);
   coronaEventBus.off('actor-gizmo-state', handleGizmoStateResult);
   coronaEventBus.off('actor-gizmo-transform', handleGizmoTransformResult);

@@ -20,6 +20,7 @@
 #include <system_error>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -111,6 +112,8 @@ struct RenderInstanceBatch {
 }
 
 #ifdef CORONA_ENABLE_VISION
+constexpr uint64_t kVisionRuntimeIdleEvictFrames = 240;
+
 [[nodiscard]] ::vision::float4x4 corona_transform_to_vision_o2w(
     const Corona::ModelTransform& transform) {
     const ktm::fmat4x4 corona_mat = transform.compute_matrix();
@@ -556,13 +559,13 @@ void bind_pipeline_scene_resource_early(
     if (!scene_resource) {
         return;
     }
-    pipeline.bind_shared_scene_data(
-        scene_resource->ensure_logical_scene(
-            [] { return std::make_shared<vision::SceneData>(); }));
-    pipeline.scene().bind_geometry_gpu_resource(
-        scene_resource->ensure_scene_gpu_resource([&] {
-            return std::make_shared<vision::GeometryGpuResource>(pipeline.device());
-        }));
+    if (scene_resource->has_logical_scene()) {
+        return;
+    }
+
+    auto logical_scene = std::make_shared<vision::SceneData>();
+    scene_resource->set_logical_scene(logical_scene);
+    pipeline.bind_shared_scene_data(std::move(logical_scene));
 }
 
 [[nodiscard]] auto create_vision_pipeline(
@@ -577,6 +580,7 @@ void bind_pipeline_scene_resource_early(
     pipeline->init_project(project_desc);
     pipeline->init_postprocessor(project_desc.renderer_desc.denoiser_desc);
     pipeline->init();
+    pipeline->set_output_denoise(true);
     return pipeline;
 }
 
@@ -808,35 +812,26 @@ void bind_pipeline_scene_gpu_resource(
     Corona::Systems::Vision::VisionPipelineSource source,
     Corona::CameraVisionRenderMode mode,
     const std::string& scene_path) {
-    auto logical_scene = scene_resource.ensure_logical_scene(
-        [] { return std::make_shared<vision::SceneData>(); });
-    if (pipeline.shared_scene_data() != logical_scene) {
-        if (!pipeline.scene().is_initialized()) {
-            pipeline.bind_shared_scene_data(logical_scene);
-        } else {
-            CFW_LOG_WARNING(
-                "OpticsSystem: Vision pipeline already has a different initialized "
-                "logical scene view (source={}, mode={}, path={})",
-                std::string(Corona::Systems::Vision::vision_pipeline_source_name(source)),
-                std::string(Corona::Systems::Vision::vision_render_mode_name(mode)),
-                scene_path);
-        }
+    if (!scene_resource.has_logical_scene()) {
+        scene_resource.set_logical_scene(pipeline.shared_scene_data());
     }
 
-    const bool created_gpu_resource = !scene_resource.has_scene_gpu_resource();
-    auto scene_gpu_resource = scene_resource.ensure_scene_gpu_resource([&] {
-        return std::make_shared<vision::GeometryGpuResource>(pipeline.device());
-    });
+    const bool created_gpu_resource = !pipeline.scene().geometry().has_gpu_resource();
+    auto scene_gpu_resource = pipeline.scene().geometry().gpu_resource();
+    if (!scene_gpu_resource) {
+        scene_gpu_resource = std::make_shared<vision::GeometryGpuResource>(
+            pipeline.device());
+    }
     if (created_gpu_resource) {
         CFW_LOG_INFO(
-            "OpticsSystem: created shared Vision scene GPU resource "
+            "OpticsSystem: created per-runtime Vision scene GPU view "
             "(source={}, mode={}, path={})",
             std::string(Corona::Systems::Vision::vision_pipeline_source_name(source)),
             std::string(Corona::Systems::Vision::vision_render_mode_name(mode)),
             scene_path);
     } else {
         CFW_LOG_INFO(
-            "OpticsSystem: reusing shared Vision scene GPU resource "
+            "OpticsSystem: reusing per-runtime Vision scene GPU view "
             "(source={}, mode={}, path={})",
             std::string(Corona::Systems::Vision::vision_pipeline_source_name(source)),
             std::string(Corona::Systems::Vision::vision_render_mode_name(mode)),
@@ -893,6 +888,7 @@ void bind_pipeline_scene_gpu_resource(
     }
     pipeline->init_postprocessor(project_desc.renderer_desc.denoiser_desc);
     pipeline->init();
+    pipeline->set_output_denoise(true);
     pipeline->prepare();
     // prepare() does not create FrameBuffer::view_texture_; the render path tone
     // maps into it and we later read it back, so create it explicitly here.
@@ -934,6 +930,8 @@ struct OpticsSystem::VisionPipelineRuntime {
     VisionPipelineSource source{VisionPipelineSource::EngineBuilt};
     std::string scene_path;
     Corona::CameraVisionRenderMode mode{Corona::CameraVisionRenderMode::PathTracing};
+    uint64_t last_used_frame{0};
+    uint64_t scene_gpu_transform_version{0};
 
     // Zero-copy path: shares Vision's pre-tonemap linear color buffer with Vulkan
     // and resolves it via the vision_resolve compute pass.
@@ -959,13 +957,26 @@ struct OpticsSystem::VisionPipelineRuntime {
         if (!pipeline || !scene_resource) {
             return;
         }
-        const auto current_gpu_resource = pipeline->scene().geometry().gpu_resource();
-        if (current_gpu_resource != scene_resource->scene_gpu_resource) {
-            bind_pipeline_scene_gpu_resource(
-                *pipeline, *scene_resource, source, mode, scene_path);
+        const bool needs_geometry_prepare =
+            !pipeline->scene().geometry().has_gpu_resource();
+        bind_pipeline_scene_gpu_resource(
+            *pipeline, *scene_resource, source, mode, scene_path);
+        if (needs_geometry_prepare) {
             pipeline->prepare_geometry();
         }
-        scene_resource->mark_scene_gpu_transforms_uploaded();
+        scene_gpu_transform_version = scene_resource->logical_transform_version;
+    }
+
+    void upload_shared_scene_transforms_if_needed() {
+        if (!pipeline || !scene_resource ||
+            scene_gpu_transform_version == scene_resource->logical_transform_version) {
+            return;
+        }
+        apply_logical_instances_to_pipeline_scene(*scene_resource, pipeline->scene());
+        pipeline->activate_view_context(0u);
+        pipeline->update_geometry();
+        pipeline->invalidate_all_view_contexts();
+        scene_gpu_transform_version = scene_resource->logical_transform_version;
     }
 
     void reset_pipeline(ocarina::SP<vision::Pipeline> next_pipeline,
@@ -977,8 +988,15 @@ struct OpticsSystem::VisionPipelineRuntime {
         source = next_source;
         scene_path = std::move(next_scene_path);
         mode = next_mode;
+        scene_gpu_transform_version = 0;
         bind_shared_scene_gpu_resource();
     }
+};
+
+struct VisibleVisionCamera {
+    std::uintptr_t camera_handle{0};
+    Corona::CameraDevice camera;
+    Corona::SceneDevice scene;
 };
 
 OpticsSystem::VisionPipelineKey OpticsSystem::make_vision_pipeline_key(
@@ -1055,6 +1073,95 @@ OpticsSystem::VisionPipelineRuntime& OpticsSystem::get_or_create_runtime(
     return *it->second;
 }
 
+OpticsSystem::VisionPipelineRuntime* OpticsSystem::ensure_external_vision_runtime(
+    const VisionPipelineKey& key,
+    bool force_reload_scene_resource) {
+    if (key.source == VisionPipelineSource::EngineBuilt || key.scene_path.empty()) {
+        return &get_or_create_runtime(key);
+    }
+
+    try {
+        const auto scene_resource_key =
+            make_vision_scene_resource_key(key.scene_path, key.source);
+        if (force_reload_scene_resource) {
+            for (auto it = vision_runtimes_.begin(); it != vision_runtimes_.end();) {
+                if (!(make_vision_scene_resource_key(it->first.scene_path, it->first.source) ==
+                      scene_resource_key)) {
+                    ++it;
+                    continue;
+                }
+                if (it->second) {
+                    CFW_LOG_INFO(
+                        "OpticsSystem: releasing Vision runtime before shared scene reload ({})",
+                        describe_vision_pipeline_key(it->first));
+                    it->second->commit_and_clear_contexts();
+                }
+                it = vision_runtimes_.erase(it);
+            }
+        }
+
+        auto& runtime = get_or_create_runtime(key);
+        auto scene_resource =
+            get_or_create_vision_scene_resource(scene_resource_key, key.scene_path);
+        runtime.scene_resource = scene_resource;
+        if (force_reload_scene_resource && scene_resource) {
+            CFW_LOG_INFO("OpticsSystem: reloading shared Vision scene resource ({})",
+                         describe_vision_scene_resource_key(scene_resource->key));
+            scene_resource->reset_loaded_scene();
+        }
+
+        if (runtime.pipeline && !force_reload_scene_resource) {
+            runtime.pipeline->set_output_denoise(
+                Vision::vision_render_mode_uses_denoise(key.mode));
+            return &runtime;
+        }
+
+        auto pipeline = import_vision_scene_from_file(
+            std::filesystem::u8path(key.scene_path),
+            key.mode,
+            scene_resource,
+            key.source);
+        if (!pipeline) {
+            CFW_LOG_ERROR("OpticsSystem: External Vision scene import failed: {}",
+                          key.scene_path);
+            release_unused_vision_scene_resources();
+            return nullptr;
+        }
+
+        log_vision_pipeline_diagnostics(
+            *pipeline,
+            std::string("external import mode=") +
+                std::string(Vision::vision_render_mode_name(key.mode)));
+        runtime.reset_pipeline(std::move(pipeline), key.source, key.scene_path, key.mode);
+        CFW_LOG_INFO("OpticsSystem: loaded Vision runtime ({})",
+                     describe_vision_pipeline_key(key));
+        return &runtime;
+    } catch (const std::exception& e) {
+        CFW_LOG_ERROR("OpticsSystem: External Vision scene import threw: {}", e.what());
+        return nullptr;
+    }
+}
+
+void OpticsSystem::evict_idle_vision_runtimes(uint64_t frame_index) {
+    for (auto it = vision_runtimes_.begin(); it != vision_runtimes_.end();) {
+        if (active_vision_runtime_key_ && *active_vision_runtime_key_ == it->first) {
+            ++it;
+            continue;
+        }
+        auto& runtime = it->second;
+        if (!runtime || runtime->last_used_frame == 0 ||
+            frame_index <= runtime->last_used_frame + kVisionRuntimeIdleEvictFrames) {
+            ++it;
+            continue;
+        }
+        CFW_LOG_INFO("OpticsSystem: evicting idle Vision runtime ({})",
+                     describe_vision_pipeline_key(it->first));
+        runtime->commit_and_clear_contexts();
+        it = vision_runtimes_.erase(it);
+    }
+    release_unused_vision_scene_resources();
+}
+
 void OpticsSystem::activate_single_vision_runtime_key(const VisionPipelineKey& key) {
     if (active_vision_runtime_key_ && *active_vision_runtime_key_ == key) {
         (void)get_or_create_runtime(key);
@@ -1105,6 +1212,7 @@ void OpticsSystem::clear_vision_runtimes() {
     vision_runtimes_.clear();
     vision_scene_resources_.clear();
     active_vision_runtime_key_.reset();
+    last_vision_runtime_group_signature_ = 0;
 }
 #endif
 
@@ -2289,6 +2397,8 @@ Vision::VisionBuildResult OpticsSystem::rebuild_vision_scene(VisionPipelineRunti
         pipeline->prepare_geometry();
         if (runtime.scene_resource) {
             runtime.scene_resource->mark_scene_gpu_transforms_uploaded();
+            runtime.scene_gpu_transform_version =
+                runtime.scene_resource->logical_transform_version;
         }
         pipeline->renderer().prepare_lights(scene);
         pipeline->upload_scene_bindless_array();
@@ -2449,6 +2559,7 @@ void OpticsSystem::sync_external_live_vision_transforms(VisionPipelineRuntime& r
         scene_resource->mark_transforms_changed();
         pipeline->update_geometry();
         scene_resource->mark_scene_gpu_transforms_uploaded();
+        runtime.scene_gpu_transform_version = scene_resource->logical_transform_version;
         pipeline->invalidate_all_view_contexts();
         CFW_LOG_DEBUG("OpticsSystem: external_live updated {} proxy actor transform(s)",
                       updated_actors);
@@ -2622,72 +2733,92 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
     (void)frame_count;
     apply_pending_vision_scene_load();
 
-#ifndef CORONA_VISION_IMPORT_DEMO
-    const auto mode_selection = select_visible_vision_render_mode();
-    if (mode_selection.has_visible_camera) {
-        if (mode_selection.conflict &&
-            mode_selection.conflict_signature != last_vision_mode_conflict_signature_) {
-            last_vision_mode_conflict_signature_ = mode_selection.conflict_signature;
-            CFW_LOG_WARNING(
-                "OpticsSystem: multiple visible Vision cameras request different "
-                "render modes ({}); Phase 2 uses one global pipeline, so camera {} "
-                "mode '{}' is used for all Vision views this frame",
-                mode_selection.conflict_summary,
-                mode_selection.selected_camera,
-                std::string(Vision::vision_render_mode_name(mode_selection.mode)));
-        } else if (!mode_selection.conflict) {
-            last_vision_mode_conflict_signature_ = 0;
-        }
-        apply_vision_render_mode(mode_selection.mode);
-    }
-#endif
+    auto cleanup_runtime_contexts =
+        [&](VisionPipelineRuntime& runtime,
+            const std::unordered_set<std::uintptr_t>& active_contexts) {
+            auto& pipeline = runtime.pipeline;
+            if (!pipeline) {
+                return;
+            }
 
-    auto& runtime = active_vision_runtime();
-    auto& pipeline = runtime.pipeline;
-    if (!pipeline) return;
+            for (auto it = runtime.bridges.begin(); it != runtime.bridges.end();) {
+                if (active_contexts.contains(it->first)) {
+                    ++it;
+                    continue;
+                }
+                const auto camera_handle = it->first;
+                bool camera_exists = false;
+                bool retain_bridge = false;
+                if (auto camera = SharedDataHub::instance().camera_storage().try_acquire_read(
+                        camera_handle)) {
+                    camera_exists = true;
+                    retain_bridge = camera->surface != nullptr;
+                }
 
-#ifndef CORONA_VISION_IMPORT_DEMO
-    if (mode_selection.has_visible_camera &&
-        runtime.source == VisionPipelineSource::EngineBuilt) {
-        sync_vision_dynamic_scene(runtime);
-    } else if (mode_selection.has_visible_camera &&
-               runtime.source == VisionPipelineSource::ExternalLive) {
-        sync_external_live_vision_transforms(runtime);
-    }
-#endif
+                // A visible camera may switch back to this runtime at any time. Keep
+                // its imported bridge alive while the surface exists; closing or
+                // suspending the view clears the surface and releases the bridge.
+                if (retain_bridge) {
+                    if (!runtime.retained_contexts.contains(camera_handle)) {
+                        pipeline->commit_command();
+                        pipeline->invalidate_view_context(camera_handle);
+                        runtime.retained_contexts.insert(camera_handle);
+                    }
+                    ++it;
+                    continue;
+                }
 
-    std::unordered_set<std::uintptr_t> active_contexts;
-    for (auto scene_it = SharedDataHub::instance().scene_storage().cbegin();
-         scene_it != SharedDataHub::instance().scene_storage().cend(); ++scene_it) {
-        const auto& scene = *scene_it;
-        if (!scene.enabled) continue;
+                pipeline->commit_command();
+                it = runtime.bridges.erase(it);
+                if (camera_exists) {
+                    pipeline->invalidate_view_context(camera_handle);
+                    runtime.retained_contexts.insert(camera_handle);
+                } else {
+                    pipeline->remove_view_context(camera_handle);
+                }
+            }
+            for (auto it = runtime.retained_contexts.begin();
+                 it != runtime.retained_contexts.end();) {
+                if (SharedDataHub::instance().camera_storage().try_acquire_read(*it)) {
+                    ++it;
+                    continue;
+                }
+                pipeline->remove_view_context(*it);
+                it = runtime.retained_contexts.erase(it);
+            }
+            pipeline->activate_view_context(0u);
+        };
 
-        for (auto cam_handle : scene.camera_handles) {
-            auto camera = SharedDataHub::instance().camera_storage().try_acquire_read(cam_handle);
-            if (!camera || camera->render_backend != CameraRenderBackend::Vision ||
-                camera->surface == nullptr) {
-                continue;
+    auto render_vision_camera =
+        [&](VisionPipelineRuntime& runtime,
+            std::uintptr_t cam_handle,
+            const CameraDevice& camera,
+            const SceneDevice& scene,
+            std::unordered_set<std::uintptr_t>& active_contexts) {
+            auto& pipeline = runtime.pipeline;
+            if (!pipeline) {
+                return;
             }
 
             active_contexts.insert(cam_handle);
             runtime.retained_contexts.erase(cam_handle);
-            process_vision_actor_pick(cam_handle, *camera, scene, frame_index);
+            process_vision_actor_pick(cam_handle, camera, scene, frame_index);
             try {
                 const auto resolution =
-                    ocarina::make_uint2(std::max(camera->width, 1u),
-                                       std::max(camera->height, 1u));
+                    ocarina::make_uint2(std::max(camera.width, 1u),
+                                       std::max(camera.height, 1u));
                 if (!pipeline->has_view_context(cam_handle) &&
                     !pipeline->create_view_context(cam_handle, resolution)) {
                     CFW_LOG_ERROR(
                         "OpticsSystem: unable to allocate Vision view context for camera {}",
                         cam_handle);
-                    continue;
+                    return;
                 }
                 if (!pipeline->activate_view_context(cam_handle)) {
-                    continue;
+                    return;
                 }
 
-                Vision::sync_vision_camera(*pipeline, *camera);
+                Vision::sync_vision_camera(*pipeline, camera);
                 pipeline->upload_data();
                 pipeline->display(1.0 / 60.0);
 
@@ -2704,11 +2835,13 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                     !bridge->copy_from_framebuffer(*pipeline)) {
                     CFW_LOG_WARNING(
                         "OpticsSystem: Vision bridge unavailable for camera {} ({}x{})",
-                        cam_handle, w, h);
-                    continue;
+                        cam_handle,
+                        w,
+                        h);
+                    return;
                 }
 
-                void* surface = camera->surface;
+                void* surface = camera.surface;
                 hardware_->gbufferSize = ktm::uvec2{w, h};
                 auto& target = acquire_surface_target(surface, w, h, frame_index);
                 if (auto consumed_device =
@@ -2720,8 +2853,10 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 {
                     auto& visionResolve = *hardware_->visionResolvePipeline;
                     visionResolve.pushConsts.gbufferSize = hardware_->gbufferSize;
-                    visionResolve.pushConsts.srcBufferIndex = bridge->imported().storeDescriptor();
-                    visionResolve.pushConsts.outputImage = target.final_output.storeDescriptor();
+                    visionResolve.pushConsts.srcBufferIndex =
+                        bridge->imported().storeDescriptor();
+                    visionResolve.pushConsts.outputImage =
+                        target.final_output.storeDescriptor();
                     visionResolve.pushConsts.exposure = 1.0f;
 
                     const uint32_t dispatchX = (w + 7u) / 8u;
@@ -2747,57 +2882,202 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
                 CFW_LOG_ERROR("OpticsSystem: Vision camera {} failed: {}",
                               cam_handle, error.what());
             }
-        }
-    }
+        };
 
-    for (auto it = runtime.bridges.begin();
-         it != runtime.bridges.end();) {
-        if (active_contexts.contains(it->first)) {
-            ++it;
-            continue;
-        }
-        const auto camera_handle = it->first;
-        bool camera_exists = false;
-        bool retain_bridge = false;
-        if (auto camera =
-                SharedDataHub::instance().camera_storage().try_acquire_read(camera_handle)) {
-            camera_exists = true;
-            retain_bridge = camera->surface != nullptr;
-        }
+#ifndef CORONA_VISION_IMPORT_DEMO
+    auto& seed_runtime = active_vision_runtime();
+    if (!seed_runtime.pipeline) return;
 
-        // A visible camera may switch back to Vision at any time. Keep its imported
-        // bridge alive while the surface exists; recreating the CUDA/Vulkan import on
-        // a surface that is still being presented can stall both renderers. Closing
-        // or suspending the view clears the surface and still releases the bridge.
-        if (retain_bridge) {
-            if (!runtime.retained_contexts.contains(camera_handle)) {
-                pipeline->commit_command();
-                pipeline->invalidate_view_context(camera_handle);
-                runtime.retained_contexts.insert(camera_handle);
+    if (seed_runtime.source != VisionPipelineSource::EngineBuilt &&
+        !seed_runtime.scene_path.empty()) {
+        std::unordered_map<VisionPipelineKey,
+                           std::vector<VisibleVisionCamera>,
+                           VisionPipelineKeyHash>
+            camera_groups;
+
+        for (auto scene_it = SharedDataHub::instance().scene_storage().cbegin();
+             scene_it != SharedDataHub::instance().scene_storage().cend(); ++scene_it) {
+            const auto& scene = *scene_it;
+            if (!scene.enabled) continue;
+
+            for (auto cam_handle : scene.camera_handles) {
+                auto camera =
+                    SharedDataHub::instance().camera_storage().try_acquire_read(cam_handle);
+                if (!camera || camera->render_backend != CameraRenderBackend::Vision ||
+                    camera->surface == nullptr) {
+                    continue;
+                }
+
+                const auto key = make_vision_pipeline_key(seed_runtime.scene_path,
+                                                          camera->vision_render_mode,
+                                                          seed_runtime.source);
+                camera_groups[key].push_back({cam_handle, *camera, scene});
             }
-            ++it;
-            continue;
         }
 
-        pipeline->commit_command();
-        it = runtime.bridges.erase(it);
-        if (camera_exists) {
-            pipeline->invalidate_view_context(camera_handle);
-            runtime.retained_contexts.insert(camera_handle);
-        } else {
-            pipeline->remove_view_context(camera_handle);
+        if (camera_groups.empty()) {
+            last_vision_runtime_group_signature_ = 0;
+            evict_idle_vision_runtimes(frame_index);
+            return;
+        }
+
+        last_vision_mode_conflict_signature_ = 0;
+        std::unordered_set<VisionPipelineRuntime*> active_runtimes;
+        std::unordered_set<VisionSceneResource*> active_scene_resources;
+        std::unordered_set<VisionSceneResource*> synced_external_live_resources;
+        std::vector<std::string> runtime_group_diagnostics;
+        std::size_t visible_camera_count = 0;
+        for (auto& [key, cameras] : camera_groups) {
+            auto* runtime = ensure_external_vision_runtime(key);
+            if (runtime == nullptr || !runtime->pipeline) {
+                continue;
+            }
+
+            runtime->last_used_frame = frame_index;
+            active_runtimes.insert(runtime);
+            visible_camera_count += cameras.size();
+            if (runtime->scene_resource) {
+                active_scene_resources.insert(runtime->scene_resource.get());
+            }
+
+            std::vector<std::uintptr_t> camera_handles;
+            camera_handles.reserve(cameras.size());
+            for (const auto& visible_camera : cameras) {
+                camera_handles.push_back(visible_camera.camera_handle);
+            }
+            std::sort(camera_handles.begin(), camera_handles.end());
+            std::string camera_list;
+            for (const auto camera_handle : camera_handles) {
+                if (!camera_list.empty()) {
+                    camera_list.push_back(',');
+                }
+                camera_list.append(std::to_string(camera_handle));
+            }
+            std::string diagnostic = "runtime={";
+            diagnostic.append(describe_vision_pipeline_key(key));
+            diagnostic.append("}, shared_scene={");
+            diagnostic.append(runtime->scene_resource
+                                  ? describe_vision_scene_resource_key(
+                                        runtime->scene_resource->key)
+                                  : "<none>");
+            diagnostic.append("}, camera_count=");
+            diagnostic.append(std::to_string(cameras.size()));
+            diagnostic.append(", cameras=[");
+            diagnostic.append(camera_list);
+            diagnostic.push_back(']');
+            runtime_group_diagnostics.push_back(std::move(diagnostic));
+
+            if (runtime->source == VisionPipelineSource::ExternalLive &&
+                runtime->scene_resource &&
+                synced_external_live_resources.insert(runtime->scene_resource.get()).second) {
+                sync_external_live_vision_transforms(*runtime);
+            }
+            if (runtime->source == VisionPipelineSource::ExternalLive &&
+                runtime->scene_resource) {
+                runtime->upload_shared_scene_transforms_if_needed();
+            }
+
+            std::unordered_set<std::uintptr_t> active_contexts;
+            for (const auto& visible_camera : cameras) {
+                render_vision_camera(*runtime,
+                                     visible_camera.camera_handle,
+                                     visible_camera.camera,
+                                     visible_camera.scene,
+                                     active_contexts);
+            }
+            cleanup_runtime_contexts(*runtime, active_contexts);
+        }
+
+        std::sort(runtime_group_diagnostics.begin(), runtime_group_diagnostics.end());
+        std::string group_signature_source;
+        for (const auto& diagnostic : runtime_group_diagnostics) {
+            if (!group_signature_source.empty()) {
+                group_signature_source.push_back('|');
+            }
+            group_signature_source.append(diagnostic);
+        }
+        const auto group_signature = std::hash<std::string>{}(group_signature_source);
+        if (!runtime_group_diagnostics.empty() &&
+            group_signature != last_vision_runtime_group_signature_) {
+            last_vision_runtime_group_signature_ = group_signature;
+            CFW_LOG_INFO(
+                "OpticsSystem: external Vision runtime groups active_runtimes={}, "
+                "shared_scene_resources={}, visible_cameras={}",
+                active_runtimes.size(),
+                active_scene_resources.size(),
+                visible_camera_count);
+            for (const auto& diagnostic : runtime_group_diagnostics) {
+                CFW_LOG_INFO("OpticsSystem: external Vision runtime group {}", diagnostic);
+            }
+        }
+
+        const std::unordered_set<std::uintptr_t> no_active_contexts;
+        for (auto& [key, runtime] : vision_runtimes_) {
+            if (!runtime || active_runtimes.contains(runtime.get())) {
+                continue;
+            }
+            cleanup_runtime_contexts(*runtime, no_active_contexts);
+        }
+        evict_idle_vision_runtimes(frame_index);
+        return;
+    }
+#endif  // CORONA_VISION_IMPORT_DEMO
+
+    last_vision_runtime_group_signature_ = 0;
+
+#ifndef CORONA_VISION_IMPORT_DEMO
+    const auto mode_selection = select_visible_vision_render_mode();
+    if (mode_selection.has_visible_camera) {
+        if (mode_selection.conflict &&
+            mode_selection.conflict_signature != last_vision_mode_conflict_signature_) {
+            last_vision_mode_conflict_signature_ = mode_selection.conflict_signature;
+            CFW_LOG_WARNING(
+                "OpticsSystem: multiple visible engine-built Vision cameras request different "
+                "render modes ({}); using camera {} mode '{}' for this single runtime",
+                mode_selection.conflict_summary,
+                mode_selection.selected_camera,
+                std::string(Vision::vision_render_mode_name(mode_selection.mode)));
+        } else if (!mode_selection.conflict) {
+            last_vision_mode_conflict_signature_ = 0;
+        }
+        apply_vision_render_mode(mode_selection.mode);
+    }
+#endif
+
+    auto& runtime = active_vision_runtime();
+    auto& pipeline = runtime.pipeline;
+    if (!pipeline) return;
+
+#ifndef CORONA_VISION_IMPORT_DEMO
+    if (mode_selection.has_visible_camera &&
+        runtime.source == VisionPipelineSource::EngineBuilt) {
+        sync_vision_dynamic_scene(runtime);
+    } else if (mode_selection.has_visible_camera &&
+               runtime.source == VisionPipelineSource::ExternalLive) {
+        sync_external_live_vision_transforms(runtime);
+    }
+#endif
+
+    runtime.last_used_frame = frame_index;
+    std::unordered_set<std::uintptr_t> active_contexts;
+    for (auto scene_it = SharedDataHub::instance().scene_storage().cbegin();
+         scene_it != SharedDataHub::instance().scene_storage().cend(); ++scene_it) {
+        const auto& scene = *scene_it;
+        if (!scene.enabled) continue;
+
+        for (auto cam_handle : scene.camera_handles) {
+            auto camera = SharedDataHub::instance().camera_storage().try_acquire_read(cam_handle);
+            if (!camera || camera->render_backend != CameraRenderBackend::Vision ||
+                camera->surface == nullptr) {
+                continue;
+            }
+
+            render_vision_camera(runtime, cam_handle, *camera, scene, active_contexts);
         }
     }
-    for (auto it = runtime.retained_contexts.begin();
-         it != runtime.retained_contexts.end();) {
-        if (SharedDataHub::instance().camera_storage().try_acquire_read(*it)) {
-            ++it;
-            continue;
-        }
-        pipeline->remove_view_context(*it);
-        it = runtime.retained_contexts.erase(it);
-    }
-    pipeline->activate_view_context(0u);
+
+    cleanup_runtime_contexts(runtime, active_contexts);
+    evict_idle_vision_runtimes(frame_index);
 }
 
 void OpticsSystem::apply_pending_vision_scene_load() {
@@ -2981,44 +3261,21 @@ bool OpticsSystem::load_external_vision_scene(const std::string& scene_path,
                                               CameraVisionRenderMode mode,
                                               std::optional<VisionPipelineSource> source_override,
                                               bool force_reload_scene_resource) {
-    try {
-        const auto source = source_override.value_or(
-            has_external_live_bindings_for_scene(scene_path)
-                ? VisionPipelineSource::ExternalLive
-                : VisionPipelineSource::ExternalFile);
-        const auto key = make_vision_pipeline_key(scene_path, mode, source);
-        auto scene_resource = get_or_create_vision_scene_resource(
-            make_vision_scene_resource_key(scene_path, source),
-            scene_path);
-        if (force_reload_scene_resource && scene_resource) {
-            CFW_LOG_INFO("OpticsSystem: reloading shared Vision scene resource ({})",
-                         describe_vision_scene_resource_key(scene_resource->key));
-            scene_resource->reset_loaded_scene();
-        }
-        auto pipeline = import_vision_scene_from_file(
-            std::filesystem::u8path(scene_path), mode, scene_resource, source);
-        if (!pipeline) {
-            CFW_LOG_ERROR("OpticsSystem: External Vision scene import failed: {}", scene_path);
-            release_unused_vision_scene_resources();
-            return false;
-        }
-        log_vision_pipeline_diagnostics(
-            *pipeline,
-            std::string("external import mode=") +
-                std::string(Vision::vision_render_mode_name(mode)));
-        // Replace only after a successful import so a bad path leaves the current
-        // scene intact.
-        activate_single_vision_runtime_key(key);
-        auto& runtime = active_vision_runtime();
-        runtime.reset_pipeline(std::move(pipeline), source, scene_path, mode);
-        current_vision_render_mode_ = mode;
-        CFW_LOG_INFO("OpticsSystem: loaded Vision runtime ({})",
-                     describe_vision_pipeline_key(key));
-        return true;
-    } catch (const std::exception& e) {
-        CFW_LOG_ERROR("OpticsSystem: External Vision scene import threw: {}", e.what());
+    const auto source = source_override.value_or(
+        has_external_live_bindings_for_scene(scene_path)
+            ? VisionPipelineSource::ExternalLive
+            : VisionPipelineSource::ExternalFile);
+    const auto key = make_vision_pipeline_key(scene_path, mode, source);
+    auto* runtime = ensure_external_vision_runtime(key, force_reload_scene_resource);
+    if (runtime == nullptr || !runtime->pipeline) {
         return false;
     }
+
+    active_vision_runtime_key_ = key;
+    current_vision_render_mode_ = mode;
+    CFW_LOG_INFO("OpticsSystem: active Vision runtime key ({})",
+                 describe_vision_pipeline_key(key));
+    return true;
 }
 #endif  // CORONA_ENABLE_VISION
 

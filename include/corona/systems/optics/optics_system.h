@@ -123,6 +123,10 @@ class OpticsSystem : public Kernel::SystemBase {
         const VisionSceneResourceKey& key,
         std::string display_source_path);
     void release_unused_vision_scene_resources();
+    VisionPipelineRuntime* ensure_external_vision_runtime(
+        const VisionPipelineKey& key,
+        bool force_reload_scene_resource = false);
+    void evict_idle_vision_runtimes(uint64_t frame_index);
     void activate_single_vision_runtime_key(const VisionPipelineKey& key);
     void clear_vision_runtimes();
 
@@ -161,6 +165,7 @@ class OpticsSystem : public Kernel::SystemBase {
     Corona::CameraVisionRenderMode current_vision_render_mode_{
         Corona::CameraVisionRenderMode::PathTracing};
     std::size_t last_vision_mode_conflict_signature_{0};
+    std::size_t last_vision_runtime_group_signature_{0};
     std::optional<VisionPipelineKey> active_vision_runtime_key_;
     std::unordered_map<VisionPipelineKey,
                        std::unique_ptr<VisionPipelineRuntime>,

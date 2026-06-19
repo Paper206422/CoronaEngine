@@ -1,7 +1,12 @@
 #include "vision/vision_render_mode_config.h"
 
+#include "base/import/json_util.h"
+#include "base/import/project_desc.h"
+
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
+#include <optional>
 #include <string_view>
 
 namespace {
@@ -17,6 +22,30 @@ void expect(bool condition, std::string_view message) {
     if (!condition) {
         fail(message);
     }
+}
+
+std::optional<std::filesystem::path> find_external_ssat_scene() {
+    const std::filesystem::path relative =
+        std::filesystem::path{"test_vision"} / "render_scene" / "cbox-lf" /
+        "vision_scene.json";
+    const std::filesystem::path fixed =
+        std::filesystem::path{"D:/Documents/GitHub/CoronaExample"} / relative;
+    if (std::filesystem::exists(fixed)) {
+        return fixed;
+    }
+
+    for (auto cursor = std::filesystem::current_path(); !cursor.empty();) {
+        const auto candidate = cursor.parent_path() / "CoronaExample" / relative;
+        if (std::filesystem::exists(candidate)) {
+            return candidate;
+        }
+        const auto parent = cursor.parent_path();
+        if (parent == cursor) {
+            break;
+        }
+        cursor = parent;
+    }
+    return std::nullopt;
 }
 
 vision::DataWrap make_base_scene() {
@@ -44,7 +73,7 @@ vision::DataWrap make_base_scene() {
     };
 }
 
-void path_tracing_only_disables_output_denoise() {
+void path_tracing_rewrites_ssat_scene_to_normal_framebuffer() {
     auto data = make_base_scene();
     Corona::Systems::Vision::configure_vision_scene_for_mode(
         data, CameraVisionRenderMode::PathTracing);
@@ -52,11 +81,11 @@ void path_tracing_only_disables_output_denoise() {
     expect(!data["output"]["denoise"].get<bool>(),
            "path_tracing should set output.denoise=false");
     expect(data["pipeline"]["param"]["frame_buffer"]["type"].get<std::string>() ==
-               "lightfield",
-           "path_tracing should not rewrite framebuffer type");
+               "normal",
+           "path_tracing should use normal framebuffer");
     expect(data["render"]["integrator"]["param"]["denoiser"]["type"].get<std::string>() ==
-               "SSAT",
-           "path_tracing should not rewrite denoiser type");
+               "svgf",
+           "path_tracing should not keep SSAT denoiser descriptor");
 }
 
 void svgf_rewrites_ssat_scene_to_normal_svgf() {
@@ -134,13 +163,54 @@ void mode_names_and_denoise_flags_are_stable() {
            "ssat should enable denoise");
 }
 
+void cbox_lf_scene_supports_pt_and_ssat_mode_import() {
+    const auto scene_path = find_external_ssat_scene();
+    if (!scene_path) {
+        std::cout << "SKIP: cbox-lf external Vision scene sample not found\n";
+        return;
+    }
+
+    auto pt_data = vision::create_json_from_file(*scene_path);
+    Corona::Systems::Vision::configure_vision_scene_for_mode(
+        pt_data, CameraVisionRenderMode::PathTracing);
+    vision::ProjectDesc pt_desc;
+    pt_desc.scene_path = scene_path->parent_path();
+    pt_desc.init(pt_data);
+
+    expect(!pt_desc.output_desc.denoise,
+           "PT import from cbox-lf should disable realtime denoise");
+    expect(pt_desc.pipeline_desc.frame_buffer_desc.sub_type == "normal",
+           "PT import from cbox-lf should use a normal framebuffer");
+    expect(pt_desc.renderer_desc.integrator_desc.denoiser_desc.sub_type == "svgf",
+           "PT import from cbox-lf should not keep the SSAT denoiser descriptor");
+
+    auto ssat_data = vision::create_json_from_file(*scene_path);
+    Corona::Systems::Vision::configure_vision_scene_for_mode(
+        ssat_data, CameraVisionRenderMode::SSAT);
+    vision::ProjectDesc ssat_desc;
+    ssat_desc.scene_path = scene_path->parent_path();
+    ssat_desc.init(ssat_data);
+
+    expect(ssat_desc.output_desc.denoise,
+           "SSAT import from cbox-lf should enable realtime denoise");
+    expect(ssat_desc.pipeline_desc.frame_buffer_desc.sub_type == "lightfield",
+           "SSAT import should use a lightfield framebuffer");
+    expect(ssat_desc.renderer_desc.integrator_desc.denoiser_desc.sub_type == "SSAT",
+           "SSAT import should use the SSAT integrator denoiser");
+    expect(ssat_data["render"]["integrator"]["param"]["denoiser"]["param"]
+                    ["angular_samples"]
+                        .get<int>() == 7,
+           "SSAT import should preserve cbox-lf angular_samples parameter");
+}
+
 }  // namespace
 
 int main() {
     mode_names_and_denoise_flags_are_stable();
-    path_tracing_only_disables_output_denoise();
+    path_tracing_rewrites_ssat_scene_to_normal_framebuffer();
     svgf_rewrites_ssat_scene_to_normal_svgf();
     ssat_rewrites_svgf_scene_to_lightfield_ssat();
     missing_blocks_are_created_for_requested_mode();
+    cbox_lf_scene_supports_pt_and_ssat_mode_import();
     return 0;
 }

@@ -14,9 +14,26 @@ from plugins.MainView import main as main_view_module
 from CoronaCore.core.entities.scene import Scene
 
 
+def _find_external_cbox_lf_scene() -> Path | None:
+    relative = Path("test_vision") / "render_scene" / "cbox-lf" / "vision_scene.json"
+    fixed = Path("D:/Documents/GitHub/CoronaExample") / relative
+    if fixed.exists():
+        return fixed
+
+    cursor = Path.cwd()
+    while True:
+        candidate = cursor.parent / "CoronaExample" / relative
+        if candidate.exists():
+            return candidate
+        if cursor.parent == cursor:
+            return None
+        cursor = cursor.parent
+
+
 class FakeCamera:
     def __init__(self):
         self.render_backend = "native"
+        self.vision_render_mode = "path_tracing"
         self.call_order = []
         self.name = "Camera"
         self.camera_id = "camera-1"
@@ -35,6 +52,13 @@ class FakeCamera:
         self.call_order.append(f"set_render_backend:{mode}")
         self.render_backend = mode
 
+    def set_vision_render_mode(self, mode):
+        self.call_order.append(f"set_vision_render_mode:{mode}")
+        self.vision_render_mode = mode
+
+    def get_vision_render_mode(self):
+        return self.vision_render_mode
+
     def to_dict(self):
         return {
             "name": self.name,
@@ -43,6 +67,7 @@ class FakeCamera:
             "world_up": self.world_up,
             "fov": self.fov,
             "render_backend": self.render_backend,
+            "vision_render_mode": self.vision_render_mode,
         }
 
 
@@ -63,6 +88,7 @@ class FakeScene:
         self.vision_bindings = []
         self.vision_unsupported_shapes = []
         self.saved = False
+        self.save_snapshots = []
         self.tree_notified = False
 
     def ensure_default_camera(self):
@@ -92,6 +118,10 @@ class FakeScene:
 
     def save_data(self):
         self.saved = True
+        self.save_snapshots.append({
+            "render_backend": self._camera.render_backend,
+            "vision_render_mode": self._camera.vision_render_mode,
+        })
 
     def _notify_scene_tree_changed(self):
         self.tree_notified = True
@@ -349,6 +379,34 @@ class ExternalLiveImportTests(unittest.TestCase):
                         {"type": "cylinder", "name": "NotYetSupported"},
                     ],
                 },
+                "render": {
+                    "integrator": {
+                        "type": "pt",
+                        "param": {
+                            "denoiser": {
+                                "type": "SSAT",
+                                "param": {
+                                    "spatial_radius": 1,
+                                    "angular_samples": 7,
+                                },
+                            },
+                        },
+                    },
+                },
+                "pipeline": {
+                    "type": "fixed",
+                    "param": {
+                        "frame_buffer": {
+                            "type": "lightfield",
+                            "param": {
+                                "accumulation": True,
+                            },
+                        },
+                    },
+                },
+                "output": {
+                    "denoise": True,
+                },
             }), encoding="utf-8")
 
             scene = FakeScene()
@@ -374,6 +432,7 @@ class ExternalLiveImportTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "success")
             self.assertEqual(result["import_mode"], "external_live")
+            self.assertEqual(result["vision_render_mode"], "ssat")
             self.assertTrue(result["camera_imported"])
             self.assertEqual(scene._camera.position, [4.0, 5.0, -6.0])
             self.assertEqual(scene._camera.forward, [0.0, 0.0, 1.0])
@@ -403,6 +462,11 @@ class ExternalLiveImportTests(unittest.TestCase):
             self.assertIn("v 0 0.5 0", sphere_proxy_text)
             self.assertIn("f 1 3 2", sphere_proxy_text)
             self.assertEqual(scene.vision_import_mode, "external_live")
+            self.assertEqual(scene._camera.vision_render_mode, "ssat")
+            self.assertEqual(result["camera"]["vision_render_mode"], "ssat")
+            self.assertTrue(scene.save_snapshots)
+            self.assertTrue(all(snapshot["vision_render_mode"] == "ssat"
+                                for snapshot in scene.save_snapshots))
             self.assertEqual(scene.vision_bindings[0]["actor_guid"],
                              scene.get_actors()[0].actor_guid)
             self.assertEqual(scene.vision_bindings[0]["shape_guid"], "shape-chair")
@@ -450,10 +514,63 @@ class ExternalLiveImportTests(unittest.TestCase):
             self.assertEqual(edited_floor_matrix[1], [0.0, 2.0, 0.0, 0.0])
             self.assertEqual(edited_floor_matrix[2], [0.0, 0.0, 2.5, 0.0])
             self.assertEqual(edited_floor_matrix[3], [3.0, 4.0, 5.0, 1.0])
+            self.assertLess(call_order.index("set_vision_render_mode:ssat"),
+                            call_order.index("load_vision_scene"))
             self.assertLess(call_order.index("load_vision_scene"),
                             call_order.index("set_render_backend:vision"))
             self.assertTrue(scene.saved)
             self.assertTrue(scene.tree_notified)
+
+    def test_import_real_cbox_lf_scene_infers_ssat_and_preserves_params(self):
+        cbox_lf_scene = _find_external_cbox_lf_scene()
+        if cbox_lf_scene is None:
+            self.skipTest("cbox-lf Vision scene sample not found")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scene = FakeScene()
+            loaded_paths = []
+            call_order = scene._camera.call_order
+            fake_editor = SimpleNamespace(
+                CoronaEngine=SimpleNamespace(
+                    active_project_path=str(root),
+                    is_vision_available=lambda: True,
+                    load_vision_scene=lambda path: (
+                        call_order.append("load_vision_scene"),
+                        loaded_paths.append(path),
+                    ),
+                )
+            )
+            fake_scene_manager = SimpleNamespace(get=lambda scene_name: scene)
+
+            with patch.object(scene_tools_module, "CoronaEditor", fake_editor), \
+                 patch.object(scene_tools_module, "scene_manager", fake_scene_manager), \
+                 patch.object(scene_tools_module, "Actor", FakeActor):
+                result = scene_tools_module.SceneTools.import_vision_scene_into_current_scene(
+                    scene.route, str(cbox_lf_scene))
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["vision_render_mode"], "ssat")
+            self.assertEqual(scene._camera.vision_render_mode, "ssat")
+            self.assertEqual(result["camera"]["vision_render_mode"], "ssat")
+            self.assertEqual(scene.vision_source_path, str(cbox_lf_scene.resolve()))
+            self.assertTrue(scene.save_snapshots)
+            self.assertTrue(all(snapshot["vision_render_mode"] == "ssat"
+                                for snapshot in scene.save_snapshots))
+            self.assertEqual(len(loaded_paths), 1)
+            self.assertLess(call_order.index("set_vision_render_mode:ssat"),
+                            call_order.index("load_vision_scene"))
+            self.assertLess(call_order.index("load_vision_scene"),
+                            call_order.index("set_render_backend:vision"))
+
+            derived = json.loads(Path(loaded_paths[0]).read_text(encoding="utf-8"))
+            denoiser = derived["render"]["integrator"]["param"]["denoiser"]
+            self.assertEqual(denoiser["type"], "SSAT")
+            self.assertEqual(denoiser["param"]["spatial_radius"], 1)
+            self.assertEqual(denoiser["param"]["angular_samples"], 7)
+            self.assertEqual(derived["pipeline"]["param"]["frame_buffer"]["type"],
+                             "lightfield")
+            self.assertTrue(derived["output"]["denoise"])
 
     def test_reimport_same_vision_scene_reuses_proxies_without_duplicates(self):
         with tempfile.TemporaryDirectory() as tmp:
