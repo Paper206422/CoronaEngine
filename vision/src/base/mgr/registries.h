@@ -40,11 +40,16 @@ public:
 
 class MaterialRegistry : public TRegistry<Material> {
 private:
-    OC_MAKE_INSTANCE_CONSTRUCTOR(MaterialRegistry, s_material_registry)
+    static MaterialRegistry *s_material_registry;
     bool flatten_lobes_{true};
     bool individual_ns_{true};
 
 public:
+    MaterialRegistry() = default;
+    MaterialRegistry(const MaterialRegistry &) = delete;
+    MaterialRegistry(MaterialRegistry &&) = delete;
+    MaterialRegistry &operator=(const MaterialRegistry &) = delete;
+    MaterialRegistry &operator=(MaterialRegistry &&) = delete;
     OC_MAKE_INSTANCE_FUNC_DECL(MaterialRegistry)
     OC_MAKE_MEMBER_GETTER(flatten_lobes, &)
     OC_MAKE_MEMBER_GETTER(individual_ns, &)
@@ -57,11 +62,16 @@ public:
 struct MediumsDesc;
 class MediumRegistry : public TRegistry<Medium> {
 private:
-    OC_MAKE_INSTANCE_CONSTRUCTOR(MediumRegistry, s_medium_registry)
+    static MediumRegistry *s_medium_registry;
     bool process_mediums_{true};
     TObject<Medium> global_medium_{};
 
 public:
+    MediumRegistry() = default;
+    MediumRegistry(const MediumRegistry &) = delete;
+    MediumRegistry(MediumRegistry &&) = delete;
+    MediumRegistry &operator=(const MediumRegistry &) = delete;
+    MediumRegistry &operator=(MediumRegistry &&) = delete;
     OC_MAKE_INSTANCE_FUNC_DECL(MediumRegistry)
     [[nodiscard]] string_view UI_title() const noexcept override { return "mediums"; }
     [[nodiscard]] bool process_mediums() const noexcept;

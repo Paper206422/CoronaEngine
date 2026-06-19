@@ -30,6 +30,7 @@ void Renderer::prepare(Scene &scene) noexcept {
     sampler_->prepare();
     integrator_->prepare();
     prepare_lights(scene);
+    spectrum()->set_scene_has_dispersive_materials(scene.material_registry().has_dispersive());
     spectrum()->prepare();
 }
 

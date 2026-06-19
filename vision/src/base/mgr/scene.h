@@ -79,8 +79,8 @@ private:
     Box3f aabb_;
     SP<Material> black_body_{};
     LightManager light_manager_{};
-    MaterialRegistry *material_registry_{&MaterialRegistry::instance()};
-    MediumRegistry *medium_registry_{&MediumRegistry::instance()};
+    MaterialRegistry material_registry_{};
+    MediumRegistry medium_registry_{};
     vector<SP<ShapeGroup>> groups_;
     vector<SP<ShapeInstance>> instances_;
     float min_radius_{};
@@ -175,8 +175,8 @@ public:
     void clear_shapes() noexcept;
 
     // Materials
-    [[nodiscard]] const auto &material_registry() const noexcept { return *data_->material_registry_; }
-    [[nodiscard]] auto &material_registry() noexcept { return *data_->material_registry_; }
+    [[nodiscard]] const auto &material_registry() const noexcept { return data_->material_registry_; }
+    [[nodiscard]] auto &material_registry() noexcept { return data_->material_registry_; }
     [[nodiscard]] const auto &materials() const noexcept { return material_registry().elements(); }
     [[nodiscard]] auto &materials() noexcept { return material_registry().elements(); }
     void add_material(SP<Material> material) noexcept;
@@ -185,11 +185,11 @@ public:
     [[nodiscard]] SP<Material> obtain_black_body() noexcept;
 
     // Mediums
-    [[nodiscard]] const auto &medium_registry() const noexcept { return *data_->medium_registry_; }
-    [[nodiscard]] auto &medium_registry() noexcept { return *data_->medium_registry_; }
-    [[nodiscard]] const auto &mediums() const noexcept { return data_->medium_registry_->elements(); }
-    [[nodiscard]] auto &mediums() noexcept { return data_->medium_registry_->elements(); }
-    [[nodiscard]] bool process_mediums() const noexcept { return data_->medium_registry_->process_mediums(); }
+    [[nodiscard]] const auto &medium_registry() const noexcept { return data_->medium_registry_; }
+    [[nodiscard]] auto &medium_registry() noexcept { return data_->medium_registry_; }
+    [[nodiscard]] const auto &mediums() const noexcept { return data_->medium_registry_.elements(); }
+    [[nodiscard]] auto &mediums() noexcept { return data_->medium_registry_.elements(); }
+    [[nodiscard]] bool process_mediums() const noexcept { return data_->medium_registry_.process_mediums(); }
     void load_mediums(const MediumsDesc &desc);
 
     // Lights

@@ -279,7 +279,7 @@ void Geometry::clear() noexcept {
 }
 
 Interaction Geometry::compute_surface_interaction(const TriangleHitVar &hit, bool is_complete) const noexcept {
-    Interaction it{Global::instance().pipeline()->scene().process_mediums()};
+    Interaction it{process_mediums_};
     it.prim_id = hit.prim_id;
     Var inst = data()->instances().read(hit.inst_id);
     it.inst_id = hit.inst_id;

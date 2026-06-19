@@ -77,6 +77,15 @@ void scene_tables_accept_explicit_scene_gpu_bindless() {
                   void (vision::Renderer::*)(vision::Scene&) noexcept>);
 }
 
+void spectrum_accepts_scene_material_state() {
+    static_assert(std::is_same_v<
+                  decltype(&vision::Spectrum::set_scene_has_dispersive_materials),
+                  void (vision::Spectrum::*)(bool) noexcept>);
+    static_assert(std::is_same_v<
+                  decltype(&vision::Spectrum::scene_has_dispersive_materials),
+                  bool (vision::Spectrum::*)() const noexcept>);
+}
+
 void image_pool_accepts_explicit_scene_gpu_bindless() {
     static_assert(std::is_same_v<
                   decltype(static_cast<vision::RegistrableTexture3D (vision::ImagePool::*)(
@@ -111,6 +120,16 @@ void geometry_defaults_to_unbound_gpu_resource() {
            "default Geometry should not allocate scene GPU resources by itself");
     expect(geometry.data() == nullptr,
            "default Geometry data should be absent until a GPU resource is bound");
+    expect(!geometry.process_mediums(),
+           "default Geometry should not read medium state from a global pipeline");
+}
+
+void geometry_medium_state_is_scene_owned() {
+    vision::Geometry geometry;
+    geometry.set_process_mediums(true);
+
+    expect(geometry.process_mediums(),
+           "Geometry medium state should be supplied by the owning scene");
 }
 
 void geometry_binds_external_scene_gpu_resource() {
@@ -173,6 +192,26 @@ void scene_views_share_logical_scene_containers() {
            "instances should be shared logical scene state across Scene views");
     expect(&svgf_scene_view.image_pool() == &ssat_scene_view.image_pool(),
            "image textures should be shared scene state across Scene views");
+    expect(&svgf_scene_view.material_registry() == &ssat_scene_view.material_registry(),
+           "material registry should be shared scene state across Scene views");
+    expect(&svgf_scene_view.medium_registry() == &ssat_scene_view.medium_registry(),
+           "medium registry should be shared scene state across Scene views");
+}
+
+void independent_scene_data_owns_independent_scene_registries() {
+    auto first_scene = std::make_shared<vision::SceneData>();
+    auto second_scene = std::make_shared<vision::SceneData>();
+    vision::Scene first_view{first_scene};
+    vision::Scene second_view{second_scene};
+
+    expect(&first_view.material_registry() != &second_view.material_registry(),
+           "different logical scenes should not share material registries");
+    expect(&first_view.medium_registry() != &second_view.medium_registry(),
+           "different logical scenes should not share medium registries");
+    expect(&first_view.material_registry() != &vision::MaterialRegistry::instance(),
+           "scene-owned material registry should not alias the legacy singleton");
+    expect(&first_view.medium_registry() != &vision::MediumRegistry::instance(),
+           "scene-owned medium registry should not alias the legacy singleton");
 }
 
 vision::ProjectDesc make_empty_project_desc() {
@@ -276,12 +315,15 @@ int main() {
     geometry_gpu_resource_is_external_ownership_boundary();
     geometry_requires_explicit_command_stream_for_gpu_updates();
     scene_tables_accept_explicit_scene_gpu_bindless();
+    spectrum_accepts_scene_material_state();
     image_pool_accepts_explicit_scene_gpu_bindless();
     geometry_defaults_to_unbound_gpu_resource();
+    geometry_medium_state_is_scene_owned();
     geometry_binds_external_scene_gpu_resource();
     multiple_geometry_views_share_one_scene_gpu_resource();
     shape_instance_mesh_constructor_is_cpu_only();
     scene_views_share_logical_scene_containers();
+    independent_scene_data_owns_independent_scene_registries();
     two_scene_views_bind_one_real_scene_gpu_resource();
     two_pipelines_consume_one_shared_logical_scene();
     return 0;

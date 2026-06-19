@@ -86,12 +86,15 @@ public:
 class Geometry {
 private:
     SP<GeometryGpuResource> gpu_resource_;
+    bool process_mediums_{false};
 
 public:
     Geometry();
     void init(Device &device);
     void bind_gpu_resource(SP<GeometryGpuResource> resource) noexcept;
     [[nodiscard]] bool has_gpu_resource() const noexcept { return gpu_resource_ != nullptr; }
+    void set_process_mediums(bool process_mediums) noexcept { process_mediums_ = process_mediums; }
+    [[nodiscard]] bool process_mediums() const noexcept { return process_mediums_; }
     [[nodiscard]] SP<GeometryGpuResource> gpu_resource() noexcept { return gpu_resource_; }
     [[nodiscard]] SP<const GeometryGpuResource> gpu_resource() const noexcept { return gpu_resource_; }
 

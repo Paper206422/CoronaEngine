@@ -119,6 +119,7 @@ void Scene::init(const SceneDesc &scene_desc) {
 
 void Scene::prepare() noexcept {
     material_registry().remove_unused_elements();
+    geometry().set_process_mediums(process_mediums());
     register_instance_meshes();
     tidy_up();
     fill_instances();
@@ -140,7 +141,7 @@ void Scene::update_runtime_object(const vision::IObjectConstructor *constructor)
 
 void Scene::tidy_up() noexcept {
     material_registry().tidy_up();
-    data_->medium_registry_->tidy_up();
+    data_->medium_registry_.tidy_up();
     if (auto *data = data_->geometry_.data()) {
         data->tidy_up_meshes();
     }
@@ -221,6 +222,7 @@ void Scene::bind_geometry_gpu_resource(SP<GeometryGpuResource> resource) noexcep
         return;
     }
     data_->geometry_.bind_gpu_resource(ocarina::move(resource));
+    data_->geometry_.set_process_mediums(process_mediums());
     register_instance_meshes();
     fill_instances();
 }
@@ -280,6 +282,7 @@ void Scene::fill_instances() {
 
 void Scene::load_mediums(const MediumsDesc &md) {
     medium_registry().load_mediums(md);
+    data_->geometry_.set_process_mediums(process_mediums());
 }
 
 void Scene::prepare_materials() {
