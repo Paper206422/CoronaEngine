@@ -1,77 +1,106 @@
-"""多人协同管理器"""
+"""Thin Python proxy for C++ collaboration state.
+
+Python agents may run local AI/tool logic, but network transport, locks,
+preview intents, room state, member state, and agent roster live in C++.
+"""
 from __future__ import annotations
-import logging, threading, time
+
+import logging
+import threading
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
-_DEFAULT_LOCK_TIMEOUT = 30.0; _PREVIEW_COLLISION_DELTA = 0.5
+_PREVIEW_COLLISION_DELTA = 0.5
 
-class CollaborationManager:
-    def __init__(self):
-        self._lock = threading.RLock()
-        self._object_locks: Dict[str, Dict[str, Any]] = {}
-        self._user_status: Dict[str, Dict[str, Any]] = {}
-        self._conflict_log: List[Dict[str, Any]] = []
 
-    def lock_object(self, object_id: str, user_id: str, operation: str = "modify") -> bool:
-        with self._lock:
-            self._cleanup_expired_locks()
-            existing = self._object_locks.get(object_id)
-            if existing:
-                if existing["user_id"] == user_id: existing["timestamp"] = time.time(); return True
-                else: logger.info("[Collab] lock conflict: %s by %s (req %s)", object_id, existing["user_id"], user_id); return False
-            self._object_locks[object_id] = {"user_id": user_id, "timestamp": time.time(), "operation": operation}; return True
+def _engine():
+    try:
+        import CoronaEngine  # type: ignore
 
-    def unlock_object(self, object_id: str, user_id: str) -> bool:
-        with self._lock:
-            if self._object_locks.get(object_id, {}).get("user_id") == user_id: del self._object_locks[object_id]; return True
-            return False
-
-    def is_locked(self, object_id: str) -> Optional[str]:
-        with self._lock: self._cleanup_expired_locks(); return self._object_locks.get(object_id, {}).get("user_id")
-
-    def broadcast_intent(self, user_id: str, tooltip: str, preview_position: List[float] = None, status: str = "placing_object"):
-        with self._lock:
-            self._user_status[user_id] = {"status": status, "tooltip": tooltip, "preview_position": list(preview_position) if preview_position else None, "timestamp": time.time()}
-
-    def clear_intent(self, user_id: str):
-        with self._lock: self._user_status.pop(user_id, None)
-
-    def get_active_intents(self) -> Dict[str, Dict[str, Any]]:
-        with self._lock: self._cleanup_expired_status(); return dict(self._user_status)
-
-    def get_status_bar_text(self) -> str:
-        with self._lock:
-            active = [f"{uid}: {s['tooltip']}" for uid, s in self._user_status.items() if s["status"] != "idle"]
-            return " | ".join(active) if active else "无活跃操作"
-
-    def check_preview_collision(self, user_id: str, position: List[float], exclude_user: bool = True) -> Optional[str]:
-        if not position or len(position) < 2: return None
-        with self._lock:
-            for uid, s in self._user_status.items():
-                if exclude_user and uid == user_id: continue
-                op = s.get("preview_position")
-                if not op or len(op) < 2: continue
-                if ((position[0]-op[0])**2 + (position[2]-op[2])**2)**0.5 < _PREVIEW_COLLISION_DELTA: return uid
+        return CoronaEngine
+    except Exception as exc:
+        logger.debug("[Collab] CoronaEngine bindings unavailable: %s", exc)
         return None
 
-    def _cleanup_expired_locks(self):
-        now = time.time()
-        for oid in [o for o, l in self._object_locks.items() if now - l["timestamp"] > _DEFAULT_LOCK_TIMEOUT]:
-            del self._object_locks[oid]
-    def _cleanup_expired_status(self):
-        now = time.time()
-        for uid in [u for u, s in self._user_status.items() if now - s["timestamp"] > 60.0]:
-            del self._user_status[uid]
-    def clear(self):
-        with self._lock: self._object_locks.clear(); self._user_status.clear(); self._conflict_log.clear()
 
-_COLLAB_INSTANCE: Optional[CollaborationManager] = None; _COLLAB_LOCK = threading.Lock()
+def _position3(position: Optional[List[float]]) -> List[float]:
+    values = list(position or [])
+    while len(values) < 3:
+        values.append(0.0)
+    return [float(values[0]), float(values[1]), float(values[2])]
+
+
+class CollaborationManager:
+    def lock_object(self, object_id: str, user_id: str, operation: str = "modify") -> bool:
+        engine = _engine()
+        if not engine or not hasattr(engine, "network_lock_object"):
+            return False
+        return bool(engine.network_lock_object(object_id, user_id, operation))
+
+    def unlock_object(self, object_id: str, user_id: str) -> bool:
+        engine = _engine()
+        if not engine or not hasattr(engine, "network_unlock_object"):
+            return False
+        return bool(engine.network_unlock_object(object_id, user_id))
+
+    def is_locked(self, object_id: str) -> Optional[str]:
+        engine = _engine()
+        if not engine or not hasattr(engine, "network_locked_by"):
+            return None
+        owner = engine.network_locked_by(object_id)
+        return owner or None
+
+    def broadcast_intent(
+        self,
+        user_id: str,
+        tooltip: str,
+        preview_position: List[float] = None,
+        status: str = "placing_object",
+    ):
+        engine = _engine()
+        if engine and hasattr(engine, "network_broadcast_intent"):
+            engine.network_broadcast_intent(user_id, tooltip, _position3(preview_position), status)
+
+    def clear_intent(self, user_id: str):
+        self.broadcast_intent(user_id, "", [0.0, 0.0, 0.0], "idle")
+
+    def get_active_intents(self) -> Dict[str, Dict[str, Any]]:
+        return {}
+
+    def get_status_bar_text(self) -> str:
+        return "无活跃操作"
+
+    def check_preview_collision(
+        self,
+        user_id: str,
+        position: List[float],
+        exclude_user: bool = True,
+    ) -> Optional[str]:
+        engine = _engine()
+        if not engine or not hasattr(engine, "network_check_preview_collision"):
+            return None
+        conflict = engine.network_check_preview_collision(
+            user_id, _position3(position), _PREVIEW_COLLISION_DELTA
+        )
+        if exclude_user and conflict == user_id:
+            return None
+        return conflict or None
+
+    def clear(self):
+        return None
+
+
+_COLLAB_INSTANCE: Optional[CollaborationManager] = None
+_COLLAB_LOCK = threading.Lock()
+
+
 def get_collaboration_manager() -> CollaborationManager:
     global _COLLAB_INSTANCE
     if _COLLAB_INSTANCE is None:
         with _COLLAB_LOCK:
-            if _COLLAB_INSTANCE is None: _COLLAB_INSTANCE = CollaborationManager()
+            if _COLLAB_INSTANCE is None:
+                _COLLAB_INSTANCE = CollaborationManager()
     return _COLLAB_INSTANCE
+
 
 __all__ = ["CollaborationManager", "get_collaboration_manager"]

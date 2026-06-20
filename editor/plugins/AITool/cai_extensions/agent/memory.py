@@ -125,32 +125,109 @@ def _name_overlap(a: str, b: str) -> float:
     return len(set_a & set_b) / len(set_a | set_b)
 
 
-# ── 进程级单例（房主侧共享，使记忆跨多次操作持久）────────────────
+# ── 进程级分桶单例（房主侧共享，使同一场景记忆跨多次操作持久）────────────
 import threading as _threading
-_MEMORY_INSTANCE: Optional["MemoryManager"] = None
+_MEMORY_MAX_INSTANCES = 128
+_MEMORY_INSTANCES: "OrderedDict[str, MemoryManager]" = OrderedDict()
 _MEMORY_LOCK = _threading.Lock()
 
 
+def _clean_scope_part(value: Any) -> str:
+    text = str(value or "").strip()
+    text = " ".join(text.split())
+    return text.replace("|", "_").replace("=", "_")
+
+
+def make_memory_scope_id(
+    scene_id: str = "default",
+    *,
+    room_id: str = "",
+    plan_id: str = "",
+    batch_id: str = "",
+    agent_id: str = "",
+) -> str:
+    """Build a stable legacy MemoryManager bucket id with explicit scope parts."""
+    scene = _clean_scope_part(scene_id) or "default"
+    parts = [("scene", scene)]
+    for key, value in (
+        ("room", room_id),
+        ("plan", plan_id),
+        ("batch", batch_id),
+        ("agent", agent_id),
+    ):
+        cleaned = _clean_scope_part(value)
+        if cleaned:
+            parts.append((key, cleaned))
+    if len(parts) == 1 and scene == "default":
+        return "default"
+    return "|".join(f"{key}={value}" for key, value in parts)
+
+
 def get_memory_manager(scene_id: str = "default") -> "MemoryManager":
-    """获取进程级共享的 MemoryManager 单例。
+    """获取按 scene_id 分桶的 MemoryManager。
 
-    Coordinator 每次操作都复用同一实例，从而实现「连续放椅子→主动询问」
-    这类记忆增强（替代原来每次 new MemoryManager 即弃的行为）。
+    旧实现是全进程单例，第一次用 default 创建后会忽略后续 scene_id，
+    在多人/多房间场景下容易串记忆。这里保留同一 scene_id 内的连续记忆，
+    但不同 room/plan 可以通过不同 scene_id 隔离。
     """
-    global _MEMORY_INSTANCE
-    if _MEMORY_INSTANCE is None:
-        with _MEMORY_LOCK:
-            if _MEMORY_INSTANCE is None:
-                _MEMORY_INSTANCE = MemoryManager(scene_id=scene_id)
-    return _MEMORY_INSTANCE
-
-
-def reset_memory_manager() -> None:
-    """重置记忆单例（换场景/新房间时调用）。"""
-    global _MEMORY_INSTANCE
+    key = str(scene_id or "default")
     with _MEMORY_LOCK:
-        _MEMORY_INSTANCE = None
+        memory = _MEMORY_INSTANCES.get(key)
+        if memory is not None:
+            _MEMORY_INSTANCES.move_to_end(key)
+            return memory
+        memory = MemoryManager(scene_id=key)
+        _MEMORY_INSTANCES[key] = memory
+        _evict_memory_instances_locked()
+        return memory
+
+
+def get_scoped_memory_manager(
+    scene_id: str = "default",
+    *,
+    room_id: str = "",
+    plan_id: str = "",
+    batch_id: str = "",
+    agent_id: str = "",
+) -> "MemoryManager":
+    """获取按 scene/room/plan/batch/agent 显式分桶的旧 MemoryManager。"""
+    return get_memory_manager(
+        make_memory_scope_id(
+            scene_id=scene_id,
+            room_id=room_id,
+            plan_id=plan_id,
+            batch_id=batch_id,
+            agent_id=agent_id,
+        )
+    )
+
+
+def reset_memory_manager(scene_id: str | None = None) -> None:
+    """重置记忆实例；传 scene_id 时只清理该场景。"""
+    with _MEMORY_LOCK:
+        if scene_id is None:
+            _MEMORY_INSTANCES.clear()
+        else:
+            _MEMORY_INSTANCES.pop(str(scene_id or "default"), None)
+
+
+def memory_manager_registry_snapshot() -> Dict[str, Any]:
+    """Return a payload-safe snapshot of legacy memory buckets for observability."""
+    with _MEMORY_LOCK:
+        return {
+            "size": len(_MEMORY_INSTANCES),
+            "limit": max(1, int(_MEMORY_MAX_INSTANCES)),
+            "scope_ids": list(_MEMORY_INSTANCES.keys()),
+        }
+
+
+def _evict_memory_instances_locked() -> None:
+    limit = max(1, int(_MEMORY_MAX_INSTANCES))
+    while len(_MEMORY_INSTANCES) > limit:
+        evicted_scope, _ = _MEMORY_INSTANCES.popitem(last=False)
+        logger.info("[MemoryManager] evicted legacy memory scope: %s", evicted_scope)
 
 
 __all__ = ["SessionMemory", "SceneMemory", "MemoryManager",
-           "get_memory_manager", "reset_memory_manager"]
+           "make_memory_scope_id", "get_memory_manager", "get_scoped_memory_manager",
+           "memory_manager_registry_snapshot", "reset_memory_manager"]

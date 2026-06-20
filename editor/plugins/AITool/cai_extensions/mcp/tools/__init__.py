@@ -46,7 +46,14 @@ class SceneQueryInput(BaseModel):
 class TransformModelInput(BaseModel):
     scene_name: str = Field(default=DEFAULT_SCENE_NAME, description="目标场景名称")
     model_name: str = Field(description="需要变换的模型名称")
-    operation: Literal["scale", "move", "rotate"] = Field(
+    operation: Literal[
+        "scale",
+        "move",
+        "rotate",
+        "scale_delta",
+        "translate",
+        "rotate_delta",
+    ] = Field(
         default="scale", description=SCENE_TRANSFORM_PROMPTS.fields["transform_type"]
     )
     scale_factor: float | None = Field(
@@ -137,7 +144,14 @@ def _build_transform_tool(scene_manager) -> StructuredTool:
         *,
         scene_name: str = DEFAULT_SCENE_NAME,
         model_name: str,
-        operation: Literal["scale", "move", "rotate"] = "scale",
+        operation: Literal[
+            "scale",
+            "move",
+            "rotate",
+            "scale_delta",
+            "translate",
+            "rotate_delta",
+        ] = "scale",
         scale_factor: float | None = None,
         vector: Tuple[float, float, float] | None = None,
     ) -> str:
@@ -162,22 +176,22 @@ def _build_transform_tool(scene_manager) -> StructuredTool:
                 ).to_envelope(interface_type="scene")
 
             op = data.operation.lower()
-            if op == "scale":
+            if op in ("scale", "scale_delta"):
                 if data.scale_factor is not None:
-                    v = [data.scale_factor] * 3
+                    factor = data.scale_factor
                 elif data.vector is not None:
-                    v = list(data.vector)
+                    factor = list(data.vector)
                 else:
-                    raise ValueError("scale 操作需要提供 scale_factor 或 vector")
-                actor.set_scale(v)
-            elif op == "move":
+                    raise ValueError("scale_delta/scale 操作需要提供 scale_factor 或 vector")
+                actor.scale_delta(factor)
+            elif op in ("move", "translate"):
                 if data.vector is None:
-                    raise ValueError("move 操作需要提供 vector")
-                actor.move(list(data.vector))
-            elif op == "rotate":
+                    raise ValueError("translate/move 操作需要提供 vector")
+                actor.translate(list(data.vector))
+            elif op in ("rotate", "rotate_delta"):
                 if data.vector is None:
-                    raise ValueError("rotate 操作需要提供 vector")
-                actor.rotate(list(data.vector))
+                    raise ValueError("rotate_delta/rotate 操作需要提供 vector")
+                actor.rotate_delta(list(data.vector))
             else:
                 return build_error_result(
                     error_message=f"Unsupported operation '{data.operation}'"

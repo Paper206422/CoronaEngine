@@ -19,6 +19,8 @@ from Quasar.ai_tools.response_adapter import (
     build_error_result,
 )
 
+from .transform_grounding import resolve_actor_overlaps, snap_actor_to_ground
+
 DEFAULT_SCENE_NAME = ""
 
 
@@ -93,11 +95,23 @@ class SetActorTransformInput(BaseModel):
     )
     rotation: Optional[Tuple[float, float, float]] = Field(
         default=None,
-        description="绝对旋转 [rx, ry, rz] (欧拉角，度)，不传则不修改",
+        description="绝对旋转 [rx, ry, rz] (欧拉角，弧度)，不传则不修改；用户说角度时需先转换为弧度",
     )
     scale: Optional[Tuple[float, float, float]] = Field(
         default=None,
         description="绝对缩放 [sx, sy, sz]，不传则不修改",
+    )
+    snap_to_ground: bool = Field(
+        default=True,
+        description="变换后是否按当前模型 AABB 自动贴地，默认开启以减少缩放后的底座穿模",
+    )
+    ground_y: float = Field(
+        default=0.0,
+        description="贴地目标高度，默认世界地面/平台高度 0",
+    )
+    ground_clearance: float = Field(
+        default=0.02,
+        description="贴地后的安全抬高余量，避免底座与地面轻微穿模",
     )
 
 
@@ -110,6 +124,9 @@ def _build_set_actor_transform_tool(scene_manager) -> StructuredTool:
         position: Optional[Tuple[float, float, float]] = None,
         rotation: Optional[Tuple[float, float, float]] = None,
         scale: Optional[Tuple[float, float, float]] = None,
+        snap_to_ground: bool = True,
+        ground_y: float = 0.0,
+        ground_clearance: float = 0.02,
     ) -> str:
         try:
             if position is None and rotation is None and scale is None:
@@ -124,6 +141,10 @@ def _build_set_actor_transform_tool(scene_manager) -> StructuredTool:
                 ).to_envelope(interface_type="scene")
 
             actor = scene.find_actor(actor_name)
+            if actor is None:
+                # shell 外壳 actor 实际名带 __shell_ 前缀（如 "__shell_蒙古包"），
+                # 但用户/LLM 只说 "蒙古包"。精确匹配失败时回退到带前缀名。
+                actor = scene.find_actor(f"__shell_{actor_name}")
             if actor is None:
                 return build_error_result(
                     error_message=f"Actor '{actor_name}' not found"
@@ -140,6 +161,26 @@ def _build_set_actor_transform_tool(scene_manager) -> StructuredTool:
             if scl_list is not None:
                 actor.set_scale(scl_list)
 
+            snap_position = None
+            overlap_result = None
+            if snap_to_ground and (pos_list is not None or scl_list is not None):
+                snap_position = snap_actor_to_ground(
+                    actor,
+                    ground_y=ground_y,
+                    clearance=ground_clearance,
+                )
+                if snap_position is not None:
+                    pos_list = snap_position
+                try:
+                    overlap_result = resolve_actor_overlaps(
+                        actor,
+                        [a for a in scene.get_actors() if a is not actor],
+                    )
+                    if overlap_result and overlap_result.get("changed"):
+                        pos_list = list(actor.get_position())
+                except Exception:
+                    overlap_result = None
+
             # 同步更新 scene.json
             json_updated = _try_update_scene_json(
                 actor_name, pos_list, rot_list, scl_list
@@ -150,6 +191,8 @@ def _build_set_actor_transform_tool(scene_manager) -> StructuredTool:
                 "position": list(actor.get_position()),
                 "rotation": list(actor.get_rotation()),
                 "scale": list(actor.get_scale()),
+                "ground_snapped": snap_position is not None,
+                "overlap_resolved": bool(overlap_result and overlap_result.get("changed")),
                 "scene_json_updated": json_updated,
             }
             part = build_part(
@@ -170,7 +213,7 @@ def _build_set_actor_transform_tool(scene_manager) -> StructuredTool:
             "绝对设置引擎场景中物体的位置/旋转/缩放。"
             "与 transform_model（相对偏移）不同，本工具直接设置绝对坐标。"
             "传入 None 的字段保持不变。"
-            "坐标: X+右, Y+上, Z+屏幕内侧。旋转单位为度(欧拉角)。"
+            "坐标: X+右, Y+上, Z+屏幕内侧。旋转单位为弧度(欧拉角)，例如 90度=1.5708。"
         ),
         args_schema=SetActorTransformInput,
         func=_set_actor_transform,

@@ -9,10 +9,14 @@ logger = logging.getLogger(__name__)
 
 INTENT_SYSTEM_PROMPT = """你是场景编辑助手。分析用户输入，输出结构化 JSON。
 动作类型: add/delete/move/modify/question
+判别规则:
+- move: 改变物体位置(平移/挪动/推拉)，关键词: 移、挪、搬、推、拉、往左、往右
+- modify: 改变物体大小/比例/角度，关键词: 放大、缩小、变大、变小、旋转、改成、修改、调整
+- **重点**: "缩小一倍""放大两倍""变大"等尺寸变化一律是 modify，不是 move
 输出: {"action":"add","target":"物体名","confidence":0.87,"parameters":{"zone":"bar_area","partition":"indoor","relation":"near","relation_target":"参照物","distance_guide":0.5,"quantity":1,"style_deviation":false,"deviation_reason":null},"reasoning":[],"ambiguities":[]}
 只输出 JSON。"""
 
-_ACTION_KEYWORDS = {"add":["加个","添加","放个","增加","创建","添加一个","加一个","放一个","新增"],"delete":["删掉","删除","移除","去掉","清除","干掉"],"move":["移","挪","移动","搬","推到","拉到","往左","往右","往前","往后"],"modify":["放大","缩小","变大","变小","旋转","改成","修改","调整"]}
+_ACTION_KEYWORDS = {"add":["加个","添加","放个","增加","创建","添加一个","加一个","放一个","新增"],"delete":["删掉","删除","移除","去掉","清除","干掉"],"modify":["放大","缩小","变大","变小","旋转","改成","修改","调整"],"move":["移","挪","移动","搬","推到","拉到","往左","往右","往前","往后"]}
 _ZONE_KEYWORDS = {"bar_area":["吧台","酒吧","调酒","酒柜","高脚凳"],"seating_area":["沙发","座位","休息","茶几","椅子","凳子"],"entrance":["门口","入口","大门"],"service":["厨房","吧台","后厨"]}
 _RELATION_KEYWORDS = {"near":["旁边","附近","靠着","挨着","边上","侧"],"on":["上面","顶上","上方"],"under":["下面","底下","下方"],"in_front":["前面","前方","对面"],"against_wall":["墙边","靠墙","贴墙"],"between":["之间","中间"],"left":["左边","左侧","往左","左面"],"right":["右边","右侧","往右","右面"]}
 
@@ -27,8 +31,16 @@ def _keyword_fallback(user_text: str) -> Dict[str, Any]:
     relation = "near"
     for rel, kws in _RELATION_KEYWORDS.items():
         if any(re.search(kw, text) for kw in kws): relation = rel; break
-    target = ""; m = re.search(r'加个(.+?)(?:[，。,.]|$)', text) or re.search(r'添加(.+?)(?:[，。,.]|$)', text) or re.search(r'把(.+?)(?:移|删|放大|缩小)', text)
-    if m: target = m.group(1).strip()
+    target = ""
+    for pat in [r'加个(.+?)(?:[，。,.]|$)', r'添加(.+?)(?:[，。,.]|$)',
+                r'把(.+?)(?:移|删|放大|缩小|旋转|调整|修改)',
+                r'(?:对|给)(?:这个|那个)?(.+?)(?:缩小|放大|旋转|调整|修改|移动|删除)',
+                r'(?:放大|缩小|旋转|删除|移除|移动)(.+?)(?:[，。,.]|$)']:  # 动词开头
+        m = re.search(pat, text)
+        if m:
+            target = m.group(1).strip()
+            if target:
+                break
     if not target: target = text[:30]
     relation_target = ""; m2 = re.search(r'(?:旁边|附近|靠着|挨着|前面|后面|上面)(.+)', text) or re.search(r'在(.+?)的?', text)
     if m2: relation_target = m2.group(1).strip()[:20]
@@ -78,8 +90,8 @@ class IntentAgent:
         try: result = json.loads(text)
         except json.JSONDecodeError: return _keyword_fallback(original_input)
         if not isinstance(result, dict): return _keyword_fallback(original_input)
-        return {"action": str(result.get("action", "add")).strip().lower(), "target": str(result.get("target", "")).strip(), "confidence": float(result.get("confidence", 0.7)),
-                "parameters": {"zone": str(result.get("parameters", {}).get("zone", "general")), "partition": str(result.get("parameters", {}).get("partition", "indoor")), "relation": str(result.get("parameters", {}).get("relation", "near")).lower(), "relation_target": str(result.get("parameters", {}).get("relation_target", "")), "distance_guide": float(result.get("parameters", {}).get("distance_guide", 0.5)), "quantity": int(result.get("parameters", {}).get("quantity", 1)), "style_deviation": bool(result.get("parameters", {}).get("style_deviation", False)), "deviation_reason": result.get("parameters", {}).get("deviation_reason")},
+        return {"action": str(result.get("action") or "add").strip().lower(), "target": str(result.get("target") or "").strip(), "confidence": float(result.get("confidence") or 0.7),
+                "parameters": {"zone": str(result.get("parameters", {}).get("zone") or "general"), "partition": str(result.get("parameters", {}).get("partition") or "indoor"), "relation": str(result.get("parameters", {}).get("relation") or "near").lower(), "relation_target": str(result.get("parameters", {}).get("relation_target") or ""), "distance_guide": float(result.get("parameters", {}).get("distance_guide") or 0.5), "quantity": int(result.get("parameters", {}).get("quantity") or 1), "style_deviation": bool(result.get("parameters", {}).get("style_deviation", False)), "deviation_reason": result.get("parameters", {}).get("deviation_reason")},
                 "reasoning": result.get("reasoning", []), "ambiguities": result.get("ambiguities", [])}
 
     def _empty_intent(self) -> Dict[str, Any]:

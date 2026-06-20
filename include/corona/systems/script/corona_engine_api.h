@@ -268,6 +268,7 @@ class Camera {
     [[nodiscard]] std::uintptr_t get_handle() const;
     void set_surface(void* surface);
     [[nodiscard]] void* get_surface() const;
+    void set_offscreen_capture_mode(bool enabled);
     void save_screenshot(const std::string& path) const;
     bool save_screenshot_sync(const std::string& path) const;
 

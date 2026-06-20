@@ -14,6 +14,11 @@ from .constants import IMAGE_MAX_WORKERS
 from .formatters import NO_OUTPUT, format_generate_image_progress_parts
 from .helpers import extract_image_url, get_generate_image_tool
 from .test_cases import get_test_case
+from ..model_retrieval_workflow.local_model_library import (
+    lookup_image,
+    lookup_model,
+    save_image,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,21 +33,31 @@ def _normalize_cache_key(item_name: str) -> str:
 
 
 def _get_cached_image(item_name: str) -> str | None:
-    """线程安全读取缓存，命中返回 URL，否则返回 None。"""
+    """三级缓存读取：内存 → 本地图片库 → None。命中本地库则回填内存。"""
     key = _normalize_cache_key(item_name)
     if not key:
         return None
     with _image_cache_lock:
-        return _image_cache.get(key)
+        hit = _image_cache.get(key)
+    if hit:
+        return hit
+    # 内存未命中 → 查本地图片库（跨进程持久化），命中回填内存
+    disk = lookup_image(item_name)
+    if disk:
+        with _image_cache_lock:
+            _image_cache[key] = disk
+        return disk
+    return None
 
 
 def _set_cached_image(item_name: str, url: str) -> None:
-    """线程安全写入缓存。"""
+    """写内存缓存的同时落盘到本地图片库（best-effort，失败不影响主链路）。"""
     key = _normalize_cache_key(item_name)
     if not key or not url:
         return
     with _image_cache_lock:
         _image_cache[key] = url
+    save_image(item_name, url)
 
 
 def _publish_generate_image_progress(
@@ -126,6 +141,15 @@ def generate_images_node(state: MultiSceneWorkflowState) -> Dict[str, Any]:
         if not prompt:
             return name, "", "缺少图片生成提示词"
 
+        # 本地模型库已有该物体 → 连图都不用生成（retrieve 顶部会按名命中库、与图无关），
+        # 既省混元3D 又省文生图 token。返回空 URL，下游 dispatch/retrieve 照常按名查库。
+        if lookup_model(name):
+            logger.info(
+                "[Workflow][generate_images] %s 已在本地模型库，跳过文生图",
+                name,
+            )
+            return name, "", ""
+
         # 先查缓存：同物品名复用已生成图片
         cached = _get_cached_image(name)
         if cached:
@@ -136,17 +160,39 @@ def generate_images_node(state: MultiSceneWorkflowState) -> Dict[str, Any]:
             return name, cached, ""
 
         token = set_current_session(session_id)
+        # 文生图对瞬时失败（read timeout / 空结果）做一次有界重试。
+        # 混元链路里一个物体图片失败 = 该物体整条生成断掉（如客厅缺茶几），
+        # 重试 1 次显著降低单点丢失；最坏耗时翻倍但不会无限拖。
+        max_attempts = 2
+        last_error = ""
         try:
-            raw_result = image_tool.invoke({"prompt": prompt})
-            image_url = extract_image_url(raw_result)
-            if not image_url:
-                return name, "", "图片生成结果为空"
-            # 生成成功后写入缓存
-            _set_cached_image(name, image_url)
-            return name, image_url, ""
-        except Exception as e:
-            logger.error("[Workflow][generate_images] %s 生成失败: %s", name, e)
-            return name, "", str(e)
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    raw_result = image_tool.invoke({"prompt": prompt})
+                    image_url = extract_image_url(raw_result)
+                    if not image_url:
+                        last_error = "图片生成结果为空"
+                        logger.warning(
+                            "[Workflow][generate_images] %s 第 %d/%d 次结果为空%s",
+                            name, attempt, max_attempts,
+                            "，重试" if attempt < max_attempts else "，放弃",
+                        )
+                        continue
+                    # 生成成功后写入缓存
+                    _set_cached_image(name, image_url)
+                    if attempt > 1:
+                        logger.info(
+                            "[Workflow][generate_images] %s 第 %d 次重试成功", name, attempt
+                        )
+                    return name, image_url, ""
+                except Exception as e:
+                    last_error = str(e)
+                    logger.error(
+                        "[Workflow][generate_images] %s 第 %d/%d 次生成失败: %s%s",
+                        name, attempt, max_attempts, e,
+                        "，重试" if attempt < max_attempts else "，放弃",
+                    )
+            return name, "", last_error
         finally:
             reset_current_session(token)
 

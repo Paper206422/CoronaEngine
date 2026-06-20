@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <corona/systems/network/lanchat_state.h>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,24 @@ enum class MessageType : uint8_t {
     FILE_REQUEST  = 0x11,  // Request model file from peer
     FILE_CHUNK    = 0x12,  // File chunk transfer
     OWNERSHIP_CLAIM = 0x13, // Actor ownership handoff claim
+    ACTOR_TRANSFORM_UPDATE = 0x14, // Actor transform delta (demo-grade SceneDelta)
+    ACTOR_DELETE = 0x15, // Actor deletion event (actor_guid + scene_name + actor_name)
+    ACTOR_SCENE_SNAPSHOT_REQUEST = 0x16, // Request host actor scene snapshot
+    ACTOR_SCENE_SNAPSHOT = 0x17, // Actor scene snapshot JSON payload
+    ACTOR_STATE_UPDATE = 0x18, // Lightweight actor metadata/state JSON payload
+    CHAT_JOIN     = 0x20,  // LANChat room join/member snapshot
+    CHAT_LEAVE    = 0x21,  // LANChat room leave
+    CHAT_MESSAGE  = 0x22,  // LANChat user/agent message
+    CHAT_MEMBER_UPDATE = 0x23, // LANChat member status update
+    CHAT_AGENT_REGISTER = 0x24, // LANChat agent roster add/update
+    CHAT_AGENT_REMOVE = 0x25, // LANChat agent roster remove
+    CHAT_AGENT_TRIGGER = 0x26, // LANChat agent invocation request
+    CHAT_AGENT_REPLY = 0x27, // LANChat agent invocation reply
+    CHAT_HISTORY_SNAPSHOT = 0x28, // LANChat full message history snapshot
+    CHAT_JOIN_REJECT = 0x29, // LANChat join rejected by host
+    CHAT_MESSAGE_V2 = 0x2A, // LANChat structured user/system message
+    CHAT_AGENT_REPLY_V2 = 0x2B, // LANChat structured agent/system reply
+    CHAT_HISTORY_SNAPSHOT_V2 = 0x2C, // LANChat structured history snapshot
 };
 
 // ============================================================================
@@ -149,6 +168,10 @@ inline void write_string(std::vector<uint8_t>& buf, const std::string& s) {
     write_u16(buf, static_cast<uint16_t>(s.size()));
     write_bytes(buf, s.data(), s.size());
 }
+inline void write_string_u32(std::vector<uint8_t>& buf, const std::string& s) {
+    write_u32(buf, static_cast<uint32_t>(s.size()));
+    write_bytes(buf, s.data(), s.size());
+}
 
 struct BufferReader {
     const uint8_t* data;
@@ -180,7 +203,7 @@ struct BufferReader {
         pos += 8;
         return v;
     }
-    std::string read_string(uint16_t len) {
+    std::string read_string(size_t len) {
         std::string s(reinterpret_cast<const char*>(data + pos), len);
         pos += len;
         return s;
@@ -287,6 +310,8 @@ inline std::vector<uint8_t> build_hello(const std::string& instance_name,
 //   [1B type] [2B actor_guid_len] [actor_guid]
 //   [2B scene_name_len] [scene_name] [2B model_path_len] [model_path]
 //   [36B transform (9 floats)] [ActorCreatePacked payload]
+//   [2B dependency_count] [[2B dependency_len] [dependency]]*
+//   Optional v2 tail: [4B actor_json_len] [actor_json]
 // The payload keeps legacy optics fields in ActorCreatePacked layout; receivers
 // must copy the leading 36B wire transform into ActorCreatePacked::transform.
 // ============================================================================
@@ -317,7 +342,8 @@ inline std::vector<uint8_t> build_actor_create(
     const std::string& model_path,
     const float* transform,  // 9 floats
     const void* optics_packed, size_t optics_size,
-    const std::vector<std::string>& dependency_paths = {})
+    const std::vector<std::string>& dependency_paths = {},
+    const std::string& actor_json = {})
 {
     std::vector<uint8_t> buf;
     size_t deps_size = 2;
@@ -325,7 +351,8 @@ inline std::vector<uint8_t> build_actor_create(
         deps_size += 2 + dep.size();
     }
     buf.reserve(1 + 2 + actor_guid.size() + 2 + scene_name.size() +
-                2 + model_path.size() + 36 + optics_size + deps_size);
+                2 + model_path.size() + 36 + optics_size + deps_size +
+                4 + actor_json.size());
 
     write_u8(buf, static_cast<uint8_t>(MessageType::ACTOR_CREATE));
     write_string(buf, actor_guid);
@@ -337,7 +364,114 @@ inline std::vector<uint8_t> build_actor_create(
     for (const auto& dep : dependency_paths) {
         write_string(buf, dep);
     }
+    write_string_u32(buf, actor_json);
 
+    return buf;
+}
+
+// ============================================================================
+// ACTOR_TRANSFORM_UPDATE message builder
+// ============================================================================
+// Wire format:
+//   [1B type] [2B actor_guid_len] [actor_guid]
+//   [2B scene_name_len] [scene_name] [36B transform (9 floats)]
+//   [2B source_user_id_len] [source_user_id]
+//   [2B correlation_id_len] [correlation_id]
+// ============================================================================
+inline std::vector<uint8_t> build_actor_transform_update(
+    const std::string& actor_guid,
+    const std::string& scene_name,
+    const float* transform,  // 9 floats
+    const std::string& source_user_id = {},
+    const std::string& correlation_id = {})
+{
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + actor_guid.size() + 2 + scene_name.size() + 36 +
+                2 + source_user_id.size() + 2 + correlation_id.size());
+    write_u8(buf, static_cast<uint8_t>(MessageType::ACTOR_TRANSFORM_UPDATE));
+    write_string(buf, actor_guid);
+    write_string(buf, scene_name);
+    write_bytes(buf, transform, 36);
+    write_string(buf, source_user_id);
+    write_string(buf, correlation_id);
+    return buf;
+}
+
+// ============================================================================
+// ACTOR_DELETE message builder
+// ============================================================================
+// Wire format:
+//   [1B type] [2B actor_guid_len] [actor_guid]
+//   [2B scene_name_len] [scene_name] [2B actor_name_len] [actor_name]
+// ============================================================================
+inline std::vector<uint8_t> build_actor_delete(
+    const std::string& actor_guid,
+    const std::string& scene_name,
+    const std::string& actor_name)
+{
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + actor_guid.size() + 2 + scene_name.size() +
+                2 + actor_name.size());
+    write_u8(buf, static_cast<uint8_t>(MessageType::ACTOR_DELETE));
+    write_string(buf, actor_guid);
+    write_string(buf, scene_name);
+    write_string(buf, actor_name);
+    return buf;
+}
+
+// ============================================================================
+// ACTOR_SCENE_SNAPSHOT_REQUEST message builder
+// ============================================================================
+// Wire format:
+//   [1B type] [2B scene_name_len] [scene_name]
+// ============================================================================
+inline std::vector<uint8_t> build_actor_scene_snapshot_request(
+    const std::string& scene_name)
+{
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + scene_name.size());
+    write_u8(buf, static_cast<uint8_t>(MessageType::ACTOR_SCENE_SNAPSHOT_REQUEST));
+    write_string(buf, scene_name);
+    return buf;
+}
+
+// ============================================================================
+// ACTOR_SCENE_SNAPSHOT message builder
+// ============================================================================
+// Wire format:
+//   [1B type] [2B scene_name_len] [scene_name] [4B json_len] [json]
+// ============================================================================
+inline std::vector<uint8_t> build_actor_scene_snapshot(
+    const std::string& scene_name,
+    const std::string& snapshot_json)
+{
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + scene_name.size() + 4 + snapshot_json.size());
+    write_u8(buf, static_cast<uint8_t>(MessageType::ACTOR_SCENE_SNAPSHOT));
+    write_string(buf, scene_name);
+    write_string_u32(buf, snapshot_json);
+    return buf;
+}
+
+// ============================================================================
+// ACTOR_STATE_UPDATE message builder
+// ============================================================================
+// Wire format:
+//   [1B type] [2B actor_guid_len] [actor_guid]
+//   [2B scene_name_len] [scene_name] [4B json_len] [json]
+// ============================================================================
+inline std::vector<uint8_t> build_actor_state_update(
+    const std::string& actor_guid,
+    const std::string& scene_name,
+    const std::string& actor_json)
+{
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + actor_guid.size() + 2 + scene_name.size() +
+                4 + actor_json.size());
+    write_u8(buf, static_cast<uint8_t>(MessageType::ACTOR_STATE_UPDATE));
+    write_string(buf, actor_guid);
+    write_string(buf, scene_name);
+    write_string_u32(buf, actor_json);
     return buf;
 }
 
@@ -367,6 +501,252 @@ inline std::vector<uint8_t> build_ownership_claim(const std::string& actor_guid)
     buf.reserve(1 + 2 + actor_guid.size());
     write_u8(buf, static_cast<uint8_t>(MessageType::OWNERSHIP_CLAIM));
     write_string(buf, actor_guid);
+    return buf;
+}
+
+// ============================================================================
+// LANChat message builders
+// ============================================================================
+// CHAT_MESSAGE wire format:
+//   [1B type] [2B message_id_len] [message_id]
+//   [2B sender_id_len] [sender_id] [2B room_id_len] [room_id]
+//   [8B seq] [2B sender_name_len] [sender_name]
+//   [2B text_len] [text] [8B timestamp_ms]
+// ============================================================================
+inline std::vector<uint8_t> build_chat_message(
+    const std::string& message_id,
+    const std::string& sender_id,
+    const std::string& room_id,
+    uint64_t seq,
+    const std::string& sender_name,
+    const std::string& text,
+    uint64_t timestamp_ms)
+{
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + message_id.size() + 2 + sender_id.size() +
+                2 + room_id.size() + 8 + 2 + sender_name.size() +
+                2 + text.size() + 8);
+    write_u8(buf, static_cast<uint8_t>(MessageType::CHAT_MESSAGE));
+    write_string(buf, message_id);
+    write_string(buf, sender_id);
+    write_string(buf, room_id);
+    write_u64(buf, seq);
+    write_string(buf, sender_name);
+    write_string(buf, text);
+    write_u64(buf, timestamp_ms);
+    return buf;
+}
+
+inline std::vector<uint8_t> build_chat_message_v2(
+    MessageType type,
+    const std::string& message_id,
+    const std::string& sender_id,
+    const std::string& room_id,
+    uint64_t seq,
+    const std::string& sender_name,
+    const std::string& text,
+    uint64_t timestamp_ms,
+    const std::string& sender_type = "user",
+    const std::string& message_kind = "chat",
+    const std::string& target_agent_id = {},
+    const std::string& source_user_id = {},
+    const std::string& correlation_id = {},
+    const std::string& metadata_json = {})
+{
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + message_id.size() + 2 + sender_id.size() +
+                2 + room_id.size() + 8 + 2 + sender_name.size() +
+                2 + text.size() + 8 + 2 + sender_type.size() +
+                2 + message_kind.size() + 2 + target_agent_id.size() +
+                2 + source_user_id.size() + 2 + correlation_id.size() +
+                2 + metadata_json.size());
+    write_u8(buf, static_cast<uint8_t>(type));
+    write_string(buf, message_id);
+    write_string(buf, sender_id);
+    write_string(buf, room_id);
+    write_u64(buf, seq);
+    write_string(buf, sender_name);
+    write_string(buf, text);
+    write_u64(buf, timestamp_ms);
+    write_string(buf, sender_type);
+    write_string(buf, message_kind);
+    write_string(buf, target_agent_id);
+    write_string(buf, source_user_id);
+    write_string(buf, correlation_id);
+    write_string(buf, metadata_json);
+    return buf;
+}
+
+inline std::vector<uint8_t> build_chat_join(
+    const std::string& room_id,
+    const std::string& member_id,
+    const std::string& nickname)
+{
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + room_id.size() + 2 + member_id.size() + 2 + nickname.size());
+    write_u8(buf, static_cast<uint8_t>(MessageType::CHAT_JOIN));
+    write_string(buf, room_id);
+    write_string(buf, member_id);
+    write_string(buf, nickname);
+    return buf;
+}
+
+inline std::vector<uint8_t> build_chat_leave(
+    const std::string& room_id,
+    const std::string& member_id)
+{
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + room_id.size() + 2 + member_id.size());
+    write_u8(buf, static_cast<uint8_t>(MessageType::CHAT_LEAVE));
+    write_string(buf, room_id);
+    write_string(buf, member_id);
+    return buf;
+}
+
+inline std::vector<uint8_t> build_chat_member_update(
+    const std::string& room_id,
+    const std::vector<LanChatMember>& members)
+{
+    size_t payload_size = 1 + 2 + room_id.size() + 2;
+    for (const auto& member : members) {
+        payload_size += 2 + member.member_id.size();
+        payload_size += 2 + member.nickname.size();
+        payload_size += 2 + member.status.size();
+        payload_size += 8;
+    }
+
+    std::vector<uint8_t> buf;
+    buf.reserve(payload_size);
+    write_u8(buf, static_cast<uint8_t>(MessageType::CHAT_MEMBER_UPDATE));
+    write_string(buf, room_id);
+    write_u16(buf, static_cast<uint16_t>(members.size()));
+    for (const auto& member : members) {
+        write_string(buf, member.member_id);
+        write_string(buf, member.nickname);
+        write_string(buf, member.status);
+        write_u64(buf, member.last_seen_ms);
+    }
+    return buf;
+}
+
+inline std::vector<uint8_t> build_chat_history_snapshot(
+    const std::string& room_id,
+    const std::vector<LanChatMessage>& history)
+{
+    size_t payload_size = 1 + 2 + room_id.size() + 2;
+    for (const auto& message : history) {
+        payload_size += 2 + message.message_id.size();
+        payload_size += 2 + message.sender_id.size();
+        payload_size += 2 + message.room_id.size();
+        payload_size += 8;
+        payload_size += 2 + message.sender_name.size();
+        payload_size += 2 + message.text.size();
+        payload_size += 8;
+    }
+
+    std::vector<uint8_t> buf;
+    buf.reserve(payload_size);
+    write_u8(buf, static_cast<uint8_t>(MessageType::CHAT_HISTORY_SNAPSHOT));
+    write_string(buf, room_id);
+    write_u16(buf, static_cast<uint16_t>(history.size()));
+    for (const auto& message : history) {
+        write_string(buf, message.message_id);
+        write_string(buf, message.sender_id);
+        write_string(buf, message.room_id);
+        write_u64(buf, message.seq);
+        write_string(buf, message.sender_name);
+        write_string(buf, message.text);
+        write_u64(buf, message.timestamp_ms);
+    }
+    return buf;
+}
+
+inline std::vector<uint8_t> build_chat_history_snapshot_v2(
+    const std::string& room_id,
+    const std::vector<LanChatMessage>& history)
+{
+    size_t payload_size = 1 + 2 + room_id.size() + 2;
+    for (const auto& message : history) {
+        payload_size += 2 + message.message_id.size();
+        payload_size += 2 + message.sender_id.size();
+        payload_size += 2 + message.room_id.size();
+        payload_size += 8;
+        payload_size += 2 + message.sender_name.size();
+        payload_size += 2 + message.text.size();
+        payload_size += 8;
+        payload_size += 2 + message.sender_type.size();
+        payload_size += 2 + message.message_kind.size();
+        payload_size += 2 + message.target_agent_id.size();
+        payload_size += 2 + message.source_user_id.size();
+        payload_size += 2 + message.correlation_id.size();
+        payload_size += 2 + message.metadata_json.size();
+    }
+
+    std::vector<uint8_t> buf;
+    buf.reserve(payload_size);
+    write_u8(buf, static_cast<uint8_t>(MessageType::CHAT_HISTORY_SNAPSHOT_V2));
+    write_string(buf, room_id);
+    write_u16(buf, static_cast<uint16_t>(history.size()));
+    for (const auto& message : history) {
+        write_string(buf, message.message_id);
+        write_string(buf, message.sender_id);
+        write_string(buf, message.room_id);
+        write_u64(buf, message.seq);
+        write_string(buf, message.sender_name);
+        write_string(buf, message.text);
+        write_u64(buf, message.timestamp_ms);
+        write_string(buf, message.sender_type);
+        write_string(buf, message.message_kind);
+        write_string(buf, message.target_agent_id);
+        write_string(buf, message.source_user_id);
+        write_string(buf, message.correlation_id);
+        write_string(buf, message.metadata_json);
+    }
+    return buf;
+}
+
+inline std::vector<uint8_t> build_chat_join_reject(
+    const std::string& room_id,
+    const std::string& code,
+    const std::string& reason)
+{
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + room_id.size() + 2 + code.size() + 2 + reason.size());
+    write_u8(buf, static_cast<uint8_t>(MessageType::CHAT_JOIN_REJECT));
+    write_string(buf, room_id);
+    write_string(buf, code);
+    write_string(buf, reason);
+    return buf;
+}
+
+inline std::vector<uint8_t> build_chat_agent_register(
+    const std::string& room_id,
+    const std::string& agent_id,
+    const std::string& name,
+    const std::string& persona,
+    const std::string& owner_id)
+{
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + room_id.size() + 2 + agent_id.size() + 2 + name.size() +
+                2 + persona.size() + 2 + owner_id.size());
+    write_u8(buf, static_cast<uint8_t>(MessageType::CHAT_AGENT_REGISTER));
+    write_string(buf, room_id);
+    write_string(buf, agent_id);
+    write_string(buf, name);
+    write_string(buf, persona);
+    write_string(buf, owner_id);
+    return buf;
+}
+
+inline std::vector<uint8_t> build_chat_agent_remove(
+    const std::string& room_id,
+    const std::string& agent_id)
+{
+    std::vector<uint8_t> buf;
+    buf.reserve(1 + 2 + room_id.size() + 2 + agent_id.size());
+    write_u8(buf, static_cast<uint8_t>(MessageType::CHAT_AGENT_REMOVE));
+    write_string(buf, room_id);
+    write_string(buf, agent_id);
     return buf;
 }
 

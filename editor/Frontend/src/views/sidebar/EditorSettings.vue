@@ -309,8 +309,8 @@ function persist() {
 }
 
 function notifyEngine() {
-  if (typeof cefQuery !== 'undefined') {
-    cefQuery({
+  if (typeof window.cefQuery === 'function') {
+    window.cefQuery({
       request: JSON.stringify({
         function: 'update_settings',
         module: 'EditorSettings',

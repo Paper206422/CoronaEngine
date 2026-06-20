@@ -28,7 +28,7 @@ import { coronaEventBus } from '@/utils/eventBus.js';
 
 const { closePanel: closeDockPanel, isDocked } = useDockPanel();
 
-// 局域网聊天室事件：Python 经 js_call_func('lanchat-event', [event]) 推送，
+// 局域网聊天室事件：C++ NetworkSystem 经 __coronaEmit('lanchat-event', event) 推送，
 // __coronaEmit → coronaEventBus.emit('lanchat-event', event) → 本 handler。
 const onLanchatEvent = (payload) => {
   lanchat.handleEvent(payload);

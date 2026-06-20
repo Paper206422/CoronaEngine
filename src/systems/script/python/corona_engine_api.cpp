@@ -2121,6 +2121,27 @@ void* Corona::API::Camera::get_surface() const {
     return nullptr;
 }
 
+void Corona::API::Camera::set_offscreen_capture_mode(bool enabled) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Camera::set_offscreen_capture_mode] Invalid camera handle");
+        return;
+    }
+
+    if (auto accessor = SharedDataHub::instance().camera_storage().acquire_write(handle_)) {
+        if (enabled) {
+            accessor->surface = nullptr;
+            accessor->follows_default_surface = false;
+            accessor->view_open = false;
+        } else {
+            accessor->follows_default_surface = true;
+            accessor->surface = get_default_surface();
+        }
+        return;
+    }
+
+    CFW_LOG_ERROR("[Camera::set_offscreen_capture_mode] Failed to acquire write access to camera storage");
+}
+
 void Corona::API::Camera::save_screenshot(const std::string& path) const {
     if (handle_ == 0) {
         CFW_LOG_WARNING("[Camera::save_screenshot] Invalid camera handle");

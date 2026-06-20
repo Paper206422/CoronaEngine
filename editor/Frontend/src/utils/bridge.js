@@ -91,6 +91,8 @@ export const sceneService = {
     Bridge.callCEF('SceneTools', 'create_actor', [sceneName, objPath]),
   removeActor: (sceneName, actorName) =>
     Bridge.callCEF('SceneTools', 'remove_actor', [sceneName, actorName]),
+  renameActor: (sceneName, actorName, name) =>
+    Bridge.callCEF('SceneTools', 'rename_actor', [sceneName, actorName, name]),
   createScene: (sceneName) => Bridge.callCEF('SceneTools', 'create_scene', [sceneName]),
 
   sunDirection: (sceneName, enable, direction) =>
@@ -278,8 +280,8 @@ export const aiClient = {
     ]),
 };
 
-// 局域网聊天室：所有跨机传输在 Python 侧完成，前端只通过 cefQuery 调用本机插件。
-// Python 侧通过 js_call_func('lanchat-event', [event]) 把房间消息推回前端
+// 局域网聊天室：所有跨机传输在 C++ NetworkSystem 完成，前端只通过 cefQuery 调用。
+// C++ 侧通过 __coronaEmit('lanchat-event', event) 把房间消息推回前端
 // （coronaEventBus.on('lanchat-event')），事件信封带 channel: 'lanchat'。
 //
 // 注意：deal_func_from_js 用 create_success_response 把返回值包成
@@ -291,16 +293,28 @@ export const lanChatService = {
   // 房主开房：{ room, password, port? } -> { ok, ip, port, room } | { ok:false, error }
   startRoom: (payload) =>
     Bridge.callCEF('LANChat', 'start_room', [payload]).then(_unwrap),
+  // 单人本地房：不启动 NetworkSystem 协作会话
+  startLocalRoom: (payload) =>
+    Bridge.callCEF('LANChat', 'start_local_room', [payload]).then(_unwrap),
   // 房主关房 -> { ok }
   stopRoom: () => Bridge.callCEF('LANChat', 'stop_room', [{}]).then(_unwrap),
+  // 关闭单人本地房，不停止 NetworkSystem 协作会话
+  stopLocalRoom: () => Bridge.callCEF('LANChat', 'stop_local_room', [{}]).then(_unwrap),
   // 加入房间：{ ip, port, room, password, nickname } -> { ok, members, history } | { ok:false, code }
   joinRoom: (payload) =>
     Bridge.callCEF('LANChat', 'join_room', [payload]).then(_unwrap),
+  // 显式读取当前房间历史，用于开房后兜底恢复持久化记录
+  getHistory: () => Bridge.callCEF('LANChat', 'get_history', [{}]).then(_unwrap),
+  // 读取持久化历史房间列表，打开 Dock 时展示给用户选择
+  listHistoryRooms: () => Bridge.callCEF('LANChat', 'list_history_rooms', [{}]).then(_unwrap),
+  // 读取指定持久化房间历史，不自动进入该房间
+  loadHistoryRoom: (room) =>
+    Bridge.callCEF('LANChat', 'load_history_room', [{ room }]).then(_unwrap),
   // 离开房间 -> { ok }
   leaveRoom: () => Bridge.callCEF('LANChat', 'leave_room', [{}]).then(_unwrap),
   // 发送消息：{ text } -> { ok } | { ok:false, error }
-  sendMessage: (text) =>
-    Bridge.callCEF('LANChat', 'send_message', [{ text }]).then(_unwrap),
+  sendMessage: (text, options = {}) =>
+    Bridge.callCEF('LANChat', 'send_message', [{ text, ...(options || {}) }]).then(_unwrap),
   // 获取本机局域网 IP -> { ok, ip, port }
   getLocalIp: () => Bridge.callCEF('LANChat', 'get_local_ip', [{}]).then(_unwrap),
   // 添加 AI 助手：{ name, persona } -> { ok, agent_id, name } | { ok:false, error }
@@ -433,28 +447,55 @@ export const logService = {
 // 当前模块的"调用方"标识(必须出现在后端 ALLOWED_CALLERS 白名单内)
 // 任何后端接口调用都会自动附带此标识,供权限控制
 const CURRENT_CALLER = 'SceneBar';
+const RESOURCE_SEARCH_ENABLED = false;
+const resourceSearchDisabled = () => Promise.resolve({
+  success: true,
+  data: {
+    status: 'disabled',
+    code: 'resource_search_disabled',
+    message: 'ResourceSearch is disabled',
+    items: [],
+    total: 0,
+  },
+});
 
 export const resourceService = {
   prepareIndex: () =>
-    Bridge.callCEF('ResourceSearch', 'prepare_index', [CURRENT_CALLER]),
+    RESOURCE_SEARCH_ENABLED
+      ? Bridge.callCEF('ResourceSearch', 'prepare_index', [CURRENT_CALLER])
+      : resourceSearchDisabled(),
   fuzzySearch: (query, topK = 20, typeFilter = null) =>
-    Bridge.callCEF('ResourceSearch', 'fuzzy_search',
-      [query, topK, typeFilter, CURRENT_CALLER]),
+    RESOURCE_SEARCH_ENABLED
+      ? Bridge.callCEF('ResourceSearch', 'fuzzy_search',
+        [query, topK, typeFilter, CURRENT_CALLER])
+      : resourceSearchDisabled(),
   imageSearch: (imageB64, topK = 20, threshold = 10) =>
-    Bridge.callCEF('ResourceSearch', 'image_search',
-      [imageB64, topK, threshold, CURRENT_CALLER]),
+    RESOURCE_SEARCH_ENABLED
+      ? Bridge.callCEF('ResourceSearch', 'image_search',
+        [imageB64, topK, threshold, CURRENT_CALLER])
+      : resourceSearchDisabled(),
   listTypes: () =>
-    Bridge.callCEF('ResourceSearch', 'list_types', [CURRENT_CALLER]),
+    RESOURCE_SEARCH_ENABLED
+      ? Bridge.callCEF('ResourceSearch', 'list_types', [CURRENT_CALLER])
+      : resourceSearchDisabled(),
   rebuildIndex: () =>
-    Bridge.callCEF('ResourceSearch', 'rebuild_index', [CURRENT_CALLER]),
+    RESOURCE_SEARCH_ENABLED
+      ? Bridge.callCEF('ResourceSearch', 'rebuild_index', [CURRENT_CALLER])
+      : resourceSearchDisabled(),
   getStats: () =>
-    Bridge.callCEF('ResourceSearch', 'get_stats', [CURRENT_CALLER]),
+    RESOURCE_SEARCH_ENABLED
+      ? Bridge.callCEF('ResourceSearch', 'get_stats', [CURRENT_CALLER])
+      : resourceSearchDisabled(),
   markIndexDirty: (reason = 'frontend') =>
-    Bridge.callCEF('ResourceSearch', 'mark_index_dirty',
-      [reason, CURRENT_CALLER]),
+    RESOURCE_SEARCH_ENABLED
+      ? Bridge.callCEF('ResourceSearch', 'mark_index_dirty',
+        [reason, CURRENT_CALLER])
+      : resourceSearchDisabled(),
   focusActor: (sceneName, actorName) =>
-    Bridge.callCEF('ResourceSearch', 'focus_actor',
-      [sceneName, actorName, CURRENT_CALLER]),
+    RESOURCE_SEARCH_ENABLED
+      ? Bridge.callCEF('ResourceSearch', 'focus_actor',
+        [sceneName, actorName, CURRENT_CALLER])
+      : resourceSearchDisabled(),
 };
 
 export const projectSettingsService = {
@@ -479,9 +520,31 @@ export const networkService = {
     Bridge.callCEF('Network', 'set_project_root', [projectRoot]).then(_unwrap),
   broadcastActorCreate: (actorGuid, sceneName, modelPath, actorData) =>
     Bridge.callCEF('Network', 'broadcast_actor_create', [actorGuid, sceneName, modelPath, actorData]).then(_unwrap),
+  broadcastActorTransform: (actorGuid, sceneName, actorData) =>
+    Bridge.callCEF('Network', 'broadcast_actor_transform', [actorGuid, sceneName, actorData]).then(_unwrap),
+  broadcastActorDelete: (actorGuid, sceneName, actorName) =>
+    Bridge.callCEF('Network', 'broadcast_actor_delete', [actorGuid, sceneName, actorName]).then(_unwrap),
+  requestSceneSnapshot: (sceneName) =>
+    Bridge.callCEF('Network', 'request_actor_scene_snapshot', [sceneName]).then(_unwrap),
+  broadcastSceneSnapshot: (sceneName, snapshot) =>
+    Bridge.callCEF('Network', 'broadcast_actor_scene_snapshot', [sceneName, snapshot]).then(_unwrap),
+  broadcastActorStateUpdate: (actorGuid, sceneName, actorData) =>
+    Bridge.callCEF('Network', 'broadcast_actor_state_update',
+      [actorGuid, sceneName, actorData]).then(_unwrap),
   /** 轮询待创建的远程 Actor（文件传输完成后触发创建） */
   pollPendingActorCreate: () =>
     Bridge.callCEF('Network', 'poll_pending_actor_create', []).then(_unwrap),
+  /** 轮询远程 Actor transform delta */
+  pollPendingActorTransform: () =>
+    Bridge.callCEF('Network', 'poll_pending_actor_transform', []).then(_unwrap),
+  pollPendingActorDelete: () =>
+    Bridge.callCEF('Network', 'poll_pending_actor_delete', []).then(_unwrap),
+  pollPendingSceneSnapshotRequest: () =>
+    Bridge.callCEF('Network', 'poll_pending_actor_scene_snapshot_request', []).then(_unwrap),
+  pollPendingSceneSnapshot: () =>
+    Bridge.callCEF('Network', 'poll_pending_actor_scene_snapshot', []).then(_unwrap),
+  pollPendingActorStateUpdate: () =>
+    Bridge.callCEF('Network', 'poll_pending_actor_state_update', []).then(_unwrap),
   /** 暂停/恢复同步（Actor 创建期间避免 seq_id 碰撞） */
   setSyncPaused: (paused) =>
     Bridge.callCEF('Network', 'set_sync_paused', [paused]).then(_unwrap),

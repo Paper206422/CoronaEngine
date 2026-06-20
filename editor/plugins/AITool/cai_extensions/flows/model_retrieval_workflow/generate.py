@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import os
 import queue
 import threading
 import time
@@ -16,10 +17,51 @@ from .formatters import (
     NO_OUTPUT,
     publish_node_progress,
 )
+from .progress import publish_user_progress
 from .helpers import get_3d_generate_tool, parse_3d_result
+from .local_model_library import save_model
 from .test_cases import get_test_case
 
 logger = logging.getLogger(__name__)
+
+_MODEL_BATCH_WAIT_SECONDS = 15.0
+
+
+def _generation_batch_count() -> int:
+    try:
+        return max(1, int(os.getenv("CORONA_HUNYUAN_GENERATION_BATCH_COUNT", "4") or "4"))
+    except Exception:
+        return 4
+
+
+def _generation_batch_size() -> int:
+    raw = os.getenv("CORONA_HUNYUAN_GENERATION_BATCH_SIZE", "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(1, int(raw))
+    except Exception:
+        return 0
+
+
+def _split_generation_batches(tasks: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    items = list(tasks or [])
+    if not items:
+        return []
+    explicit_size = _generation_batch_size()
+    if explicit_size:
+        return [items[i:i + explicit_size] for i in range(0, len(items), explicit_size)]
+    batch_count = min(len(items), _generation_batch_count())
+    base = len(items) // batch_count
+    extra = len(items) % batch_count
+    batches: List[List[Dict[str, Any]]] = []
+    start = 0
+    for idx in range(batch_count):
+        size = base + (1 if idx < extra else 0)
+        end = start + size
+        batches.append(items[start:end])
+        start = end
+    return [batch for batch in batches if batch]
 
 
 def _result_identity_key(item: Dict[str, Any]) -> tuple[str, str]:
@@ -188,6 +230,33 @@ def generate_single_item(
                 attempt,
                 elapsed,
             )
+            # 自动入库（幂等）：下一轮同名物体在 retrieve 顶部命中库 → 跳过混元3D。
+            # best-effort，失败仅 warning，绝不影响本次返回。
+            # 修复 P1 存库竞态：等混元 mesh 异步下载完成后再 resolve + 存库，避免扫到空目录。
+            from .helpers import wait_mesh_then_resolve_model_file
+            parameter = model_info.get("parameter", {})
+            raw_model_path = model_info.get("model_path", "")
+            final_model_path = wait_mesh_then_resolve_model_file(
+                raw_model_path=raw_model_path,
+                wait_object_id=str(parameter.get("object_id", object_id)),
+                has_mesh_pending=bool(parameter.get("has_mesh_pending", False)),
+                retry_times=3,
+                retry_interval_seconds=0.2,
+            )
+            selected_model_path = final_model_path or raw_model_path
+            try:
+                from .runtime_assets import prepare_runtime_model_bundle
+
+                runtime_bundle = prepare_runtime_model_bundle(selected_model_path)
+                selected_model_path = runtime_bundle.runtime_model_path
+                result["model_path"] = selected_model_path
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[Workflow][generate] %s runtime 素材准备失败，回退原模型: %s",
+                    name,
+                    exc,
+                )
+            save_model(name, selected_model_path)
             return result
         except Exception as e:
             last_error = str(e)
@@ -356,42 +425,113 @@ def generate_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
     else:
         _capture_finalizer = lambda: None
 
-    max_workers = min(len(pending_generation), GENERATION_MAX_WORKERS) or 1
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(generate_single_item, task, generate_tool, session_id): task
-            for task in pending_generation
-        }
-        for future in concurrent.futures.as_completed(futures):
-            task = futures[future]
-            try:
-                result = future.result()
-            except Exception as e:
-                logger.error(
-                    "[Workflow][generate] %s 生成任务异常: %s",
-                    task.get("item_name", "?"),
-                    e,
+    generation_batches = _split_generation_batches(pending_generation)
+    max_workers = min(
+        max((len(batch) for batch in generation_batches), default=1),
+        GENERATION_MAX_WORKERS,
+    ) or 1
+    logger.info(
+        "[Workflow][generate] 3D generation batching: pending=%s batches=%s workers=%s limit=%s",
+        len(pending_generation),
+        len(generation_batches),
+        max_workers,
+        GENERATION_MAX_WORKERS,
+    )
+    if pending_generation:
+        publish_user_progress(
+            state,
+            "model_start",
+            f"开始生成 {len(pending_generation)} 个模型，将分 {len(generation_batches)} 批处理。",
+            progress=54,
+            force=True,
+        )
+    for batch_index, batch in enumerate(generation_batches, 1):
+        batch_workers = min(len(batch), GENERATION_MAX_WORKERS) or 1
+        batch_names = [str(task.get("item_name") or "?") for task in batch]
+        logger.info(
+            "[Workflow][generate] 3D generation batch %s/%s start: items=%s workers=%s names=%s",
+            batch_index,
+            len(generation_batches),
+            len(batch),
+            batch_workers,
+            "、".join(batch_names[:6]),
+        )
+        publish_user_progress(
+            state,
+            "model_batch_start",
+            f"第 {batch_index}/{len(generation_batches)} 批模型生成中：{'、'.join(batch_names[:4])}。",
+            progress=55 + int((batch_index - 1) / max(1, len(generation_batches)) * 18),
+            force=True,
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=batch_workers) as pool:
+            futures = {
+                pool.submit(generate_single_item, task, generate_tool, session_id): task
+                for task in batch
+            }
+            pending_futures = set(futures)
+            while pending_futures:
+                done_futures, pending_futures = concurrent.futures.wait(
+                    pending_futures,
+                    timeout=_MODEL_BATCH_WAIT_SECONDS,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
                 )
-                result = {
-                    "item_name": task.get("item_name", "未知"),
-                    "object_id": task.get("object_id", ""),
-                    "task_index": task.get("task_index", 0),
-                    "input_image_url": task.get("input_image_url", ""),
-                    "source": "generation",
-                    "error": str(e),
-                }
+                if not done_futures:
+                    publish_user_progress(
+                        state,
+                        "model_batch_heartbeat",
+                        (
+                            f"第 {batch_index}/{len(generation_batches)} 批模型仍在生成，"
+                            f"已完成 {completed_count}/{len(pending_generation)}。"
+                        ),
+                        progress=55 + int((batch_index - 1) / max(1, len(generation_batches)) * 18),
+                    )
+                    continue
+                for future in done_futures:
+                    task = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as e:
+                        logger.error(
+                            "[Workflow][generate] %s 生成任务异常: %s",
+                            task.get("item_name", "?"),
+                            e,
+                        )
+                        result = {
+                            "item_name": task.get("item_name", "未知"),
+                            "object_id": task.get("object_id", ""),
+                            "task_index": task.get("task_index", 0),
+                            "input_image_url": task.get("input_image_url", ""),
+                            "source": "generation",
+                            "error": str(e),
+                        }
 
-            generated_results.append(result)
-            completed_count += 1
-            publish_node_progress(
-                state,
-                result,
-                node_name="generate",
-                done_count=completed_count,
-                total_count=len(pending_generation),
-            )
-            # 排入六视图拍摄队列（跳过时为 None，捕获线程不启动）
-            capture_queue.put(result)
+                    result.setdefault("generation_batch_index", batch_index)
+                    result.setdefault("generation_batch_total", len(generation_batches))
+                    generated_results.append(result)
+                    completed_count += 1
+                    publish_node_progress(
+                        state,
+                        result,
+                        node_name="generate",
+                        done_count=completed_count,
+                        total_count=len(pending_generation),
+                    )
+                    # 排入六视图拍摄队列（跳过时为 None，捕获线程不启动）
+                    capture_queue.put(result)
+        logger.info(
+            "[Workflow][generate] 3D generation batch %s/%s done: completed=%s/%s",
+            batch_index,
+            len(generation_batches),
+            completed_count,
+            len(pending_generation),
+        )
+        publish_user_progress(
+            state,
+            "model_batch_done",
+            f"第 {batch_index}/{len(generation_batches)} 批模型完成，累计 {completed_count}/{len(pending_generation)}。",
+            progress=58 + int(batch_index / max(1, len(generation_batches)) * 18),
+            force=True,
+        )
 
     # 通知拍摄线程所有生成已完成
     _capture_finalizer()

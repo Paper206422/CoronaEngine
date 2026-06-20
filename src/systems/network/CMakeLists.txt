@@ -8,10 +8,20 @@ corona_add_system(network
         peer_manager.cpp
         sync_engine.cpp
         discovery.cpp
+        lanchat_history_store.cpp
+        lanchat_state.cpp
     DEPENDENCIES
         Horizon
         enet
 )
+
+if(WIN32)
+    target_link_libraries(corona_network_system
+        PUBLIC
+            ws2_32
+            winmm
+    )
+endif()
 
 if(BUILD_CORONA_TESTING OR BUILD_TESTING)
     add_executable(corona_network_protocol_tests

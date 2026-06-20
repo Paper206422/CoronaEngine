@@ -26,13 +26,21 @@ _LAYOUT_SYSTEM_PROMPT = """\
 - X 轴：左右方向（正方向向右）
 - Y 轴：高度方向（正方向向上），Y=0 为地面
 - Z 轴：深度方向（正方向向屏幕内/向北）
-- 旋转单位为角度（degree），绕 Y 轴旋转可控制朝向
+- 旋转单位为弧度（radian），绕 Y 轴旋转可控制朝向；例如 90 度 = 1.5708，180 度 = 3.1416
 - 房间中心为原点 (0, 0, 0)，物体放置在 XZ 平面上
 
 布局原则：
 1. 根据物体的语义功能决定摆放位置（如：床放卧室中央、桌子靠墙、椅子在桌旁）
 2. 物体之间保持合理间距，避免重叠
 3. 物体朝向应符合使用习惯（如：椅子面向桌子、沙发面向电视）
+   【默认朝向规则】rot 绕 Y 轴弧度按物体类型兜底，避免出现背对、躺倒、朝向错乱：
+   - 座椅类（椅/凳/沙发/床）：正面朝向最近的功能主体（桌/茶几/电视），靠墙时背贴墙
+   - 床头柜/边几：长边贴靠主体（床/沙发），不旋转倒置
+   - 灯具（台灯/落地灯/绿植）：直立，不绕 X/Z 轴翻转（rx=rz=0）
+   - 柜体（衣柜/电视柜/书架）：背面贴墙，开口/正面朝房间内
+   - 桌类（餐桌/书桌/茶几）：长边平行于最近的墙
+   - 无明确朝向依据时，rot 取 [0,0,0]，不要随意赋大角度
+
 4. 考虑用户描述中的空间关系（如"靠墙"、"居中"、"对称"等）
 5. 所有物体必须在房间范围内，用户消息中会提供具体的 X/Z 边界，严格遵守
 6. 缩放需结合场景实际情况综合判断：
@@ -113,11 +121,19 @@ def _build_layout_user_prompt(
 
 
 def _match_meta_by_path(item: Dict[str, Any], asset_metadata: Dict[str, Any]) -> Dict[str, Any]:
-    """用 local_path 的文件名 stem 在 asset_metadata 里匹配。"""
+    """用 local_path 在 asset_metadata 里匹配。
+
+    混元3D 输出统一为 .../models/<物体名>/base.glb，basename 永远是 "base"，
+    asset_metadata 的 key 已改用父目录名（物体名）。优先用目录名匹配，
+    兼容旧 basename stem 作为兜底。
+    """
     import os
     lp = item.get("local_path", "") or ""
     if not lp:
         return {}
+    dir_name = os.path.basename(os.path.dirname(lp))
+    if dir_name and dir_name in asset_metadata:
+        return asset_metadata[dir_name]
     stem = os.path.splitext(os.path.basename(lp))[0]
     return asset_metadata.get(stem, {})
 

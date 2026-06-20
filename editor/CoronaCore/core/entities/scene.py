@@ -274,6 +274,7 @@ class Scene:
                 actor_key = actor_name
 
             self.file_data['actors'][f'{actor_key}.actor_type'] = getattr(actor, 'actor_type', 'actor')
+            self.file_data['actors'][f'{actor_key}.name'] = actor_name
             self.file_data['actors'][f'{actor_key}.route'] = getattr(actor, 'route', '')
             actor_guid = getattr(actor, 'actor_guid', '')
             if actor_guid:
@@ -303,18 +304,32 @@ class Scene:
                 self.file_data['actors'][
                     f'{actor_key}.geometry.scale'] = _format_float3(scale)
 
+                # 持久化物理开关，使运行时关掉的物理能存进 .scene、F5 冷重载时读回。
+                # 否则 INI 不带此字段 → 重载默认物理开启 → AI 摆放的物体互相穿插被
+                # 求解器推得东歪西斜（甚至死循环）。只写显式取得到的值，取不到则不写
+                # （保持向后兼容：老场景/无 mechanics 的 actor 行为不变）。
+                if hasattr(actor, 'get_physics_enabled'):
+                    try:
+                        self.file_data['actors'][
+                            f'{actor_key}.mechanics.physics_enabled'] = str(
+                                bool(actor.get_physics_enabled())).lower()
+                    except Exception:
+                        pass
+
         # 脚本数据
-        self.file_data['scripts']["path"] = self.script_path
+        self.file_data['scripts']["path"] = getattr(self, 'script_path', '')
 
         # 地形数据
-        self.file_data['terrain']["path"] = self.terrain_path
-        self.file_data['terrain']["type"] = self.terrain_type
+        self.file_data['terrain']["path"] = getattr(self, 'terrain_path', '')
+        self.file_data['terrain']["type"] = getattr(self, 'terrain_type', '')
 
-        if self.vision_source_path or self.vision_import_mode:
+        vision_source_path = getattr(self, 'vision_source_path', '')
+        vision_import_mode = getattr(self, 'vision_import_mode', '')
+        if vision_source_path or vision_import_mode:
             if 'vision' not in self.file_data:
                 self.file_data['vision'] = {}
-            self.file_data['vision']['source_path'] = self.vision_source_path
-            self.file_data['vision']['import_mode'] = self.vision_import_mode or 'external'
+            self.file_data['vision']['source_path'] = vision_source_path
+            self.file_data['vision']['import_mode'] = vision_import_mode or 'external'
 
         self._write_indexed_section('vision_bindings', getattr(self, 'vision_bindings', []))
         self._write_indexed_section('vision_unsupported_shapes',
@@ -417,12 +432,28 @@ class Scene:
     def remove_actor(self, actor: Actor, rescene: bool = False) -> bool:
         if actor not in self._actors:
             return False
+        should_broadcast_delete = not (
+            getattr(actor, "network_remote", False) or
+            getattr(actor, "_suppress_network_broadcast", False) or
+            rescene
+        )
+        delete_payload = {
+            "scene": self.route,
+            "actor_guid": getattr(actor, "actor_guid", ""),
+            "actor_name": getattr(actor, "name", ""),
+        }
         del actor._optics
         if not rescene:
             self._actors.remove(actor)
         if hasattr(self.engine_scene, 'remove_actor'):
             self.engine_scene.remove_actor(actor.engine_obj)
         self._notify_scene_tree_changed()
+        if should_broadcast_delete and (delete_payload["actor_guid"] or delete_payload["actor_name"]):
+            try:
+                CoronaEditor.js_call_func("actor-delete-sync-broadcast", [delete_payload])
+            except Exception as exc:
+                logger.warning("Actor delete network broadcast failed for %s: %s",
+                               delete_payload["actor_guid"] or delete_payload["actor_name"], exc)
         return True  # 返回True触发auto_save
 
     @auto_save
@@ -733,7 +764,7 @@ class Scene:
             包含actor完整信息的字典
         """
         actor_data = {
-            "name": actor_name,
+            "name": actors_section.get(f'{actor_name}.name', actor_name),
             "actor_type": actors_section.get(f'{actor_name}.actor_type', 'actor'),
             "route": actors_section.get(f'{actor_name}.route', ''),
             "actor_guid": actors_section.get(f'{actor_name}.actor_guid', ''),
@@ -756,6 +787,16 @@ class Scene:
         actor_data["geometry"]["position"] = [float(x.strip()) for x in pos_str.split(',')]
         actor_data["geometry"]["rotation"] = [float(x.strip()) for x in rot_str.split(',')]
         actor_data["geometry"]["scale"] = [float(x.strip()) for x in scale_str.split(',')]
+
+        # 解析持久化的物理开关（与 save_data 写入的 {actor}.mechanics.physics_enabled 对称）。
+        # configparser 值是字符串，"false" 直接 bool() 会变 True（非空串恒真）——必须显式
+        # 比较转成真 bool，再放进 actor_data["mechanics"]，供 Actor._create_components_from_actor_data
+        # 应用。字段缺失则不放该键（向后兼容：老场景行为不变，引擎默认物理开启）。
+        phys_str = actors_section.get(f'{actor_name}.mechanics.physics_enabled', None)
+        if phys_str is not None:
+            actor_data["mechanics"] = {
+                "physics_enabled": str(phys_str).strip().lower() == "true"
+            }
 
         return actor_data
 

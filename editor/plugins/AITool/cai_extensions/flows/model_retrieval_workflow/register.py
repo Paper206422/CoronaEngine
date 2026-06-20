@@ -11,9 +11,11 @@ from .formatters import NO_OUTPUT, publish_node_progress
 from .helpers import (
     get_store_tool,
     normalize_object_id,
+    object_embedding_tools_enabled,
     parse_store_result,
     wait_for_pending_mesh,
 )
+from .progress import publish_user_progress
 from .test_cases import get_test_case
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,7 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
     if not model_results:
         return {}
 
+    embedding_enabled = object_embedding_tools_enabled()
     metadata = state.get("metadata", {}) or {}
     if metadata.get("workflow_test"):
         test_case = get_test_case(metadata.get("workflow_test_case", "default"))
@@ -115,7 +118,27 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
 
     store_tool = get_store_tool()
     if not store_tool:
-        logger.warning("[Workflow][register] store_object 工具不可用，全部标记失败")
+        if embedding_enabled:
+            logger.warning("[Workflow][register] store_object 工具不可用，全部标记跳过")
+            message = "模型入库工具不可用，本次仍会继续导入场景，后续复用缓存可能受影响。"
+        else:
+            logger.info("[Workflow][register] object embedding disabled，跳过向量入库")
+            message = "模型向量入库已关闭，本次会继续导入场景，不再调用 Dashscope embedding。"
+        publish_user_progress(
+            state,
+            "register_degraded",
+            message,
+            progress=78,
+            force=True,
+        )
+    else:
+        publish_user_progress(
+            state,
+            "register_start",
+            f"正在稳定模型文件并写入本地库，共 {len(model_results)} 个。",
+            progress=78,
+            force=True,
+        )
 
     inserted_count = 0
     updated_count = 0
@@ -209,9 +232,13 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
         )
 
         if not store_tool:
-            item["register_status"] = "failed"
-            item["register_error"] = "store_object 工具不可用"
-            failed_count += 1
+            item["register_status"] = "skipped"
+            item["register_error"] = (
+                "object embedding disabled"
+                if not embedding_enabled
+                else "store_object 工具不可用"
+            )
+            skipped_count += 1
             item["object_id"] = object_id
             enriched_results.append(item)
             publish_node_progress(
@@ -274,6 +301,13 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
         updated_count,
         skipped_count,
         failed_count,
+    )
+    publish_user_progress(
+        state,
+        "register_done",
+        f"资源入库完成：新增 {inserted_count} 个，更新 {updated_count} 个，跳过 {skipped_count} 个，失败 {failed_count} 个。",
+        progress=82,
+        force=True,
     )
 
     return {

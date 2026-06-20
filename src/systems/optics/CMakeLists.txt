@@ -63,6 +63,24 @@ if((BUILD_CORONA_TESTING OR BUILD_TESTING) AND CORONA_BUILD_VISION)
     set_tests_properties(VisionRenderModeConfigTests PROPERTIES
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
 
+    add_executable(corona_vision_material_adapter_tests
+        tests/test_vision_material_adapter.cpp
+    )
+    target_include_directories(corona_vision_material_adapter_tests
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/vision/src
+    )
+    target_link_libraries(corona_vision_material_adapter_tests
+        PRIVATE
+            corona::system::optics
+            vision-all_libs
+    )
+    add_test(NAME VisionMaterialAdapterTests COMMAND corona_vision_material_adapter_tests)
+    set_tests_properties(VisionMaterialAdapterTests PROPERTIES
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:vision-material-principled_bsdf>"
+    )
+
     add_executable(corona_vision_pipeline_key_tests
         tests/test_vision_pipeline_key.cpp
     )

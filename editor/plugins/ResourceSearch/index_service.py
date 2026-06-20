@@ -15,6 +15,12 @@ from .indexer import ResourceIndex
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_VERSION = 2
+_DISABLE_AUTO_REBUILD_ENV = "CORONA_RESOURCESEARCH_DISABLE_AUTO_REBUILD"
+
+
+def _env_truthy(name: str) -> bool:
+    value = os.environ.get(name, "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def default_cache_dir() -> Path:
@@ -51,6 +57,9 @@ class ResourceIndexService:
 
     def prepare(self) -> dict:
         self._ensure_current_roots()
+        if self._auto_rebuild_disabled():
+            self._suspend_background_rebuild("prepare")
+            return self.status()
         self._start_worker()
         self._wake.set()
         return self.status()
@@ -62,6 +71,9 @@ class ResourceIndexService:
 
     def request_refresh(self, force: bool = False) -> dict:
         self._ensure_current_roots()
+        if self._auto_rebuild_disabled():
+            self._suspend_background_rebuild("request_refresh")
+            return self.status()
         self._start_worker()
         with self._lock:
             self._request_serial += 1
@@ -84,6 +96,7 @@ class ResourceIndexService:
                 "roots": list(self._signature or ()),
                 "generation": self._generation,
                 "error": self._error,
+                "auto_rebuild_disabled": self._auto_rebuild_disabled(),
             }
 
     def wait_until_ready(self, timeout: float = 10.0) -> bool:
@@ -111,6 +124,21 @@ class ResourceIndexService:
                 daemon=True,
             )
             self._thread.start()
+
+    def _auto_rebuild_disabled(self) -> bool:
+        return _env_truthy(_DISABLE_AUTO_REBUILD_ENV) or _env_truthy("CORONA_F5_DEMO_MODE")
+
+    def _suspend_background_rebuild(self, reason: str) -> None:
+        with self._lock:
+            self._force_rebuild = False
+            self._needs_validation = False
+            self._state = "ready" if self._index else "idle"
+            self._error = ""
+        logger.info(
+            "[ResourceSearch] auto rebuild disabled by env during %s; using cached index=%s",
+            reason,
+            bool(self._index),
+        )
 
     def _ensure_current_roots(self) -> None:
         roots = tuple(self._normalize_roots(self._roots_provider()))

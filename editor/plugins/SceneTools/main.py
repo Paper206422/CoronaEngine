@@ -6,12 +6,17 @@ import uuid
 import copy
 
 from CoronaCore.core.components import Optics
+from CoronaCore.core import network_sync_policy
 from CoronaCore.core.corona_editor import CoronaEditor
 from CoronaPlugin.core.corona_plugin_base import PluginBase
 from CoronaCore.core.entities import Actor
 from CoronaCore.core.entities.camera import Camera
 from CoronaCore.core.managers import scene_manager
 from CoronaCore.utils.file_handler import FileHandler
+try:
+    from .vision_import import extract_vision_actor_imports
+except ImportError:
+    from vision_import import extract_vision_actor_imports
 
 import logging
 
@@ -866,6 +871,101 @@ def _remove_stale_vision_proxy_actors(scene, previous_bindings, active_actor_gui
 @PluginBase.register_web("SceneTools")
 class SceneTools(PluginBase):
     @staticmethod
+    def _find_actor_by_guid(scene, actor_guid: str):
+        if scene is None or not actor_guid:
+            return None
+        try:
+            for candidate in scene.get_actors():
+                if getattr(candidate, "actor_guid", "") == actor_guid:
+                    return candidate
+        except Exception:
+            pass
+        try:
+            return scene.find_actor(actor_guid)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _actor_sync_state(actor) -> dict:
+        try:
+            data = actor.to_dict()
+        except Exception:
+            data = {}
+        data.setdefault("name", getattr(actor, "name", ""))
+        data.setdefault("actor_guid", getattr(actor, "actor_guid", ""))
+        data.setdefault("path", getattr(actor, "route", ""))
+        data.setdefault("model", getattr(actor, "model_path", data.get("path", "")))
+        data.setdefault("model_dependencies", list(getattr(actor, "model_dependencies", []) or []))
+        data.setdefault("actor_type", getattr(actor, "actor_type", "model"))
+        data.setdefault("visible", SceneTools._safe_actor_call(actor, "get_visible", True))
+        data.setdefault("follow_camera", SceneTools._safe_actor_call(actor, "get_follow_camera", False))
+        geometry = data.setdefault("geometry", {})
+        geometry.setdefault("position", SceneTools._safe_actor_call(actor, "get_position", [0.0, 0.0, 0.0]))
+        geometry.setdefault("rotation", SceneTools._safe_actor_call(actor, "get_rotation", [0.0, 0.0, 0.0]))
+        geometry.setdefault("scale", SceneTools._safe_actor_call(actor, "get_scale", [1.0, 1.0, 1.0]))
+        return {
+            "actor_guid": data.get("actor_guid", ""),
+            "name": data.get("name", ""),
+            "actor_type": data.get("actor_type", "model"),
+            "path": data.get("path") or data.get("model") or "",
+            "model": data.get("model") or data.get("path") or "",
+            "model_dependencies": data.get("model_dependencies", []),
+            "visible": data.get("visible", True),
+            "follow_camera": data.get("follow_camera", False),
+            "geometry": data.get("geometry", {}),
+        }
+
+    @staticmethod
+    def _canonical_actor_sync_state(actor_data) -> dict:
+        data = actor_data if isinstance(actor_data, dict) else {}
+        geometry = data.get("geometry") if isinstance(data.get("geometry"), dict) else {}
+
+        def list_or_default(value, default):
+            return list(value) if value is not None else list(default)
+
+        return {
+            "actor_guid": data.get("actor_guid", ""),
+            "name": data.get("name", ""),
+            "actor_type": data.get("actor_type", "model"),
+            "path": data.get("path") or data.get("model") or "",
+            "model": data.get("model") or data.get("path") or "",
+            "model_dependencies": list(data.get("model_dependencies") or []),
+            "visible": data.get("visible", True),
+            "follow_camera": data.get("follow_camera", False),
+            "geometry": {
+                "position": list_or_default(geometry.get("position"), [0.0, 0.0, 0.0]),
+                "rotation": list_or_default(geometry.get("rotation"), [0.0, 0.0, 0.0]),
+                "scale": list_or_default(geometry.get("scale"), [1.0, 1.0, 1.0]),
+            },
+        }
+
+    @staticmethod
+    def _actor_sync_states_equal(local_actor, remote_actor_data) -> bool:
+        local_state = SceneTools._canonical_actor_sync_state(
+            SceneTools._actor_sync_state(local_actor))
+        remote_state = SceneTools._canonical_actor_sync_state(remote_actor_data)
+        return local_state == remote_state
+
+    @staticmethod
+    def _actor_snapshot_block_reason(actor_data) -> str | None:
+        if not isinstance(actor_data, dict):
+            return network_sync_policy.actor_data_sync_block_reason(actor_data)
+        policy_data = dict(actor_data)
+        # The receiver adds this flag to prevent rebroadcast loops; it should not
+        # make an otherwise valid host snapshot actor ineligible for apply.
+        policy_data.pop("_suppress_network_broadcast", None)
+        return network_sync_policy.actor_data_sync_block_reason(policy_data)
+
+    @staticmethod
+    def _safe_actor_call(actor, method_name: str, default=None):
+        if actor is None or not hasattr(actor, method_name):
+            return default
+        try:
+            return getattr(actor, method_name)()
+        except Exception:
+            return default
+
+    @staticmethod
     def _camera_view_payload(scene, camera) -> dict:
         payload = camera.to_dict()
         payload["scene_id"] = scene.route
@@ -883,6 +983,202 @@ class SceneTools(PluginBase):
         文件传输完成后由 C++ CEF bridge 调用此方法。"""
         return SceneTools._create_actor_impl(scene_name, asset_path, actor_type, actor_data,
                                              notify_frontend=False)
+
+    @staticmethod
+    def get_actor_sync_snapshot(scene_name: str) -> dict:
+        try:
+            scene = scene_manager.get(scene_name)
+            if scene is None:
+                return {"status": "error",
+                        "message": f"Scene '{scene_name}' not found",
+                        "code": "scene_not_found"}
+            actors = []
+            for actor in scene.get_actors():
+                actor_state = SceneTools._actor_sync_state(actor)
+                actor_state["scene"] = actor_state.get("scene") or scene_name
+                if not actor_state.get("actor_guid"):
+                    continue
+                if SceneTools._actor_snapshot_block_reason(actor_state) is not None:
+                    continue
+                actors.append(actor_state)
+            return {"status": "success", "scene": scene_name, "actors": actors}
+        except Exception as exc:
+            logger.exception("get_actor_sync_snapshot failed")
+            return {"status": "error", "message": str(exc), "code": "internal_error"}
+
+    @staticmethod
+    def apply_actor_state_internal(scene_name: str, actor_guid: str, actor_data=None) -> dict:
+        """Apply remote actor metadata and transform by actor_guid without rebroadcasting."""
+        try:
+            scene = scene_manager.get(scene_name)
+            if scene is None:
+                return {"status": "error",
+                        "message": f"Scene '{scene_name}' not found",
+                        "code": "scene_not_found"}
+            actor = SceneTools._find_actor_by_guid(scene, actor_guid)
+            if actor is None:
+                return {"status": "warning",
+                        "message": f"Actor guid '{actor_guid}' not found",
+                        "code": "actor_not_found",
+                        "actor_guid": actor_guid}
+
+            actor_data = actor_data or {}
+            previous_network_remote = getattr(actor, "network_remote", False)
+            previous_suppress = getattr(actor, "_suppress_network_broadcast", False)
+            actor.network_remote = True
+            actor._suppress_network_broadcast = True
+            try:
+                if actor_data.get("name"):
+                    actor.name = str(actor_data["name"])
+                geometry = actor_data.get("geometry") or {}
+                if "position" in geometry and hasattr(actor, "set_position"):
+                    actor.set_position(geometry["position"], if_init=True)
+                if "rotation" in geometry and hasattr(actor, "set_rotation"):
+                    actor.set_rotation(geometry["rotation"], if_init=True)
+                if "scale" in geometry and hasattr(actor, "set_scale"):
+                    actor.set_scale(geometry["scale"], if_init=True)
+                if "visible" in actor_data and hasattr(actor, "set_visible"):
+                    actor.set_visible(actor_data["visible"])
+                if "follow_camera" in actor_data and hasattr(actor, "set_follow_camera"):
+                    actor.set_follow_camera(actor_data["follow_camera"], if_init=True)
+            finally:
+                actor.network_remote = previous_network_remote
+                actor._suppress_network_broadcast = previous_suppress
+            try:
+                scene.save_data()
+                if hasattr(scene, "_notify_scene_tree_changed"):
+                    scene._notify_scene_tree_changed()
+            except Exception:
+                logger.debug("apply_actor_state_internal: save/notify failed", exc_info=True)
+            return {"status": "success", "scene": scene_name, "actor": actor.to_dict()}
+        except Exception as exc:
+            logger.exception("apply_actor_state_internal failed")
+            return {"status": "error", "message": str(exc), "code": "internal_error"}
+
+    @staticmethod
+    def apply_actor_sync_snapshot_internal(scene_name: str, snapshot=None) -> dict:
+        """Apply a host actor snapshot. Missing local actors are created; absent host actors are never deleted."""
+        try:
+            scene = scene_manager.get(scene_name)
+            if scene is None:
+                return {"status": "error",
+                        "message": f"Scene '{scene_name}' not found",
+                        "code": "scene_not_found"}
+            actors = snapshot.get("actors") if isinstance(snapshot, dict) else snapshot
+            if not isinstance(actors, list):
+                actors = []
+            created = []
+            updated = []
+            unchanged = []
+            warnings = []
+            for actor_data in actors:
+                if not isinstance(actor_data, dict):
+                    continue
+                actor_guid = actor_data.get("actor_guid", "")
+                if not actor_guid:
+                    continue
+                block_reason = SceneTools._actor_snapshot_block_reason(actor_data)
+                if block_reason is not None:
+                    warnings.append({"status": "warning",
+                                     "code": block_reason,
+                                     "actor_guid": actor_guid,
+                                     "actor": actor_data.get("name", "")})
+                    continue
+                existing = SceneTools._find_actor_by_guid(scene, actor_guid)
+                if existing is not None:
+                    if SceneTools._actor_sync_states_equal(existing, actor_data):
+                        unchanged.append(SceneTools._actor_sync_state(existing))
+                        continue
+                    result = SceneTools.apply_actor_state_internal(
+                        scene_name, actor_guid, actor_data)
+                    if result.get("status") == "success":
+                        updated.append(result.get("actor", {}))
+                    else:
+                        warnings.append(result)
+                    continue
+
+                asset_path = actor_data.get("path") or actor_data.get("model") or ""
+                if not asset_path:
+                    warnings.append({"status": "warning",
+                                     "code": "missing_model_path",
+                                     "actor_guid": actor_guid})
+                    continue
+                create_data = dict(actor_data)
+                create_data["_suppress_network_broadcast"] = True
+                try:
+                    result = SceneTools.create_actor_internal(
+                        scene_name,
+                        asset_path,
+                        create_data.get("actor_type", "model"),
+                        create_data,
+                    )
+                except FileNotFoundError as exc:
+                    logger.info(
+                        "apply_actor_sync_snapshot_internal: skip actor with missing asset "
+                        "scene=%s actor=%s guid=%s path=%s error=%s",
+                        scene_name,
+                        actor_data.get("name", ""),
+                        actor_guid,
+                        asset_path,
+                        exc,
+                    )
+                    warnings.append({
+                        "status": "warning",
+                        "code": "missing_asset",
+                        "actor_guid": actor_guid,
+                        "actor": actor_data.get("name", ""),
+                        "path": asset_path,
+                        "message": str(exc),
+                    })
+                    continue
+                actor_result = result.get("actor") if isinstance(result, dict) else None
+                if actor_result:
+                    created.append(actor_result)
+                else:
+                    warnings.append(result)
+            return {
+                "status": "success",
+                "scene": scene_name,
+                "created": created,
+                "updated": updated,
+                "unchanged": unchanged,
+                "warnings": warnings,
+            }
+        except Exception as exc:
+            logger.exception("apply_actor_sync_snapshot_internal failed")
+            return {"status": "error", "message": str(exc), "code": "internal_error"}
+
+    @staticmethod
+    def apply_actor_transform_internal(scene_name: str, actor_guid: str, actor_data=None) -> dict:
+        """Apply a remote actor transform without re-broadcasting it."""
+        try:
+            scene = scene_manager.get(scene_name)
+            if scene is None:
+                return {"status": "error",
+                        "message": f"Scene '{scene_name}' not found",
+                        "code": "scene_not_found"}
+
+            actor = SceneTools._find_actor_by_guid(scene, actor_guid)
+            if actor is None:
+                return {"status": "error",
+                        "message": f"Actor guid '{actor_guid}' not found",
+                        "code": "actor_not_found"}
+
+            geometry = (actor_data or {}).get("geometry") or {}
+            if "position" in geometry:
+                actor.set_position(geometry["position"], if_init=True)
+            if "rotation" in geometry:
+                actor.set_rotation(geometry["rotation"], if_init=True)
+            if "scale" in geometry:
+                actor.set_scale(geometry["scale"], if_init=True)
+            try:
+                scene.save_data()
+            except Exception:
+                logger.debug("apply_actor_transform_internal: save_data failed", exc_info=True)
+            return {"status": "success", "scene": scene_name, "actor": actor.to_dict()}
+        except Exception as exc:
+            logger.exception("apply_actor_transform_internal failed")
+            return {"status": "error", "message": str(exc), "code": "internal_error"}
 
     @staticmethod
     def _create_actor_impl(scene_name: str, asset_path: str, actor_type: str = 'model',
@@ -909,12 +1205,24 @@ class SceneTools(PluginBase):
             logger.warning("create_actor: 统计同路径 actor 失败 (%s),按 0 处理: %s", scene_name, exc)
             existing_count = 0
 
+        actor_data = actor_data or {}
+        actor_guid = actor_data.get("actor_guid", "") if isinstance(actor_data, dict) else ""
+        existing_actor = SceneTools._find_actor_by_guid(scene, actor_guid)
+        if existing_actor is not None:
+            applied = SceneTools.apply_actor_state_internal(scene_name, actor_guid, actor_data)
+            if applied.get("status") == "success":
+                return {"scene": scene_name, "actor": applied.get("actor")}
+            return applied
+
         actor = Actor(route=asset_path,
                       source_index=existing_count,
                       actor_type=actor_type,
                       parent_scene=scene,
                       actor_data=actor_data)
         scene.add_actor(actor)
+        if actor_data.get("_suppress_network_broadcast"):
+            actor.network_remote = False
+            actor._suppress_network_broadcast = False
         logger.info("Actor %s added to %s type %s", actor.name, scene_name, actor_type)
         if notify_frontend:
             CoronaEditor.js_call_func("import-asset-complete", actor.to_dict())
@@ -956,6 +1264,81 @@ class SceneTools(PluginBase):
             return {"status": "success", "scene": scene_name, "actor": actor_name}
         except Exception as exc:
             logger.exception("remove_actor 失败")
+            return {"status": "error", "message": str(exc), "code": "internal_error"}
+
+    @staticmethod
+    def rename_actor(scene_name: str, actor_name: str, new_name: str) -> dict:
+        try:
+            scene = scene_manager.get(scene_name)
+            if scene is None:
+                raise ValueError(f"Scene '{scene_name}' not found")
+            actor = scene.find_actor(actor_name)
+            if actor is None:
+                raise ValueError(f"Actor '{actor_name}' not found")
+            normalized_name = str(new_name or "").strip()
+            if not normalized_name:
+                raise ValueError("Actor name cannot be empty")
+            if any(other is not actor and other.name == normalized_name
+                   for other in scene.get_actors()):
+                raise ValueError(f"Actor name '{normalized_name}' already exists")
+
+            old_name = actor.name
+            actor.name = normalized_name
+            scene.save_data()
+            scene._notify_scene_tree_changed()
+            try:
+                if not getattr(actor, "_suppress_network_broadcast", False) and not getattr(actor, "network_remote", False):
+                    CoronaEditor.js_call_func("actor-state-sync-broadcast", [actor.to_dict()])
+            except Exception:
+                logger.debug("rename_actor: state broadcast failed", exc_info=True)
+            return {
+                "status": "success",
+                "scene": scene_name,
+                "actor": actor.to_dict(),
+                "old_name": old_name,
+                "new_name": normalized_name,
+            }
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    @staticmethod
+    def remove_actor_internal(scene_name: str, actor_guid: str = "", actor_name: str = "") -> dict:
+        """Apply a remote actor deletion without re-broadcasting it."""
+        try:
+            scene = scene_manager.get(scene_name)
+            if scene is None:
+                return {"status": "error",
+                        "message": f"Scene '{scene_name}' not found",
+                        "code": "scene_not_found"}
+
+            actor = None
+            if actor_guid:
+                for candidate in scene.get_actors():
+                    if getattr(candidate, "actor_guid", "") == actor_guid:
+                        actor = candidate
+                        break
+            if actor is None and actor_name:
+                actor = scene.find_actor(actor_name)
+            if actor is None and actor_guid:
+                actor = scene.find_actor(actor_guid)
+            if actor is None:
+                return {"status": "warning",
+                        "message": f"Actor '{actor_guid or actor_name}' not found",
+                        "code": "actor_not_found",
+                        "actor_guid": actor_guid,
+                        "actor": actor_name}
+
+            actor.network_remote = True
+            actor._suppress_network_broadcast = True
+            scene.remove_actor(actor)
+            logger.info("Remote actor %s/%s removed from %s",
+                        actor_guid, actor_name, scene_name)
+            return {"status": "success",
+                    "scene": scene_name,
+                    "actor_guid": actor_guid,
+                    "actor": actor_name or getattr(actor, "name", "")}
+        except Exception as exc:
+            logger.exception("remove_actor_internal failed")
             return {"status": "error", "message": str(exc), "code": "internal_error"}
 
     @staticmethod
@@ -1335,6 +1718,7 @@ class SceneTools(PluginBase):
                 return {"status": "error", "message": f"Scene '{scene_name}' not found"}
 
             camera_pose = _extract_vision_camera_pose(document)
+            vision_actor_imports = extract_vision_actor_imports(document, abs_path)
             scene.ensure_default_camera()
             active_camera = scene.get_active_camera()
             camera_imported = False
@@ -1352,167 +1736,74 @@ class SceneTools(PluginBase):
             active_camera = scene.get_active_camera()
 
             imported_vision_render_mode = _infer_vision_render_mode(document)
-            if active_camera is not None:
+            if active_camera is not None and hasattr(active_camera, "set_vision_render_mode"):
                 active_camera.set_vision_render_mode(imported_vision_render_mode)
+
+            imported_actors = []
+            imported_guids = {
+                actor_data["actor_guid"]
+                for actor_data in vision_actor_imports["actors"]
+            }
+            existing_by_guid = {
+                getattr(actor, "actor_guid", ""): actor
+                for actor in scene.get_actors()
+                if getattr(actor, "actor_guid", "")
+            }
+            source_guid_prefix = f"vision:{abs_path}#"
+            for actor in scene.get_actors():
+                actor_guid = getattr(actor, "actor_guid", "")
+                if actor_guid.startswith(source_guid_prefix) and actor_guid not in imported_guids:
+                    scene.remove_actor(actor)
+
+            for actor_data in vision_actor_imports["actors"]:
+                actor = existing_by_guid.get(actor_data["actor_guid"])
+                if actor is None:
+                    actor = Actor(actor_data["name"],
+                                  actor_data["route"],
+                                  actor_type=actor_data["actor_type"],
+                                  parent_scene=scene,
+                                  actor_data=actor_data)
+                    scene.add_actor(actor)
+                else:
+                    actor.actor_type = actor_data["actor_type"]
+                    actor.actor_guid = actor_data["actor_guid"]
+                    if getattr(actor, "route", None) != actor_data["route"]:
+                        actor.route = actor_data["route"]
+                        actor.set_model(actor_data["route"])
+                    geometry_state = actor_data.get("geometry") or {}
+                    if "position" in geometry_state:
+                        actor.set_position(geometry_state["position"])
+                    if "rotation" in geometry_state:
+                        actor.set_rotation(geometry_state["rotation"])
+                    if "scale" in geometry_state:
+                        actor.set_scale(geometry_state["scale"])
+                optics_state = actor_data.get("optics") or {}
+                optics = getattr(actor, "_optics", None)
+                for key, value in optics_state.items():
+                    setter = getattr(optics, f"set_{key}", None)
+                    if setter is not None:
+                        setter(value)
+                imported_actors.append(actor.to_dict())
 
             if "vision" not in scene.file_data:
                 scene.file_data["vision"] = {}
             scene.vision_source_path = abs_path
-            scene.vision_import_mode = "external_live"
+            scene.vision_import_mode = "engine_built"
             scene.file_data["vision"]["source_path"] = abs_path
-            scene.file_data["vision"]["import_mode"] = "external_live"
-
-            previous_bindings = list(getattr(scene, "vision_bindings", []))
-            new_bindings = []
-            unsupported_shapes = []
-            created_proxy_count = 0
-            reused_proxy_count = 0
-            used_binding_indices = set()
-
-            for shape_index, json_path, shape in _iter_vision_shapes(document):
-                shape_type = _vision_shape_type(shape)
-                model_path = ""
-                actor_route = ""
-                if shape_type == "model":
-                    model_path = _resolve_vision_model_path(abs_path, shape)
-                    actor_route = model_path
-                    if not model_path or not os.path.isfile(model_path):
-                        unsupported_shapes.append({
-                            "shape_index": shape_index,
-                            "json_path": json_path,
-                            "type": shape_type,
-                            "reason": "model_file_not_found",
-                            "model_path": model_path,
-                        })
-                        continue
-                elif shape_type in _SUPPORTED_VISION_PRIMITIVES:
-                    actor_route, model_path = _ensure_vision_primitive_proxy(
-                        scene, shape, shape_type, json_path)
-                    if not actor_route:
-                        unsupported_shapes.append({
-                            "shape_index": shape_index,
-                            "json_path": json_path,
-                            "type": shape_type,
-                            "reason": "primitive_proxy_generation_failed",
-                        })
-                        continue
-                else:
-                    unsupported_shapes.append({
-                        "shape_index": shape_index,
-                        "json_path": json_path,
-                        "type": shape_type or "unknown",
-                        "reason": "unsupported_shape_type",
-                    })
-                    continue
-
-                previous_binding = _find_previous_binding(
-                    previous_bindings,
-                    used_binding_indices,
-                    shape,
-                    shape_type,
-                    json_path,
-                    abs_path,
-                    model_path,
-                )
-                actor = _find_actor_by_guid(
-                    scene, previous_binding.get("actor_guid", "") if previous_binding else "")
-                transform = (
-                    _extract_vision_primitive_proxy_transform(shape)
-                    if shape_type in _SUPPORTED_VISION_PRIMITIVES
-                    else _extract_vision_shape_transform(shape)
-                )
-                if actor is None:
-                    actor_guid = (
-                        previous_binding.get("actor_guid", "") if previous_binding else ""
-                    ) or f"actor-{uuid.uuid4().hex}"
-                    actor_data = {
-                        "actor_guid": actor_guid,
-                        "_suppress_network_broadcast": True,
-                        "geometry": transform,
-                    }
-                    actor = Actor(
-                        name=(_vision_proxy_name(shape, shape_type, shape_index)
-                              if shape_type in _SUPPORTED_VISION_PRIMITIVES
-                              else _vision_shape_name(shape, model_path, shape_index)),
-                        route=actor_route,
-                        actor_type="model",
-                        parent_scene=scene,
-                        actor_data=actor_data,
-                    )
-                    scene.add_actor(actor)
-                    if hasattr(actor, "set_physics_enabled"):
-                        try:
-                            actor.set_physics_enabled(False)
-                        except Exception as exc:
-                            logger.warning("Failed to disable physics for Vision proxy %s: %s",
-                                           getattr(actor, "name", actor_guid), exc)
-                    created_proxy_count += 1
-                else:
-                    if hasattr(actor, "set_position"):
-                        actor.set_position(transform["position"], True)
-                    if hasattr(actor, "set_rotation"):
-                        actor.set_rotation(transform["rotation"], True)
-                    if hasattr(actor, "set_scale"):
-                        actor.set_scale(transform["scale"], True)
-                    if hasattr(actor, "set_physics_enabled"):
-                        try:
-                            actor.set_physics_enabled(False)
-                        except Exception as exc:
-                            logger.warning("Failed to disable physics for Vision proxy %s: %s",
-                                           getattr(actor, "name", ""), exc)
-                    reused_proxy_count += 1
-
-                binding = {
-                    "actor_guid": getattr(actor, "actor_guid", ""),
-                    "actor_name": getattr(actor, "name", ""),
-                    "shape_guid": _vision_shape_guid(shape, json_path),
-                    "shape_index": shape_index,
-                    "json_path": json_path,
-                    "shape_type": shape_type,
-                    "shape_identity_key": _vision_shape_identity_key(abs_path, shape, json_path),
-                    "model_path": model_path,
-                    "source_path": abs_path,
-                }
-                if hasattr(actor, "set_external_vision_binding"):
-                    actor.set_external_vision_binding(binding)
-                new_bindings.append(binding)
-
-            active_actor_guids = {binding.get("actor_guid", "") for binding in new_bindings}
-            removed_proxy_count = _remove_stale_vision_proxy_actors(
-                scene, previous_bindings, active_actor_guids)
-            scene.vision_bindings = new_bindings
-            scene.vision_unsupported_shapes = unsupported_shapes
+            scene.file_data["vision"]["import_mode"] = "engine_built"
             scene.save_data()
-
-            runtime_path = prepare_external_live_vision_scene(scene)
-            CoronaEditor.CoronaEngine.load_vision_scene(runtime_path or abs_path)
-            if active_camera is not None:
-                active_camera.set_render_backend("vision")
-                if hasattr(scene.engine_scene, "set_active_camera"):
-                    scene.engine_scene.set_active_camera(getattr(active_camera, "engine_obj", active_camera))
-                scene.save_data()
             scene._notify_scene_tree_changed()
-            logger.info(
-                "Vision scene imported into current scene %s: %s (created proxies=%d, reused=%d, removed=%d, unsupported=%d)",
-                scene_name, abs_path, created_proxy_count, reused_proxy_count,
-                removed_proxy_count, len(unsupported_shapes))
-            vision_summary = _vision_import_summary(
-                "external_live", abs_path, new_bindings, unsupported_shapes)
+            logger.info("Vision scene imported into current scene %s: %s", scene_name, abs_path)
             return {
                 "status": "success",
                 "scene": scene_name,
                 "path": abs_path,
-                "runtime_path": runtime_path or abs_path,
-                "import_mode": "external_live",
-                "vision_render_mode": imported_vision_render_mode,
+                "import_mode": "engine_built",
+                "imported_actor_count": len(imported_actors),
+                "imported_actors": imported_actors,
+                "unsupported_shapes": vision_actor_imports["unsupported_shapes"],
                 "camera_imported": camera_imported,
                 "camera": active_camera.to_dict() if active_camera is not None else None,
-                "proxy_actors_created": created_proxy_count,
-                "proxy_actors_reused": reused_proxy_count,
-                "proxy_actors_removed": removed_proxy_count,
-                "bindings": new_bindings,
-                "unsupported_shapes": unsupported_shapes,
-                "vision": vision_summary,
             }
         except json.JSONDecodeError as exc:
             return {"status": "error", "message": f"Invalid Vision JSON: {exc}"}

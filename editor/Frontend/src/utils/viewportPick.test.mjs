@@ -122,6 +122,34 @@ const makeController = ({ hitRect, renderRect } = {}) => {
   assert.deepEqual(emitted, [['model', 'demo.scene', 'Box']]);
 
   assert.deepEqual(controller.handlePickResult({
+    status: 'success',
+    sceneId: 'demo.scene',
+    requestId: 'pick-10',
+    actorHandle: 404,
+    actorName: 'Runtime Chair',
+    actorType: 'model',
+  }), {
+    status: 'selected',
+    payload: {
+      status: 'success',
+      sceneId: 'demo.scene',
+      requestId: 'pick-10',
+      actorHandle: 404,
+      actorName: 'Runtime Chair',
+      actorType: 'model',
+    },
+    actor: {
+      handle: 404,
+      name: 'Runtime Chair',
+      type: 'model',
+    },
+  });
+  assert.deepEqual(emitted, [
+    ['model', 'demo.scene', 'Box'],
+    ['model', 'demo.scene', 'Runtime Chair'],
+  ]);
+
+  assert.deepEqual(controller.handlePickResult({
     status: 'miss',
     sceneId: 'demo.scene',
     requestId: 'pick-10',
@@ -135,7 +163,10 @@ const makeController = ({ hitRect, renderRect } = {}) => {
       actorHandle: 0,
     },
   });
-  assert.deepEqual(emitted, [['model', 'demo.scene', 'Box']]);
+  assert.deepEqual(emitted, [
+    ['model', 'demo.scene', 'Box'],
+    ['model', 'demo.scene', 'Runtime Chair'],
+  ]);
 
   assert.deepEqual(controller.handlePickResult({
     status: 'error',

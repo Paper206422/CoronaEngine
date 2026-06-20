@@ -19,6 +19,29 @@ from Quasar.ai_tools.response_adapter import (
 DEFAULT_SCENE_NAME = ""
 
 
+def _import_model_reviewer_helpers():
+    try:
+        from plugins.AITool.cai_extensions.agent.model_reviewer import (
+            _save_camera_screenshot_with_timeout,
+            get_or_create_vlm_review_camera,
+        )
+    except ModuleNotFoundError:
+        from cai_extensions.agent.model_reviewer import (
+            _save_camera_screenshot_with_timeout,
+            get_or_create_vlm_review_camera,
+        )
+    return get_or_create_vlm_review_camera, _save_camera_screenshot_with_timeout
+
+
+def _get_default_capture_camera(scene):
+    get_or_create_vlm_review_camera, _ = _import_model_reviewer_helpers()
+    camera_factory = None
+    active_camera = getattr(scene, "get_active_camera", lambda: None)()
+    if active_camera is not None:
+        camera_factory = type(active_camera)
+    return get_or_create_vlm_review_camera(scene, camera_factory=camera_factory)
+
+
 def _resolve_scene(scene_manager, scene_name: str):
     """根据名称获取场景，若为空则自动获取当前已加载的场景。"""
     if scene_name:
@@ -69,7 +92,7 @@ class CameraListInput(BaseModel):
 
 class CameraScreenshotInput(BaseModel):
     scene_name: str = Field(default=DEFAULT_SCENE_NAME, description="目标场景名称")
-    camera_name: str | None = Field(default=None, description="摄像头名称，为空则使用主摄像头")
+    camera_name: str | None = Field(default=None, description="摄像头名称；为空则使用隐藏离屏审查摄像头，避免扰动主摄像头")
     output_path: str | None = Field(
         default=None,
         description="截图保存路径。为空则自动生成路径保存到项目目录下的 screenshots/ 文件夹",
@@ -83,7 +106,7 @@ class CameraScreenshotInput(BaseModel):
 class CameraMultiviewInput(BaseModel):
     scene_name: str = Field(default=DEFAULT_SCENE_NAME, description="目标场景名称")
     actor_name: str = Field(description="要环绕拍摄的对象名称")
-    camera_name: str | None = Field(default=None, description="摄像头名称，为空则使用主摄像头")
+    camera_name: str | None = Field(default=None, description="摄像头名称；为空则使用隐藏离屏审查摄像头，避免移动主摄像头")
     view_count: int = Field(
         default=8,
         description="环绕拍摄的视角数量，默认 8 个视角（均匀分布在物体周围）",
@@ -388,7 +411,7 @@ def _build_camera_screenshot_tool(scene_manager) -> StructuredTool:
                     error_message="No scene loaded"
                 ).to_envelope(interface_type="scene")
 
-            camera = scene.find_camera(camera_name)
+            camera = scene.find_camera(camera_name) if camera_name else _get_default_capture_camera(scene)
             if camera is None:
                 return build_error_result(
                     error_message=f"No camera available in scene '{scene_name}'"
@@ -396,29 +419,33 @@ def _build_camera_screenshot_tool(scene_manager) -> StructuredTool:
 
             # 设置输出模式
             prev_mode = camera.get_output_mode()
-            if output_mode != prev_mode:
-                camera.set_output_mode(output_mode)
-                time.sleep(0.15)  # 等待 GPU 渲染新模式
+            try:
+                if output_mode != prev_mode:
+                    camera.set_output_mode(output_mode)
+                    time.sleep(0.15)  # 等待 GPU 渲染新模式
 
-            # 确定输出路径
-            if not output_path:
-                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                output_path = os.path.join(
-                    _get_screenshot_dir(), f"shot_{output_mode}_{ts}.png"
-                )
-            else:
-                # 相对路径统一放到项目截图目录下
-                if not os.path.isabs(output_path):
+                # 确定输出路径
+                if not output_path:
+                    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                     output_path = os.path.join(
-                        _get_screenshot_dir(), output_path
+                        _get_screenshot_dir(), f"shot_{output_mode}_{ts}.png"
                     )
+                else:
+                    # 相对路径统一放到项目截图目录下
+                    if not os.path.isabs(output_path):
+                        output_path = os.path.join(
+                            _get_screenshot_dir(), output_path
+                        )
                 os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
-            camera.save_screenshot(output_path)
-
-            # 恢复输出模式
-            if output_mode != prev_mode:
-                camera.set_output_mode(prev_mode)
+                _, _save_camera_screenshot_with_timeout = _import_model_reviewer_helpers()
+                if not _save_camera_screenshot_with_timeout(camera, output_path, timeout=3.0):
+                    return build_error_result(
+                        error_message=f"Screenshot timed out or failed: {output_path}"
+                    ).to_envelope(interface_type="scene")
+            finally:
+                if camera.get_output_mode() != prev_mode:
+                    camera.set_output_mode(prev_mode)
 
             result_data = {
                 "status": "success",
@@ -474,7 +501,10 @@ def _build_camera_multiview_tool(scene_manager) -> StructuredTool:
                     error_message=f"Actor '{actor_name}' not found"
                 ).to_envelope(interface_type="scene")
 
-            camera = scene.find_camera(camera_name)
+            if camera_name:
+                camera = scene.find_camera(camera_name)
+            else:
+                camera = _get_default_capture_camera(scene)
             if camera is None:
                 return build_error_result(
                     error_message=f"No camera available"
@@ -563,7 +593,11 @@ def _build_camera_multiview_tool(scene_manager) -> StructuredTool:
 
                     filename = f"view_{i:02d}_az{azimuth_deg:03d}_{mode}.png"
                     filepath = os.path.join(output_dir, filename)
-                    camera.save_screenshot(filepath)
+                    _, _save_camera_screenshot_with_timeout = _import_model_reviewer_helpers()
+                    if not _save_camera_screenshot_with_timeout(camera, filepath, timeout=3.0):
+                        return build_error_result(
+                            error_message=f"Screenshot timed out or failed: {filepath}"
+                        ).to_envelope(interface_type="scene")
                     saved_files.append(filepath)
 
             # 恢复原始输出模式

@@ -298,6 +298,33 @@
           <template v-else-if="mainActiveTab === 'actor'">
             <!-- 单位 - 基础信息 -->
             <div v-show="ActiveSubTab === 'Basic'" class="space-y-2 text-xs">
+              <div class="bg-[#3c3c3c]/50 p-2 rounded border-l-2 border-[#84a65b]">
+                <div class="flex items-center space-x-2">
+                  <label class="text-[#e0e0e0] font-medium w-16">别名</label>
+                  <input
+                    v-model="actorAliasDraft"
+                    type="text"
+                    class="flex-1 min-w-0 p-1 bg-[#1a1a1a] text-[#e0e0e0] rounded border border-[#3c3c3c] text-[10px] focus:border-[#84a65b] focus:outline-none"
+                    placeholder="Actor 别名"
+                    :disabled="actorAliasSaving"
+                    @keydown.enter.prevent="commitActorAlias"
+                    @keydown.esc.prevent="resetActorAliasDraft"
+                  />
+                  <button
+                    type="button"
+                    class="px-2 py-1 rounded whitespace-nowrap text-[10px] transition-colors"
+                    :class="actorAliasDirty && !actorAliasSaving ? 'bg-[#84a65b] text-[#101510] hover:bg-[#95b96a]' : 'bg-[#545454] text-[#909090] cursor-not-allowed'"
+                    :disabled="!actorAliasDirty || actorAliasSaving"
+                    @click="commitActorAlias"
+                  >
+                    {{ actorAliasSaving ? '保存中' : '保存' }}
+                  </button>
+                </div>
+                <div v-if="actorAliasError" class="mt-1 text-[10px] text-red-300">
+                  {{ actorAliasError }}
+                </div>
+              </div>
+
               <div class="bg-[#3c3c3c]/50 p-2 rounded">
                 <div class="flex items-center space-x-2">
                   <label class="text-[#e0e0e0] font-medium w-16">场景</label>
@@ -439,8 +466,8 @@
                           :step="0.1"
                           :min="-100"
                           :max="100"
-                          @update:model-value="(value) => updateActorTransformFast('Move', 'x', value)"
-                          @change="() => updateActorTransform('Move')"
+                          @update:model-value="(value) => updateActorTransformFast('SetPosition', 'x', value)"
+                          @change="() => updateActorTransform('SetPosition')"
                         />
                       </div>
                       <div class="flex items-center gap-1">
@@ -450,8 +477,8 @@
                           :step="0.1"
                           :min="-100"
                           :max="100"
-                          @update:model-value="(value) => updateActorTransformFast('Move', 'y', value)"
-                          @change="() => updateActorTransform('Move')"
+                          @update:model-value="(value) => updateActorTransformFast('SetPosition', 'y', value)"
+                          @change="() => updateActorTransform('SetPosition')"
                         />
                       </div>
                       <div class="flex items-center gap-1">
@@ -461,8 +488,8 @@
                           :step="0.1"
                           :min="-100"
                           :max="100"
-                          @update:model-value="(value) => updateActorTransformFast('Move', 'z', value)"
-                          @change="() => updateActorTransform('Move')"
+                          @update:model-value="(value) => updateActorTransformFast('SetPosition', 'z', value)"
+                          @change="() => updateActorTransform('SetPosition')"
                         />
                       </div>
                     </div>
@@ -479,8 +506,8 @@
                           :step="0.1"
                           :min="-360"
                           :max="360"
-                          @update:model-value="(value) => updateActorTransformFast('Rotate', 'x', value)"
-                          @change="() => updateActorTransform('Rotate')"
+                          @update:model-value="(value) => updateActorTransformFast('SetRotation', 'x', value)"
+                          @change="() => updateActorTransform('SetRotation')"
                         />
                       </div>
 
@@ -491,8 +518,8 @@
                           :step="0.1"
                           :min="-360"
                           :max="360"
-                          @update:model-value="(value) => updateActorTransformFast('Rotate', 'y', value)"
-                          @change="() => updateActorTransform('Rotate')"
+                          @update:model-value="(value) => updateActorTransformFast('SetRotation', 'y', value)"
+                          @change="() => updateActorTransform('SetRotation')"
                         />
                       </div>
 
@@ -503,8 +530,8 @@
                           :step="0.1"
                           :min="-360"
                           :max="360"
-                          @update:model-value="(value) => updateActorTransformFast('Rotate', 'z', value)"
-                          @change="() => updateActorTransform('Rotate')"
+                          @update:model-value="(value) => updateActorTransformFast('SetRotation', 'z', value)"
+                          @change="() => updateActorTransform('SetRotation')"
                         />
                       </div>
                     </div>
@@ -521,8 +548,8 @@
                           :step="0.1"
                           :min="0.01"
                           :max="10"
-                          @update:model-value="(value) => updateActorTransformFast('Scale', 'x', value)"
-                          @change="() => updateActorTransform('Scale')"
+                          @update:model-value="(value) => updateActorTransformFast('SetScale', 'x', value)"
+                          @change="() => updateActorTransform('SetScale')"
                         />
                       </div>
 
@@ -533,8 +560,8 @@
                           :step="0.1"
                           :min="0.01"
                           :max="10"
-                          @update:model-value="(value) => updateActorTransformFast('Scale', 'y', value)"
-                          @change="() => updateActorTransform('Scale')"
+                          @update:model-value="(value) => updateActorTransformFast('SetScale', 'y', value)"
+                          @change="() => updateActorTransform('SetScale')"
                         />
                       </div>
 
@@ -545,8 +572,8 @@
                           :step="0.1"
                           :min="0.01"
                           :max="10"
-                          @update:model-value="(value) => updateActorTransformFast('Scale', 'z', value)"
-                          @change="() => updateActorTransform('Scale')"
+                          @update:model-value="(value) => updateActorTransformFast('SetScale', 'z', value)"
+                          @change="() => updateActorTransform('SetScale')"
                         />
                       </div>
                     </div>
@@ -927,6 +954,33 @@
           <template v-else-if="mainActiveTab === 'model'">
             <!-- 模型 - 基础信息 -->
             <div v-show="ActiveSubTab === 'Basic'" class="space-y-2 text-xs">
+              <div class="bg-[#3c3c3c]/50 p-2 rounded border-l-2 border-[#84a65b]">
+                <div class="flex items-center space-x-2">
+                  <label class="text-[#e0e0e0] font-medium w-16">别名</label>
+                  <input
+                    v-model="modelAliasDraft"
+                    type="text"
+                    class="flex-1 min-w-0 p-1 bg-[#1a1a1a] text-[#e0e0e0] rounded border border-[#3c3c3c] text-[10px] focus:border-[#84a65b] focus:outline-none"
+                    placeholder="模型别名"
+                    :disabled="modelAliasSaving"
+                    @keydown.enter.prevent="commitModelAlias"
+                    @keydown.esc.prevent="resetModelAliasDraft"
+                  />
+                  <button
+                    type="button"
+                    class="px-2 py-1 rounded whitespace-nowrap text-[10px] transition-colors"
+                    :class="modelAliasDirty && !modelAliasSaving ? 'bg-[#84a65b] text-[#101510] hover:bg-[#95b96a]' : 'bg-[#545454] text-[#909090] cursor-not-allowed'"
+                    :disabled="!modelAliasDirty || modelAliasSaving"
+                    @click="commitModelAlias"
+                  >
+                    {{ modelAliasSaving ? '保存中' : '保存' }}
+                  </button>
+                </div>
+                <div v-if="modelAliasError" class="mt-1 text-[10px] text-red-300">
+                  {{ modelAliasError }}
+                </div>
+              </div>
+
               <div class="bg-[#3c3c3c]/50 p-2 rounded">
                 <div class="flex items-center space-x-2">
                   <label class="text-[#e0e0e0] font-medium w-16">场景</label>
@@ -1001,8 +1055,8 @@
                         :step="0.1"
                         :min="-100"
                         :max="100"
-                        @update:model-value="(value) => updateModelTransformFast('Move', 'x', value)"
-                        @change="() => updateModelTransform('Move')"
+                        @update:model-value="(value) => updateModelTransformFast('SetPosition', 'x', value)"
+                        @change="() => updateModelTransform('SetPosition')"
                       />
                     </div>
 
@@ -1013,8 +1067,8 @@
                         :step="0.1"
                         :min="-100"
                         :max="100"
-                        @update:model-value="(value) => updateModelTransformFast('Move', 'y', value)"
-                        @change="() => updateModelTransform('Move')"
+                        @update:model-value="(value) => updateModelTransformFast('SetPosition', 'y', value)"
+                        @change="() => updateModelTransform('SetPosition')"
                       />
                     </div>
 
@@ -1025,8 +1079,8 @@
                         :step="0.1"
                         :min="-100"
                         :max="100"
-                        @update:model-value="(value) => updateModelTransformFast('Move', 'z', value)"
-                        @change="() => updateModelTransform('Move')"
+                        @update:model-value="(value) => updateModelTransformFast('SetPosition', 'z', value)"
+                        @change="() => updateModelTransform('SetPosition')"
                       />
                     </div>
                   </div>
@@ -1043,8 +1097,8 @@
                         :step="0.1"
                         :min="-360"
                         :max="360"
-                        @update:model-value="(value) => updateModelTransformFast('Rotate', 'x', value)"
-                        @change="() => updateModelTransform('Rotate')"
+                        @update:model-value="(value) => updateModelTransformFast('SetRotation', 'x', value)"
+                        @change="() => updateModelTransform('SetRotation')"
                       />
                     </div>
 
@@ -1055,8 +1109,8 @@
                         :step="0.1"
                         :min="-360"
                         :max="360"
-                        @update:model-value="(value) => updateModelTransformFast('Rotate', 'y', value)"
-                        @change="() => updateModelTransform('Rotate')"
+                        @update:model-value="(value) => updateModelTransformFast('SetRotation', 'y', value)"
+                        @change="() => updateModelTransform('SetRotation')"
                       />
                     </div>
 
@@ -1067,8 +1121,8 @@
                         :step="0.1"
                         :min="-360"
                         :max="360"
-                        @update:model-value="(value) => updateModelTransformFast('Rotate', 'z', value)"
-                        @change="() => updateModelTransform('Rotate')"
+                        @update:model-value="(value) => updateModelTransformFast('SetRotation', 'z', value)"
+                        @change="() => updateModelTransform('SetRotation')"
                       />
                     </div>
                   </div>
@@ -1085,8 +1139,8 @@
                         :step="0.1"
                         :min="0.01"
                         :max="10"
-                        @update:model-value="(value) => updateModelTransformFast('Scale', 'x', value)"
-                        @change="() => updateModelTransform('Scale')"
+                        @update:model-value="(value) => updateModelTransformFast('SetScale', 'x', value)"
+                        @change="() => updateModelTransform('SetScale')"
                       />
                     </div>
 
@@ -1097,8 +1151,8 @@
                         :step="0.1"
                         :min="0.01"
                         :max="10"
-                        @update:model-value="(value) => updateModelTransformFast('Scale', 'y', value)"
-                        @change="() => updateModelTransform('Scale')"
+                        @update:model-value="(value) => updateModelTransformFast('SetScale', 'y', value)"
+                        @change="() => updateModelTransform('SetScale')"
                       />
                     </div>
 
@@ -1109,8 +1163,8 @@
                         :step="0.1"
                         :min="0.01"
                         :max="10"
-                        @update:model-value="(value) => updateModelTransformFast('Scale', 'z', value)"
-                        @change="() => updateModelTransform('Scale')"
+                        @update:model-value="(value) => updateModelTransformFast('SetScale', 'z', value)"
+                        @change="() => updateModelTransform('SetScale')"
                       />
                     </div>
                   </div>
@@ -1624,6 +1678,12 @@ function keyframeColorClass(type) {
 // ========== 当前打开的文件 ==========
 const currentActorFile = ref('');
 const currentModelFile = ref('');
+const actorAliasDraft = ref('');
+const actorAliasSaving = ref(false);
+const actorAliasError = ref('');
+const modelAliasDraft = ref('');
+const modelAliasSaving = ref(false);
+const modelAliasError = ref('');
 
 // ========== 场景数据 ==========
 const sceneData = ref({
@@ -1716,6 +1776,13 @@ const modelData = ref({
 });
 
 // ========== 计算属性 ==========
+const actorAliasDirty = computed(() =>
+  actorAliasDraft.value.trim() !== (actorData.value.name || '')
+);
+const modelAliasDirty = computed(() =>
+  modelAliasDraft.value.trim() !== (modelData.value.name || '')
+);
+
 const currentFileInfo = computed(() => {
   if (mainActiveTab.value === 'scene') {
     return `🎬 场景: ${sceneData.value.name}`;
@@ -1742,6 +1809,96 @@ const readFollowCameraState = (data) =>
   data?.follow_camera === 1 ||
   data?.follow_camera === 'true' ||
   data?.follow_camera === '1';
+
+const unwrapBridgeResult = (result) => result?.data ?? result;
+
+const resetActorAliasDraft = () => {
+  actorAliasDraft.value = actorData.value.name || '';
+  actorAliasError.value = '';
+};
+
+const commitActorAlias = async () => {
+  const sceneName = actorData.value.parentScene;
+  const actorName = currentActorFile.value || actorData.value.name;
+  const nextName = actorAliasDraft.value.trim();
+
+  if (!sceneName || !actorName || actorAliasSaving.value) return;
+  if (!nextName) {
+    actorAliasError.value = '别名不能为空';
+    return;
+  }
+  if (nextName === actorData.value.name) {
+    resetActorAliasDraft();
+    return;
+  }
+
+  actorAliasSaving.value = true;
+  actorAliasError.value = '';
+  try {
+    const result = unwrapBridgeResult(
+      await sceneService.renameActor(sceneName, actorName, nextName)
+    );
+    if (result?.status === 'error') {
+      throw new Error(result.message || '修改别名失败');
+    }
+
+    const savedName = result?.actor?.name || result?.new_name || nextName;
+    currentActorFile.value = savedName;
+    actorData.value.name = savedName;
+    actorAliasDraft.value = savedName;
+    setActorContext(sceneName, savedName);
+  } catch (e) {
+    actorAliasError.value = e?.message || '修改别名失败';
+    actorAliasDraft.value = actorData.value.name || actorName;
+    logError('修改单位别名失败', e);
+  } finally {
+    actorAliasSaving.value = false;
+  }
+};
+
+const resetModelAliasDraft = () => {
+  modelAliasDraft.value = modelData.value.name || '';
+  modelAliasError.value = '';
+};
+
+const commitModelAlias = async () => {
+  const sceneName = modelData.value.targetScene;
+  const actorName = currentModelFile.value || modelData.value.name;
+  const nextName = modelAliasDraft.value.trim();
+
+  if (!sceneName || !actorName || modelAliasSaving.value) return;
+  if (!nextName) {
+    modelAliasError.value = '别名不能为空';
+    return;
+  }
+  if (nextName === modelData.value.name) {
+    resetModelAliasDraft();
+    return;
+  }
+
+  modelAliasSaving.value = true;
+  modelAliasError.value = '';
+  try {
+    const result = unwrapBridgeResult(
+      await sceneService.renameActor(sceneName, actorName, nextName)
+    );
+    if (result?.status === 'error') {
+      throw new Error(result.message || '修改别名失败');
+    }
+
+    const savedName = result?.actor?.name || result?.new_name || nextName;
+    currentModelFile.value = savedName;
+    modelData.value.name = savedName;
+    modelAliasDraft.value = savedName;
+    setActorContext(sceneName, savedName);
+  } catch (e) {
+    modelAliasError.value = e?.message || '修改别名失败';
+    modelAliasDraft.value = modelData.value.name || actorName;
+    logError('修改模型别名失败', e);
+  } finally {
+    modelAliasSaving.value = false;
+  }
+};
 
 // 加载场景数据
 const loadSceneData = async (sceneId) => {
@@ -1799,7 +1956,10 @@ const loadActorData = async (sceneId, actorId) => {
     const result = await sceneService.getActor(sceneId, actorId);
     if (result) {
       const data = result.data;
-      actorData.value.name = actorId;
+      const displayName = data.name || actorId;
+      actorData.value.name = displayName;
+      actorAliasDraft.value = displayName;
+      actorAliasError.value = '';
       actorData.value.handle = Number(data.handle || 0);
       actorData.value.parentScene = sceneId || '';
       actorData.value.file = data.path;
@@ -1880,7 +2040,10 @@ const loadModelData = async (sceneId, modelId) => {
     const result = await sceneService.getActor(sceneId, modelId);
     if (result) {
       const data = result.data;
-      modelData.value.name = modelId;
+      const displayName = data.name || modelId;
+      modelData.value.name = displayName;
+      modelAliasDraft.value = displayName;
+      modelAliasError.value = '';
       modelData.value.handle = Number(data.handle || 0);
       modelData.value.targetScene = sceneId || '';
       modelData.value.file = data.path;
@@ -1967,6 +2130,9 @@ const updateFloorGrid = async () => {
 };
 
 const ACTOR_TRANSFORM_OPERATION = {
+  SetPosition: 0,
+  SetRotation: 1,
+  SetScale: 2,
   Move: 0,
   Rotate: 1,
   Scale: 2,
@@ -1995,6 +2161,7 @@ const applyAxisOverride = (vector, axis, value) => {
 const getTransformVector = (transform, operationType, axis = null, value = null) => {
   if (!transform) return null;
   switch (operationType) {
+    case 'SetPosition':
     case 'Move':
       return applyAxisOverride(
         [
@@ -2005,6 +2172,7 @@ const getTransformVector = (transform, operationType, axis = null, value = null)
         axis,
         value
       );
+    case 'SetRotation':
     case 'Rotate':
       return applyAxisOverride(
         [
@@ -2015,6 +2183,7 @@ const getTransformVector = (transform, operationType, axis = null, value = null)
         axis,
         value
       );
+    case 'SetScale':
     case 'Scale':
       return applyAxisOverride(
         [
