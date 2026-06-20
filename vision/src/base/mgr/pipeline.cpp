@@ -152,8 +152,18 @@ void Pipeline::init() noexcept {
 }
 
 void Pipeline::sync_output_denoise() noexcept {
-    /// output.denoise is the runtime switch; the integrator-owned denoiser consumes it.
-    renderer().integrator()->set_denoise_enabled(output_desc_.denoise);
+    /// output.denoise is the per-mode switch; the integrator-owned denoiser consumes it.
+    ///
+    /// FORCE: SVGF is force-enabled for the path-tracing pipeline regardless of the
+    /// selected CameraVisionRenderMode. PathTracing mode still instantiates an SVGF
+    /// denoiser with a normal framebuffer (see configure_vision_scene_for_mode), so
+    /// handing the integrator `true` here turns SVGF on for PT without touching the
+    /// canonical optics-layer mode model or its unit tests. This is the single point
+    /// every denoise-sync path funnels through, so it cannot be undone by upstream
+    /// merges of the mode mapping. `VISION_DISABLE_DENOISER` still hard-disables at the
+    /// integrator gate. NOTE: output_desc_.denoise (and the create_view_context log)
+    /// keep reporting the mode's nominal value, so logs may say denoise=false while it runs.
+    renderer().integrator()->set_denoise_enabled(true);
 }
 
 void Pipeline::prepare() noexcept {

@@ -219,7 +219,7 @@ size_t PeerManager::peer_count() const {
     std::lock_guard lock(impl_->peer_mutex);
     size_t count = 0;
     for (const auto& p : impl_->peer_list) {
-        if (p.connected) ++count;
+        if (p.connected && p.hello_done) ++count;
     }
     return count;
 }

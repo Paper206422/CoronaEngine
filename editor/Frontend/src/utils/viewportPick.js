@@ -172,18 +172,25 @@ export const createViewportPickController = ({
 
       const actorHandle = Number(payload.actorHandle || 0);
       const actor = getActorIndex?.().get(actorHandle);
-      if (!actor?.name) {
+      const payloadActorName = payload.actorName || payload.name || payload.actor?.name;
+      const payloadActorType = payload.actorType || payload.type || payload.actor?.actor_type || payload.actor?.type;
+      const resolvedActor = actor?.name
+        ? actor
+        : payloadActorName
+          ? { name: payloadActorName, type: payloadActorType || 'actor' }
+          : null;
+      if (!resolvedActor?.name) {
         return { status: 'unknown', payload };
       }
 
-      emitActorChange?.(actor.type || 'actor', payload.sceneId, actor.name);
+      emitActorChange?.(resolvedActor.type || 'actor', payload.sceneId, resolvedActor.name);
       return {
         status: 'selected',
         payload,
         actor: {
           handle: actorHandle,
-          name: actor.name,
-          type: actor.type || 'actor',
+          name: resolvedActor.name,
+          type: resolvedActor.type || 'actor',
         },
       };
     },

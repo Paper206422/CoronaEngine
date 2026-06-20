@@ -191,6 +191,7 @@ export const createViewportUiPointerController = ({
   let pendingMoveFrame = 0;
   let pointerVisible = false;
   let systemCursorHidden = false;
+  let systemCursorCustom = false;
 
   const cameraHandleForSend = () => {
     const handle = Number(getCameraHandle?.() ?? 0);
@@ -201,12 +202,13 @@ export const createViewportUiPointerController = ({
 
   const isEnabled = () => getEnabled?.() !== false;
 
-  const setSystemCursorHidden = (hidden) => {
-    if (systemCursorHidden === hidden) return false;
+  const setSystemCursorState = (hidden, custom) => {
+    if (systemCursorHidden === hidden && systemCursorCustom === custom) return false;
     const bridge = bridgeForSend();
     if (typeof bridge?.setViewportSystemCursorHidden !== 'function') return false;
-    if (bridge.setViewportSystemCursorHidden(hidden) === false) return false;
+    if (bridge.setViewportSystemCursorHidden(hidden, custom) === false) return false;
     systemCursorHidden = hidden;
+    systemCursorCustom = custom;
     return true;
   };
 
@@ -222,7 +224,7 @@ export const createViewportUiPointerController = ({
     if (typeof bridge?.viewportUiPointer !== 'function') return false;
     bridge.viewportUiPointer(cameraHandle, type, x, y, buttons, modifiers, cursor);
     pointerVisible = !isHidePayload({ type, cursor });
-    setSystemCursorHidden(pointerVisible);
+    setSystemCursorState(pointerVisible, pointerVisible);
     return true;
   };
 
@@ -242,7 +244,7 @@ export const createViewportUiPointerController = ({
     pendingMoveFrame = 0;
     const cameraHandle = cameraHandleForSend() || lastCameraHandle;
     if (!cameraHandle || !pointerVisible) {
-      setSystemCursorHidden(false);
+      setSystemCursorState(false, false);
       return false;
     }
     return emitPointer({
@@ -257,17 +259,6 @@ export const createViewportUiPointerController = ({
   };
 
   const send = (event, type = event?.type ?? 'pointermove', cursor = defaultCursor) => {
-    if (!isEnabled()) {
-      hide();
-      return false;
-    }
-    const bridge = bridgeForSend();
-    if (typeof bridge?.viewportUiPointer !== 'function') return false;
-    const cameraHandle = cameraHandleForSend();
-    if (!cameraHandle) {
-      hide();
-      return false;
-    }
     const clientX = Number(event?.clientX);
     const clientY = Number(event?.clientY);
     if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
@@ -279,7 +270,24 @@ export const createViewportUiPointerController = ({
     }
 
     const renderRect = normalizeRect(getRenderRect?.() ?? hitRect);
-    if (!renderRect || renderRect.renderWidth <= 0 || renderRect.renderHeight <= 0) return false;
+    if (!renderRect || renderRect.renderWidth <= 0 || renderRect.renderHeight <= 0) {
+      hide();
+      return false;
+    }
+
+    const opticsPointerEnabled = isEnabled();
+    setSystemCursorState(opticsPointerEnabled, true);
+    if (!opticsPointerEnabled) {
+      return false;
+    }
+
+    const bridge = bridgeForSend();
+    if (typeof bridge?.viewportUiPointer !== 'function') return false;
+    const cameraHandle = cameraHandleForSend();
+    if (!cameraHandle) {
+      hide();
+      return false;
+    }
 
     const x = (clientX - renderRect.left) * (renderRect.renderWidth / renderRect.width);
     const y = (clientY - renderRect.top) * (renderRect.renderHeight / renderRect.height);

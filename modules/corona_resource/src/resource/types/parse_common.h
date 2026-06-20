@@ -613,12 +613,12 @@ inline SimplifyPhase1Result simplify_phase1(
         vertices.size(),
         sizeof(Vertex));
 
-    CFW_LOG_DEBUG("[MeshOpt] Mesh '{}': starting phase1 simplification, {} unique vertices",
+    CFW_LOG_TRACE("[MeshOpt] Mesh '{}': starting phase1 simplification, {} unique vertices",
                   mesh_name, result.unique_vertex_count);
 
     // 如果原始网格的唯一顶点数已经在 uint16 限制以内，跳过简化
     if (result.unique_vertex_count <= kMaxVerticesUint16) {
-        CFW_LOG_DEBUG("[MeshOpt] Mesh '{}': already within uint16 vertex limit ({} <= {}), skipping simplification",
+        CFW_LOG_TRACE("[MeshOpt] Mesh '{}': already within uint16 vertex limit ({} <= {}), skipping simplification",
                       mesh_name, result.unique_vertex_count, kMaxVerticesUint16);
         result.success = true;
         return result;
@@ -660,11 +660,11 @@ inline SimplifyPhase1Result simplify_phase1(
                 vertices.size(),
                 sizeof(Vertex));
 
-            CFW_LOG_DEBUG("[MeshOpt] Mesh '{}' phase1: error {:.4f}, unique vertices {}",
+            CFW_LOG_TRACE("[MeshOpt] Mesh '{}' phase1: error {:.4f}, unique vertices {}",
                           mesh_name, current_error, result.unique_vertex_count);
 
             if (result.unique_vertex_count <= kMaxVerticesUint16) {
-                CFW_LOG_DEBUG("[MeshOpt] Mesh '{}': target reached with error {:.4f}, unique vertices {}",
+                CFW_LOG_TRACE("[MeshOpt] Mesh '{}': target reached with error {:.4f}, unique vertices {}",
                               mesh_name, current_error, result.unique_vertex_count);
                 result.success = true;
                 return result;
@@ -674,7 +674,7 @@ inline SimplifyPhase1Result simplify_phase1(
         current_error += kPhase1Step;
     }
 
-    CFW_LOG_DEBUG("[MeshOpt] Mesh '{}': phase1 failed to reduce below limit, {} unique vertices",
+    CFW_LOG_TRACE("[MeshOpt] Mesh '{}': phase1 failed to reduce below limit, {} unique vertices",
                   mesh_name, result.unique_vertex_count);
     result.success = false;
     return result;
@@ -764,7 +764,7 @@ inline std::vector<SingleMeshResult> split_mesh_uniformly(
             sizeof(Vertex),
             remap.data());
 
-        CFW_LOG_DEBUG("[MeshOpt] Mesh '{}' split {}: {} vertices, {} indices",
+        CFW_LOG_TRACE("[MeshOpt] Mesh '{}' split {}: {} vertices, {} indices",
                       mesh_name, split_idx, split_result.vertices.size(), split_result.indices.size());
 
         results.push_back(std::move(split_result));
@@ -876,7 +876,7 @@ inline MeshOptimizeResult optimize_mesh_pipeline(
             sizeof(Vertex),
             remap.data());
 
-        CFW_LOG_DEBUG("[MeshOpt] Mesh '{}' indexed: {} -> {} unique vertices",
+        CFW_LOG_TRACE("[MeshOpt] Mesh '{}' indexed: {} -> {} unique vertices",
                       mesh_name, unindexed_vertices.size(), unique_vertex_count);
 
         // GPU 优化
@@ -1090,7 +1090,8 @@ inline std::vector<LODLevel> generate_lod_levels(
         level.indices = std::move(final_indices);
         level.error = result_error;
         // 屏幕阈值：误差越大，阈值越小（越远才使用）
-        level.screen_threshold = (result_error > 0.0f) ? std::min(1.0f, result_error * 10.0f) : 0.0f;
+        // 使用反比公式：error 越大 → threshold 越小 → 只在屏幕占比更小时选中此 LOD
+        level.screen_threshold = (result_error > 0.0f) ? std::max(0.01f, 1.0f / (1.0f + result_error * 80.0f)) : 0.0f;
 
         (void)mesh_name;
         (void)ratio;

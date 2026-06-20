@@ -6,6 +6,7 @@
 #include <include/internal/cef_types.h>
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <functional>
@@ -61,6 +62,7 @@ struct BrowserTab {
     bool camera_view = false;
     bool transparent_overlay = false;
     std::atomic_bool hide_system_cursor{false};
+    std::atomic_bool use_custom_system_cursor{false};
     bool preserve_camera_open_on_close = false;
     SDL_WindowID platform_window_id = 0;
     void* platform_handle_raw = nullptr;
@@ -123,6 +125,7 @@ class BrowserManager {
     SDL_Window* main_window_ = nullptr;
     ImTextureID create_browser_texture(int width, int height);
     void destroy_tab_texture(BrowserTab* tab);
+    void retire_deferred_tab_textures(bool force = false);
 
     struct OwnedImage {
         HardwareImage image;
@@ -130,11 +133,18 @@ class BrowserManager {
         uint32_t height = 0;
     };
 
+    struct DeferredTextureDestroy {
+        OwnedImage image;
+        uint64_t queued_frame = 0;
+    };
+
     std::unordered_map<int, std::unique_ptr<BrowserTab>> tabs_;
     std::vector<int> tabs_to_close_;
     std::mutex pending_tasks_mutex_;
     std::vector<std::function<void()>> pending_tasks_;
     std::unordered_map<ImTextureID, OwnedImage> owned_images_;
+    std::vector<DeferredTextureDestroy> deferred_texture_destroys_;
+    uint64_t frame_index_ = 0;
     int tab_counter_ = 0;
 
     HardwareExecutor texture_executor_;

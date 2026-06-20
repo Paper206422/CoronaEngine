@@ -30,14 +30,15 @@ SCENE_QUERY_PROMPTS = ToolPromptConfig(
 
 SCENE_TRANSFORM_PROMPTS = ToolPromptConfig(
     tool_description=(
-        "对模型执行缩放/移动/旋转等操作。默认操作为放大或缩小。"
+        "对模型执行相对变换：translate/move 为位置增量，rotate_delta/rotate 为旋转增量，"
+        "scale_delta/scale 为按比例缩放。需要绝对位置/旋转/缩放时使用 set_actor_transform。"
         "坐标系：X正为右，Y正为上，Z正为朝屏幕里侧（左手坐标系）。"
     ),
     fields={
         "model_name": "需要变换的模型名称",
-        "transform_type": "变换类型",
-        "value": "变换值",
-        "axis": "变换轴 (x,y,z)。坐标系：X正为右，Y正为上，Z正为朝屏幕里侧",
+        "transform_type": "相对变换类型：translate/move、rotate_delta/rotate、scale_delta/scale",
+        "value": "缩放倍率；例如 1.2 表示在当前缩放基础上放大 20%",
+        "axis": "相对变换向量 [x,y,z]。坐标系：X正为右，Y正为上，Z正为朝屏幕里侧",
         "relative": "是否相对变换",
     },
 )

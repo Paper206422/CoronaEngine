@@ -33,7 +33,10 @@
       </div>
 
       <!-- 资源搜索栏(B-2 竞态保护 + 防抖 + 错误兜底) -->
-      <div class="flex items-center gap-1 px-2 py-1.5 bg-[#2a2a2a] border-b border-[#1a1a1a]">
+      <div
+        v-if="RESOURCE_SEARCH_ENABLED"
+        class="flex items-center gap-1 px-2 py-1.5 bg-[#2a2a2a] border-b border-[#1a1a1a]"
+      >
         <div class="relative flex-1">
           <input
             v-model="searchInput"
@@ -90,7 +93,7 @@
 
       <!-- 搜索结果区(可切换) -->
       <div
-        v-if="searchActive"
+        v-if="RESOURCE_SEARCH_ENABLED && searchActive"
         class="flex-1 overflow-y-auto bg-[#282828]/50"
         data-testid="resource-search-results"
       >
@@ -154,7 +157,7 @@
       </div>
 
       <!-- 原场景树(无搜索时显示) -->
-      <div v-show="!searchActive" class="flex flex-col flex-1 min-h-0">
+      <div v-show="!RESOURCE_SEARCH_ENABLED || !searchActive" class="flex flex-col flex-1 min-h-0">
         <div class="flex items-center gap-2 p-2 bg-[#1a1a1a]/50 border-b border-[#333]"></div>
 
       <!-- 工具栏 -->
@@ -723,6 +726,7 @@ let lastCameraListHoverRefreshAt = 0;
 // ===========================================================================
 //  资源智能搜索(场景栏新增功能)
 // ===========================================================================
+const RESOURCE_SEARCH_ENABLED = false;
 const searchInput = ref('');
 const searchLoading = ref(false);
 const searchIndexing = ref(false);
@@ -739,6 +743,7 @@ let searchDebounce = null;
 let searchIndexRetry = null;
 
 const searchActive = computed(() => {
+  if (!RESOURCE_SEARCH_ENABLED) return false;
   return searchLoading.value || searchIndexing.value || searchResults.value.length > 0
     || !!searchError.value || !!searchLastQuery.value;
 });
@@ -779,6 +784,7 @@ const typeColorClass = (type) => ({
 })[type] || 'text-[#808080]';
 
 const onSearchInput = () => {
+  if (!RESOURCE_SEARCH_ENABLED) return;
   if (searchDebounce) clearTimeout(searchDebounce);
   if (searchIndexRetry) {
     clearTimeout(searchIndexRetry);
@@ -803,6 +809,7 @@ const onSearchInput = () => {
 };
 
 const onSearchEnter = () => {
+  if (!RESOURCE_SEARCH_ENABLED) return;
   if (searchDebounce) {
     clearTimeout(searchDebounce);
     searchDebounce = null;
@@ -815,6 +822,7 @@ const onSearchEnter = () => {
 };
 
 const onSearchClear = () => {
+  if (!RESOURCE_SEARCH_ENABLED) return;
   searchInput.value = '';
   if (searchDebounce) {
     clearTimeout(searchDebounce);
@@ -834,6 +842,7 @@ const onSearchClear = () => {
 };
 
 const doFuzzySearch = async (query, retryCount = 0) => {
+  if (!RESOURCE_SEARCH_ENABLED) return;
   const mySeq = ++searchSeq.value;
   if (!query || !query.trim()) {
     searchResults.value = [];
@@ -888,6 +897,7 @@ const doFuzzySearch = async (query, retryCount = 0) => {
 };
 
 const onImageSelected = async (ev) => {
+  if (!RESOURCE_SEARCH_ENABLED) return;
   const file = ev.target.files && ev.target.files[0];
   if (!file) return;
   // B-3 大图片走 base64 时限制大小(> 2MB 警告)
@@ -932,6 +942,7 @@ const onImageSelected = async (ev) => {
 };
 
 const onRebuildIndex = async () => {
+  if (!RESOURCE_SEARCH_ENABLED) return;
   const mySeq = ++searchSeq.value;
   searchLoading.value = true;
   searchError.value = '';
@@ -952,6 +963,7 @@ const onRebuildIndex = async () => {
 };
 
 const OnLocateSearchItem = async (item) => {
+  if (!RESOURCE_SEARCH_ENABLED) return;
   // 桥接 ResourceSearch.focus_actor → SceneTools.focus_actor
   // 资源项的 path 形如 Scene/MyScene.actor 或 assets/xxx.fbx
   // 我们尝试从 name 推断 actor,失败则回退到原行为
@@ -1872,9 +1884,11 @@ onMounted(async () => {
   window.__coronaFocusPoseResult = handleFocusPoseResult;
 
   const result = await projectService.OnInit();
-  resourceService.prepareIndex().catch((error) => {
-    logWarn('资源索引预热失败', error);
-  });
+  if (RESOURCE_SEARCH_ENABLED) {
+    resourceService.prepareIndex().catch((error) => {
+      logWarn('资源索引预热失败', error);
+    });
+  }
   const queryString = window.location.hash?.split('?')[1] || window.location.search?.slice(1);
   const urlSceneName = queryString ? new URLSearchParams(queryString).get('sceneName') : null;
 

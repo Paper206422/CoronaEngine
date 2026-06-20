@@ -27,73 +27,15 @@
 2. 统一 transform 操作契约：区分 `SetPosition/SetRotation/SetScale` 和 `Translate/RotateDelta/ScaleDelta`。
 3. 给 gizmo drag end 补持久化：`saveActor(sceneId, actorName)` 或统一 transform commit 事件。
 4. 扩展内置 Vision material adapter 和 signature，至少让 native 已暴露的材质参数有明确支持或明确降级。
-5. 已选择 external_live 对齐路线：
-   - 导入外部 Vision scene 时创建/复用 Corona proxy actors。
-   - Vision viewport 保持外部 Vision pipeline，不切回 `EngineBuilt`。
-   - 先做 `actor_guid -> Vision ShapeInstance/group/instance` 稳定映射。
-   - transform-only 走 `set_o2w() -> update_geometry() -> invalidate`，不 reload JSON，不替换 pipeline。
-   - 增删替换走 runtime topology add/remove/reorganize，并用 overlay 记录重启恢复/撤销/导出意图。
+5. 选择 external 对齐路线：
+   - 若以 native 编辑为核心，优先做“Vision JSON -> Corona actors -> EngineBuilt”。
+   - 若必须保留 external Vision pipeline，先做 object identity/mapping，再做 transform-only 增量同步，最后做增删和材质同步。
 6. 建测试 scene：
    - 单模型：position/rotation/scale/gizmo scale compensation。
    - 多模型：增删顺序、同名对象。
    - 材质：baseColor/roughness/metallic/visible。
    - 替换模型资源。
    - external Vision JSON import 后执行同样编辑，验证 native viewport 与 Vision viewport 是否一致。
-
-## external_live 开工前审计后的调整顺序
-
-本节是沿现有代码管线调查后的执行顺序修正。原清单的大方向成立，但不应把所有 native/EngineBuilt 缺口都挡在 external_live transform-only 之前；应先完成 stable identity、持久化和导入恢复，否则后续 adapter 没有可靠锚点。
-
-调整后的第一阶段顺序：
-
-1. 稳定身份前置：
-   - `Scene.save_data()` 必须把 scene-level actor 的 `actor_guid` 写入 `[actors]`。
-   - `_build_actor_json()` 必须读回 `actor_guid`。
-   - C++ `ActorDevice` 建议增加 `actor_guid`，并通过 Python `Actor` 初始化同步到 engine actor；否则 OpticsSystem 只能依赖一次性 event binding，后续新增/重载 actor 难以恢复。
-   - 验证：scene 保存/读取后 `actor_guid` 不变，同名 actor 不混淆。
-
-2. external_live 场景元数据前置：
-   - `Scene` 增加并持久化 `vision_overlay_path`、`vision_overlay_guid`。
-   - `MainView._apply_vision_source_for_scene()` 必须识别 `import_mode == "external_live"`，不能只认旧的 `"external"`。
-   - 旧 `"external"` / `ExternalFile` 行为保留。
-   - 验证：切场景/重启恢复 external_live 时不会退回 `EngineBuilt` 或 unload external pipeline。
-
-3. Python import + overlay：
-   - `import_vision_scene_into_current_scene()` 解析 Vision JSON `scene.shapes`。
-   - phase 1 只支持 `type == "model"`；`quad/cube/sphere` 等 primitive 必须记录 unsupported 或后续生成 proxy mesh，不能静默丢失。
-   - 为 model shape 创建/复用 Corona proxy actor，写 `actor_guid -> shape_guid/json_path/shape_index` binding。
-   - overlay 不驱动当前帧渲染，只用于 binding、恢复、撤销/导出。
-
-4. C++ load request 与 source mode：
-   - pybind 目前只有 `load_vision_scene(path)`，建议新增 external_live 专用 API，或扩展 API 但保持旧调用默认 `ExternalFile`。
-   - `VisionSceneLoadEvent` / pending request 从 path 扩展为 mode + overlay path/guid。
-   - `OpticsSystem::apply_pending_vision_scene_load()` 新增 `ExternalLive` 分支。
-
-5. `ExternalVisionSceneAdapter` skeleton：
-   - 初始化时读取 overlay bindings。
-   - 通过 `actor_guid` 找 Corona actor handle，通过 `shape_index/json_path` 找 Vision group/instances；不使用 shape name 匹配。
-   - Vision runtime 当前没有 shape guid metadata，phase 1 可用 JSON shape index / group import order 作为 binding 输入，但必须在 overlay 中显式记录并测试同名对象。
-
-6. transform-only 同步：
-   - factor 出 built-in Vision 已使用的 Corona->Vision matrix helper。
-   - 每帧 diff proxy actor transform，更新 mapped `ShapeInstance::set_o2w()`。
-   - 调用 `renderPipeline->update_geometry()` 和 `invalidate_all_view_contexts()`。
-   - 验证没有 JSON reload、没有 pipeline replacement、没有 clear/rebuild。
-
-7. 再处理 native 与 topology 前置：
-   - `Actor.set_model()` 修复应在 external_live 替换模型阶段之前完成；它不阻塞 transform-only。
-   - gizmo drag end 持久化应在 overlay 重启恢复/撤销之前完成；它不阻塞当前帧 transform sync。
-   - 内置 Vision material adapter 扩展可后移；external_live first stage 只复用现有 `create_vision_material()` / `setup_vision_lights()`。
-
-8. runtime topology 与 material：
-   - 新增/删除/替换必须走 Vision Scene-level add/remove/reorganize API，不能散落直接改 `groups()` / `instances()`。
-   - topology/material refresh 复用 runtime safe sequence，不调用 initialized pipeline 上的 full `renderPipeline->prepare()`。
-
-审计结论：
-
-- external_live transform-only 的真正阻塞项是 stable identity 和 import/recovery plumbing，不是 `set_model()`、gizmo 持久化或完整 material matrix。
-- 替换模型、删除残留、material/emission 属于第二阶段，必须在 adapter skeleton 和 transform-only 路径可验证后再做。
-- 如果实现中开始依赖 name matching、重载 JSON 或重新创建整个 pipeline 来响应 transform，说明方向偏离，应停止并回到本顺序。
 
 ## 分任务实现方法概括
 
@@ -117,6 +59,40 @@
 - 不要让旧 profile 和新 profile 同时挂在 actor 上造成重复渲染。
 - 不要依赖对象析构时机来“碰巧”释放旧 geometry；需要明确断开 SharedDataHub 引用。
 
+执行状态：已实施，代码提交 `61a90a46 fix: replace actor model profiles`。
+
+实施摘要：
+
+- `Actor.set_model(route)` 已从“只改 `model_path`”改为创建新 `Geometry` 和新 profile/component wrapper。
+- 替换前捕获 transform、optics、mechanics、collision 状态；替换后恢复这些状态。
+- 新 profile 激活后显式调用 engine `remove_profile(old_profile)`，避免旧 profile/geometry 继续挂在 actor 上。
+- `_create_and_add_profile()` 保存 `self._profile`，后续替换可以精确定位旧 profile。
+- 新增 `test_set_model_replaces_profile_and_preserves_edit_state`，验证 profile 替换和关键编辑状态保留。
+
+验证摘要：
+
+- 通过：`python -m py_compile editor\CoronaCore\core\entities\actor.py editor\CoronaCore\tests\test_actor_network_broadcast.py`
+- 通过：`python -m unittest editor.CoronaCore.tests.test_actor_network_broadcast.ActorNetworkBroadcastTests.test_set_model_replaces_profile_and_preserves_edit_state`
+- 通过：`git diff --check`
+- 已知阻塞：`python -m unittest editor.CoronaCore.tests.test_actor_network_broadcast` 仍因既有 `Scene.terrain_type` 缺失失败，失败测试为 `test_scene_actor_follow_camera_persists_in_scene_actor_section`，不属于本任务链路。
+
+下一条任务前的宏观提醒：
+
+- 第 2 条 transform 契约统一应继续服务于统一 source-of-truth，而不是只改 UI 字符串。
+- 开始第 2 条前必须先确认当前代码与文档记录均已提交，然后再做起点提交。
+
+流程纠偏记录：
+
+- 用户指出 task 1 提交前验证不足。该指出成立。
+- task 1 已在提交后补测：语法检查、目标单测、CoronaCore discover、VS DevCmd + CMake `corona_engine` 增量 build。
+- 补测结果已写入 `implementation.md`。其中 build 通过，目标单测通过，CoronaCore discover 仍被既有 `Scene.terrain_type` 缺失阻塞。
+- 这次补测是补救，不算满足“提交前足量测试”。从 task 2 开始，提交前必须先完成与风险匹配的验证记录。
+
+阻塞修复：
+
+- `Scene.terrain_type` 缺失阻塞已修复，提交 `118e1a1c fix: default optional scene metadata on save`。
+- `python -m unittest discover -s editor\CoronaCore\tests -p "test*.py"` 当前通过，8 tests OK。
+
 ### 2. 统一 transform 操作契约
 
 目标：消除 `Move/Rotate` 在不同入口中 absolute 和 delta 混用的问题，为 native、内置 Vision、external Vision 统一编辑语义。
@@ -136,6 +112,29 @@
 - 不要只把前端字符串改名而不改后端语义。
 - 不要在 external Vision 适配时继续使用含糊的 `Move` 名称。
 - 统一契约应服务后续所有渲染后端，而不是只修当前 UI。
+
+执行状态：已实施，验证阻塞修复提交 `df472e05 test: unblock validation checks`，代码提交 `11fb5e13 fix: clarify transform operation contract`。
+
+实施摘要：
+- `Actor` 明确区分 absolute setter 与 relative operation：`set_position/set_rotation/set_scale` 为绝对设置，`translate/rotate_delta/scale_delta` 为相对变换。
+- `move/rotate` 保留为 relative alias；`scale(v)` 保持旧 Python API 的 absolute 语义，转发到 `set_scale(v)`，避免破坏已有直接调用。
+- Object 面板数值输入改用 `SetPosition/SetRotation/SetScale`，与 C++ fast channel 的 operation 0/1/2 absolute 语义对齐，同时保留旧 `Move/Rotate/Scale` alias。
+- AITool `transform_model` 统一为 relative tool，支持 `translate/rotate_delta/scale_delta`，旧 `move/rotate/scale` 作为兼容别名；absolute transform 继续由 `set_actor_transform` 承担。
+- AITool transform prompt 已写明相对/绝对边界。
+
+宏观检查结果：
+- 本次没有为 Vision 层增加临时同步分支，也没有扩大双写状态；核心是把 native/API/UI/AI 工具的 transform contract 先统一。
+- 后续 external Vision 适配可按明确契约做 object transform 映射，避免继续依赖含糊的 `Move/Rotate/Scale` 名称。
+
+验证摘要：
+- 通过：Python py_compile、actor transform 目标单测、transform_model 工具契约单测、CoronaCore 全量 discover、AITool 全量 discover、前端 build、前端 lint、C++ `corona_engine` 增量 build、`git diff --check`。
+- 前端 lint 当前为 0 errors，仍有既有 Vue style warnings。
+- AITool discover 当前通过，但测试环境仍打印部分工具注册 warning，原因是本地未安装完整 LangChain/httpx 依赖；目标 transform_model 分派已由新增测试覆盖。
+- 真实 CEF UI E2E 尚无自动 harness，已在 `implementation.md` 记录手动验证步骤与剩余风险。
+
+下一条任务前的宏观提醒：
+- 第 3 条 gizmo drag end 持久化必须避免每帧写盘，也不要把保存逻辑散落在多个 UI 组件里。
+- 开始第 3 条前先确认当前代码与文档记录均已提交，再做起点提交。
 
 ### 3. 给 gizmo drag end 补持久化
 
@@ -157,6 +156,37 @@
 - 不要在每帧拖拽时写盘。
 - 最好让 Object 面板数值输入和 gizmo 共用同一个 commit 语义。
 
+执行状态：已实施，起点提交 `c5ea6967 chore: mark start of gizmo persistence task`，代码提交 `23a02411 fix: persist gizmo transforms on drag end`。
+
+实施摘要：
+
+- C++ `actor-gizmo-transform` payload 新增 `phase`，前端可以可靠区分 start/move/end 回包。
+- `createViewportGizmoController()` 新增 `onTransformCommit` 回调；drag move 继续只做实时同步，drag end 成功发送后只标记等待 commit。
+- 前端只在同一 drag 的成功 end 回包到达时触发 `onTransformCommit`，避免旧 move 回包乱序到达时误保存。
+- `MainPage.vue` 接入统一 commit，调用已有 `sceneService.saveActor(sceneId, actorName)` 写盘，失败时记录错误。
+- 新增/扩展 `viewportGizmo.test.mjs`，验证 move 不保存、end 后旧 move 回包仍不保存、end 回包才保存一次。
+
+宏观检查结果：
+
+- 本次没有引入每帧保存，也没有把保存分散到多个 UI 组件；保存边界集中在 gizmo controller 的 end 回包确认处。
+- 补 C++ `phase` 字段后，跨语言协议比单纯 JS 标记更稳，避免为了当前测试通过而接受乱序回包风险。
+- 仍然以 Corona actor/SharedDataHub 为实时源，持久化只在用户完成一次 gizmo 编辑后提交，没有扩大 native、内置 Vision、external Vision 的多源状态。
+
+验证摘要：
+
+- 通过：`node editor\Frontend\src\utils\viewportGizmo.test.mjs`，覆盖 commit 时序和乱序 move 回包。
+- 通过：CoronaCore 全量 discover，9 tests OK。
+- 通过：前端 lint，0 errors，既有 66 warnings。
+- 通过：前端 build，仅既有 Vite chunk warnings。
+- 通过：C++ `corona_engine` 增量 build，日志 `build\agent-build.log`。
+- 通过：`git diff --check`。
+- 真实 CEF viewport gizmo E2E 尚无自动 harness，手动验证步骤与剩余风险已写入 `implementation.md`。
+
+下一条任务前的宏观提醒：
+
+- 第 4 条 material adapter/signature 不能只加 signature 触发 rebuild，否则会出现“重建了但材质没变”的假同步。
+- 开始第 4 条前必须重新阅读 `implementation.md`、`TaskSplitting.md`、`AGENTS.md`，确认文档和代码提交均已完成，并先做起点提交。
+
 ### 4. 扩展内置 Vision material adapter 和 signature
 
 目标：让 native 已暴露的材质编辑在内置 Vision 中有明确同步能力或明确降级规则。
@@ -177,71 +207,111 @@
 - 不要承诺 Vision 无法表达的材质完全一致。
 - 优先建立“支持/降级/不支持”的明确矩阵。
 
-### 5. 实现 external_live 外部 Vision 对齐路线
+执行状态：已实施，起点提交 `6fb2a98d chore: mark start of vision material task`，代码提交 `4cfbaeb3 fix: map vision principled material fields`。
 
-目标：保留外部 Vision pipeline，同时让 native proxy actor 的编辑实时投递到 external Vision runtime scene。当前路线已经确定为 `external_live`，不再把导入后的 Vision viewport 切回 `EngineBuilt`。
+实施摘要：
 
-实现原则：
+- 修复 `create_vision_material()` 实际默认成 diffuse 的问题：现在显式初始化 `type=principled_bsdf` 和空 `param`。
+- `vision_material_adapter.cpp` 映射 Vision 可表达字段：
+  - `subsurface -> subsurface_weight`
+  - `anisotropic -> anisotropic`
+  - `sheen -> sheen_weight`
+  - `sheenTint -> sheen_tint` 灰度近似
+  - `clearcoat -> coat_weight`
+  - `clearcoatGloss -> coat_roughness` 反向近似
+- `compute_vision_scene_signature()` fold 同一组已映射字段，避免 adapter 支持了但变化不触发 rebuild。
+- `vision_material_adapter.h` 更新支持/近似/默认降级说明。
+- 新增 `corona_vision_material_adapter_tests`，验证扩展 Optics 字段会改变 Vision material hash，并覆盖 clamp 路径。
+- 修复 `BUILD_CORONA_TESTING=ON` 但 `BUILD_TESTING=OFF` 时 CTest 不生成测试清单的问题。
+- 给 `VisionMaterialAdapterTests` 设置插件目录作为 working directory，保证 `vision-material-principled_bsdf` 可加载。
 
-- 外部 Vision pipeline 是实时渲染对象，不因 transform 编辑 reload JSON 或 replace pipeline。
-- Corona proxy actors 是 native 编辑、选择、UI、保存入口。
-- overlay 只用于保存 native 编辑意图、重启恢复、撤销/重做、导出，不驱动当前帧实时渲染。
-- mapping 必须基于 `actor_guid -> shape_guid/json_path/instance refs`，不能靠 name 猜测。
-- topology/material 变化使用安全 runtime refresh 边界，不调用 initialized pipeline 上的完整 `renderPipeline->prepare()`。
+宏观检查结果：
 
-分任务：
+- 没有只加 signature 空转；adapter 和 signature 成对更新。
+- 没有把 unsupported 字段伪装成已适配：`bEnableLighting/specular/specularTint/legacy` 仍明确为降级或待定义策略。
+- 测试没有停留在手动运行 exe；修通了 CTest 清单和工作目录，后续可重复执行。
 
-1. `external_live` 模式和事件载荷：
-   - 保留旧 `external` / `ExternalFile` 语义。
-   - 新增 `ExternalLive` source 或等价模式。
-   - 将 `VisionSceneLoadEvent` 或 C++ load API 扩展为可携带 `import_mode`、overlay path、overlay guid、bindings。
-   - `apply_pending_vision_scene_load()` 按 mode 分支初始化 external pipeline 和 adapter。
+验证摘要：
 
-2. Python import 与 overlay：
-   - `SceneTools.import_vision_scene_into_current_scene()` 解析 Vision JSON model shapes。
-   - 为每个支持的 model shape 创建或复用 Corona proxy actor。
-   - 确保每个 proxy actor 有 `actor_guid`。
-   - 生成 overlay：`overlay_guid`、`source_path`、`bindings`、`ops`。
-   - `.scene [vision]` 写入 `import_mode=external_live`、`overlay_path`、`overlay_guid`。
-   - phase 1 明确只支持 model shape；primitive shape 必须标记 unsupported 或生成 proxy mesh，不能静默丢失。
+- 通过：`corona_vision_material_adapter_tests` target build。
+- 通过：`ctest -R VisionMaterialAdapterTests`。
+- 通过：C++ `corona_engine` 增量 build。
+- 通过：`test-material-reset` target build 和 exe 运行，输出 `pass=4 fail=0`。
+- 通过：`corona_network_protocol_tests` target build。
+- 通过：全量项目 CTest，`NetworkProtocolTests` 与 `VisionMaterialAdapterTests` 均通过。
+- 通过：CoronaCore 全量 discover，9 tests OK。
+- 通过：`git diff --check`。
+- 尚未完成 native/内置 Vision 的自动截图或数值渲染对比，手动复核步骤与剩余风险已写入 `implementation.md`。
 
-3. `ExternalVisionSceneAdapter` skeleton：
-   - 新增 `src/systems/optics/vision/external_vision_scene_adapter.h/.cpp`。
-   - 保存 `actor_guid -> actor_handle -> shape_guid/json_path` bindings。
-   - 扫描 `renderPipeline->scene()` 建立 `actor_guid -> ShapeInstance/group/instance` 映射。
-   - 初始化失败时给出可诊断日志，不回退到 name matching。
+下一条任务前的宏观提醒：
 
-4. transform-only 同步：
-   - `run_vision_frame()` 在 `ExternalLive` 下调用 adapter。
-   - adapter 从 `SharedDataHub` 读取 proxy actor geometry transform。
-   - 复用 built-in Vision 的 Corona->Vision matrix 转换。
-   - 对 mapped `ShapeInstance(s)` 调用 `set_o2w()`。
-   - 调用 `renderPipeline->update_geometry()` 和 `invalidate_all_view_contexts()`。
-   - 不 clear/rebuild，不 reload JSON，不替换整个 pipeline。
+- 第 5 条是路线选择任务，不能直接开始在 external pipeline 上做名称匹配式同步。
+- 开始第 5 条前必须重新阅读 `implementation.md`、`TaskSplitting.md`、`AGENTS.md`，确认代码和文档均已提交，并先做起点提交。
+- 如果以 native 编辑完全对齐为目标，应优先论证并实施 “Vision JSON -> Corona actors -> EngineBuilt” 的统一 source-of-truth 路线；只有在明确必须保留 external pipeline 时，才进入 object identity/mapping 与增量镜像设计。
 
-5. runtime topology add/delete/replace：
-   - 新增模型：Corona mesh/material -> Vision Mesh/ShapeInstance/ShapeGroup -> scene add path -> safe topology refresh -> overlay added record。
-   - 删除模型：通过正式 Scene API 移除 group/instances，维护 flattened instances 和 geometry handles -> safe topology refresh -> overlay deleted record。
-   - 替换模型：删除旧 shape + 新增新 shape，保留同一 `actor_guid` -> overlay replaced record。
-   - 优先补 Vision Scene-level add/remove API，避免在业务代码里直接改私有容器。
+### 5. 选择 external Vision 对齐路线
 
-6. material/emission first stage：
-   - 复用 built-in Vision 的 `create_vision_material()`。
-   - 复用 `setup_vision_lights()` 和既有 Area light 安全边界。
-   - 第一阶段只承诺 baseColor、roughness、metallic 和现有 light setup。
-   - 复杂 Vision material graph 先保留 metadata 或标记降级，不做复杂支持矩阵。
+目标：决定外部 Vision 与 native 编辑完全对齐时的 source-of-truth，避免在两套 scene graph 之间做脆弱双写。
 
-7. overlay 恢复、撤销/重做、导出：
-   - overlay 不参与当前帧渲染。
-   - 重启恢复时用 overlay 重建 proxy actors 和 bindings。
-   - 导出时把 added/deleted/replaced 意图应用回 Vision scene 或生成新 JSON。
+推荐路线概括：Vision JSON -> Corona actors -> EngineBuilt。
+
+- external Vision 导入时解析 JSON shapes/materials/camera/lights。
+- 为每个 Vision shape 生成 Corona actor/profile/geometry/optics。
+- 建立 stable identity：shape name、JSON path，或生成 `vision_shape_<index>`。
+- 将 Vision transform 转为 Corona transform，复杂矩阵保留 metadata。
+- 将 Vision material graph 降级到 Corona Optics，并记录无法表达的原始 metadata。
+- 导入后切到 `EngineBuilt`，让后续 native 编辑和内置 Vision 使用同一 `SharedDataHub`。
+- 如需要保留 Vision 文件工作流，补 Corona scene -> Vision scene.json export。
+
+备选路线概括：保留 external pipeline 并新增增量镜像。
+
+- 新增 `ExternalVisionSceneAdapter`。
+- 建立 Corona actor handle 与 Vision shape/group/instance/material 映射。
+- 补 Vision runtime edit API：transform、visibility、material、topology。
+- transform-only 可尝试增量更新 `ShapeInstance::set_o2w()` 和 TLAS。
+- topology/material 先复用保守 rebuild。
+- 维护 JSON 或 overlay 写回。
 
 宏观检查：
 
-- 每个阶段都要先确认 object identity 是否仍然清晰。
-- 如果某个实现开始依赖 shape name、导入顺序猜测或多处散落双写，应停止并回到 adapter/overlay 边界。
-- transform-only 路径必须证明没有 JSON reload、没有 pipeline replacement。
-- topology/material 路径必须证明没有调用 full `renderPipeline->prepare()`。
+- 如果目标是 native 编辑完全对齐，优先统一到 Corona source-of-truth。
+- 如果保留 external pipeline，会同时维护 Corona scene、Vision pipeline、Vision JSON 三份状态，必须先证明收益大于复杂度。
+- 不要在没有 object identity 的情况下做名称猜测式同步。
+
+执行状态：已实施第一步，起点提交 `30b5cd37 chore: mark start of external alignment route task`，代码提交 `9bee50d6 fix: import vision models into engine built scene`。
+
+实施摘要：
+
+- 选择“Vision JSON -> Corona actors -> EngineBuilt”作为 native 编辑完全对齐的主路线。
+- 新增 Vision JSON actor import helper，将可支持的 `model` shape 转换为 Corona actor data。
+- `SceneTools.import_vision_scene_into_current_scene()` 导入可支持 model shape 后，保存 `import_mode=engine_built`，并调用 `load_vision_scene("")` 卸载 external pipeline。
+- stable identity 使用 `vision:<abs_scene_path>#scene.shapes[index]` 写入 `actor_guid`。
+- `Scene.save_data()` / `_build_actor_json()` 补 `actor_guid` 持久化，避免重启后失去 Vision shape identity。
+- Vision material 做保守降级：base color、roughness、metallic、subsurface、anisotropic、sheen、coat 等可表达字段写入 Optics。
+- `quad/cube` 等当前 Corona `Geometry(path)` 无法表达的 primitive 不再静默忽略，而是通过 `unsupported_shapes` 返回。
+
+宏观检查结果：
+
+- 没有走 external pipeline 增量镜像的局部补丁路线；当前修改减少 source-of-truth 数量，把后续编辑统一回 Corona scene/SharedDataHub。
+- 没有用 shape name 做唯一匹配；重复导入和后续映射以 JSON path/index identity 为基础。
+- 对 primitive 和复杂 matrix rotation 没有伪装成完全适配，后续必须通过明确 geometry/transform 能力补齐。
+
+验证摘要：
+
+- 通过：SceneTools Vision import 单测 4 个，覆盖 model 导入、material 降级、matrix/TRS transform、unsupported primitive/missing model、SceneTools 入口切 EngineBuilt。
+- 通过：CoronaCore `actor_guid` 持久化目标单测。
+- 通过：SceneTools tests discover、CoronaCore 全量 discover、py_compile。
+- 通过：C++ `corona_engine` 增量 build。
+- 通过：全量 CTest，`NetworkProtocolTests` 与 `VisionMaterialAdapterTests` 均通过。
+- 通过：前端 lint，0 errors，既有 66 warnings。
+- 通过：前端 build，仅既有 Vite chunk warnings。
+- 通过：`git diff --check`。
+- 真实 CEF 文件选择 + viewport E2E 尚无自动 harness，手动复核步骤和剩余风险已写入 `implementation.md`。
+
+下一条任务前的宏观提醒：
+
+- 第 6 条测试 scene 与验证流程必须补 external Vision import 后的完整用户链路验证，不能只停留在 parser/unit tests。
+- 对 Task 5 暴露出的 `quad/cube` primitive 和 matrix rotation 缺口，应决定是先补测试 scene 揭示差异，还是先补 primitive-to-mesh/transform 分解；不能在后续验证里把 unsupported case 当成成功。
 
 ### 6. 建测试 scene 与验证流程
 
@@ -267,3 +337,72 @@
 - 不要只验证 native，必须覆盖内置 Vision 和 external Vision 路径。
 - 测试应覆盖“重启/切场景后是否仍一致”，尤其是 gizmo 持久化和 external overlay/export。
 
+执行状态：已实施第一步，起点提交 `b646d84e chore: mark start of vision alignment validation task`，代码提交 `46c984ca test: add vision alignment workflow fixture`。
+
+实施摘要：
+
+- 新增固定 Vision alignment fixture：
+  - 两个同名 `model` shape。
+  - 一个 `quad` 和一个 `cube` unsupported primitive。
+  - principled material。
+  - matrix4x4 与 TRS transform。
+  - replacement OBJ，用于导入后的 native model replacement 验证。
+- 新增 workflow 测试，覆盖：
+  - external Vision JSON import。
+  - EngineBuilt 切换。
+  - 重复导入去重。
+  - 同名 actor 冲突处理。
+  - material 降级字段。
+  - native position/rotation/scale/visible/set_model/remove 编辑。
+  - 保存快照中的 `vision.import_mode` 与 stable `actor_guid`。
+
+宏观检查结果：
+
+- 本次测试资产验证的是“external import -> Corona source-of-truth -> native edits -> saved state”的完整数据流，不是只证明 JSON parser 可以读字段。
+- `quad/cube` 和 matrix rotation 仍作为显式缺口存在，测试不会把它们误判为已完全适配。
+- 真实 viewport 视觉一致性仍需要后续 E2E/半自动截图工具补齐。
+
+验证摘要：
+
+- 通过：workflow 测试 2 个。
+- 通过：SceneTools tests discover，6 tests OK。
+- 通过：CoronaCore 全量 discover，9 tests OK。
+- 通过：py_compile。
+- 通过：C++ `corona_engine` 增量 build。
+- 通过：全量 CTest，`NetworkProtocolTests` 与 `VisionMaterialAdapterTests` 均通过。
+- 通过：前端 lint，0 errors，既有 66 warnings。
+- 通过：前端 build，仅既有 Vite chunk warnings。
+- 通过：`git diff --check`。
+
+下一步宏观提醒：
+
+- 如果继续推进“完全对齐”，不要把 Task 6 的 unsupported primitive 当成测试通过后的可忽略项；应优先补 primitive-to-mesh/Corona primitive geometry，或明确把 primitive 排除在当前对齐承诺外。
+- 还需要真实 CEF/viewport E2E 或半自动截图对比，覆盖 SceneBar 文件选择、payload 可见性、native viewport 与 Vision viewport 的视觉一致性。
+
+## Task 6 补充状态：真实 UI E2E 后的运行时修复
+
+代码提交：`e15ebcc5 fix: keep vision imports stable during live rendering`
+
+宏观检查结果：真实 UI 复测说明“重复导入时删除再新建同 guid actor”是局部最优。它能让数据层去重通过，但会破坏正在渲染的 actor/profile/geometry 生命周期。正确方向是让 `actor_guid` 成为真正稳定的 object identity：同一 Vision shape 复用同一 Corona actor，本次 JSON 新增才创建，不存在才删除。
+
+实施摘要：
+- `SceneTools.import_vision_scene_into_current_scene()` 导入 EngineBuilt actor 后不再强制调用 `load_vision_scene("")`。
+- `OpticsSystem::apply_pending_vision_scene_load()` 对已处于 EngineBuilt 的空路径请求做幂等消费。
+- 重复导入同一 Vision JSON 时复用既有 actor，更新 route/transform/optics，保留已去重名称，避免活跃渲染中删除再新建同一对象。
+- workflow 测试新增断言：第二次导入同一 JSON 后 actor 对象 id 不变、未调用 `remove_actor`、`AlignedModel_1` 后缀保留。
+
+验证摘要：
+- 通过：`py_compile`。
+- 通过：`python -m unittest editor.plugins.SceneTools.tests.test_vision_import editor.plugins.SceneTools.tests.test_vision_alignment_workflow`，6 tests OK。
+- 通过：`python -m unittest discover -s editor\plugins\SceneTools\tests -p "test*.py"`，6 tests OK。
+- 通过：`python -m unittest discover -s editor\CoronaCore\tests -p "test*.py"`，9 tests OK。
+- 通过：CTest，`NetworkProtocolTests` 和 `VisionMaterialAdapterTests`。
+- 通过：C++ `corona_engine` 增量 build。
+- 通过：前端 lint，0 errors，保留既有 66 warnings。
+- 通过：前端 build，保留既有 Vite chunk warnings。
+- 通过：`git diff --check`，仅 CRLF 提示。
+- 通过真实 UI E2E：使用 VSCode CMake Tools 运行按钮启动；打开 `Vision Alignment E2E 20260616`；点击 SceneBar Vision 文件按钮；选择 `vision_scene.json`；重复导入后进程继续存活，日志无 `EXCEPTION_ACCESS_VIOLATION` / `SIGABRT` / `Received signal`，`.scene` 仍只有两个导入 actor 且 guid 稳定。
+
+下一步宏观提醒：
+- 继续推进完全对齐时，不要把当前 unsupported primitive 当成已完成能力；需要实现 primitive-to-mesh/Corona primitive geometry，或在对齐承诺中明确排除。
+- UI E2E 已人工复测通过，但仍应沉淀为可重复的自动化或半自动化 viewport/CEF harness。

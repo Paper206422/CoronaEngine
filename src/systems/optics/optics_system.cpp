@@ -1,11 +1,13 @@
 #include <corona/events/display_system_events.h>
 #include <corona/events/optics_system_events.h>
 #include <corona/kernel/core/i_logger.h>
+#include <corona/kernel/core/kernel_context.h>
 #include <corona/kernel/event/i_event_bus.h>
 #include <corona/kernel/event/i_event_stream.h>
 #include <corona/resource/resource_manager.h>
 #include <corona/resource/types/image.h>
 #include <corona/shared_data_hub.h>
+#include <corona/systems/geometry/geometry_system.h>
 #include <corona/systems/optics/optics_system.h>
 
 #include <array>
@@ -17,6 +19,8 @@
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <optional>
+#include <utility>
 #include <system_error>
 #include <string>
 #include <string_view>
@@ -61,6 +65,76 @@ struct RenderInstanceBatch {
         actorHandles.clear();
     }
 };
+
+constexpr char kMouseIconRelativePath[] = "assets/icon/mouse_icon.png";
+
+struct CursorIconPixels {
+    std::vector<unsigned char> rgba;
+    int width = 0;
+    int height = 0;
+};
+
+std::filesystem::path find_mouse_icon_path() {
+    std::error_code ec;
+    auto current = std::filesystem::current_path(ec);
+    if (!ec) {
+        for (auto dir = current; !dir.empty(); dir = dir.parent_path()) {
+            auto candidate = dir / kMouseIconRelativePath;
+            if (std::filesystem::exists(candidate, ec) && !ec) {
+                return candidate;
+            }
+            ec.clear();
+            if (dir == dir.parent_path()) {
+                break;
+            }
+        }
+    }
+    return std::filesystem::path(kMouseIconRelativePath);
+}
+
+std::optional<CursorIconPixels> load_mouse_icon_pixels() {
+    const auto icon_path = find_mouse_icon_path();
+    const auto image_id = Corona::Resource::ResourceManager::get_instance().import_sync(icon_path);
+    if (image_id == Corona::Resource::IResource::INVALID_UID) {
+        CFW_LOG_WARNING("Optics cursor icon load failed: {}", icon_path.string());
+        return std::nullopt;
+    }
+
+    auto image = Corona::Resource::ResourceManager::get_instance().acquire_read<Corona::Resource::Image>(image_id);
+    if (!image || image->get_width() <= 0 || image->get_height() <= 0 || image->get_data() == nullptr) {
+        CFW_LOG_WARNING("Optics cursor icon data invalid: {}", icon_path.string());
+        return std::nullopt;
+    }
+
+    CursorIconPixels pixels;
+    pixels.width = image->get_width();
+    pixels.height = image->get_height();
+    const int channels = image->get_channels();
+    const auto pixel_count = static_cast<size_t>(pixels.width) * static_cast<size_t>(pixels.height);
+    pixels.rgba.resize(pixel_count * 4);
+    const unsigned char* src = image->get_data();
+    if (channels == 4) {
+        std::copy(src, src + pixel_count * 4, pixels.rgba.begin());
+    } else if (channels == 3) {
+        for (size_t i = 0; i < pixel_count; ++i) {
+            pixels.rgba[i * 4 + 0] = src[i * 3 + 0];
+            pixels.rgba[i * 4 + 1] = src[i * 3 + 1];
+            pixels.rgba[i * 4 + 2] = src[i * 3 + 2];
+            pixels.rgba[i * 4 + 3] = 255;
+        }
+    } else if (channels == 1) {
+        for (size_t i = 0; i < pixel_count; ++i) {
+            pixels.rgba[i * 4 + 0] = src[i];
+            pixels.rgba[i * 4 + 1] = src[i];
+            pixels.rgba[i * 4 + 2] = src[i];
+            pixels.rgba[i * 4 + 3] = 255;
+        }
+    } else {
+        CFW_LOG_WARNING("Optics cursor icon has unsupported channel count: {}", channels);
+        return std::nullopt;
+    }
+    return pixels;
+}
 
 [[nodiscard]] std::string normalize_scene_path_key(const std::string& raw_path) {
     if (raw_path.empty()) {
@@ -1343,6 +1417,45 @@ bool OpticsSystem::initialize_render_pipelines() {
     return true;
 }
 
+bool OpticsSystem::ensure_cursor_icon_texture() {
+    if (!hardware_) {
+        return false;
+    }
+    if (hardware_->cursorIconImage) {
+        return true;
+    }
+    if (hardware_->cursorIconLoadAttempted) {
+        return false;
+    }
+    hardware_->cursorIconLoadAttempted = true;
+
+    auto pixels = load_mouse_icon_pixels();
+    if (!pixels) {
+        return false;
+    }
+
+    HardwareImageCreateInfo create_info{};
+    create_info.width = static_cast<uint32_t>(pixels->width);
+    create_info.height = static_cast<uint32_t>(pixels->height);
+    create_info.arrayLayers = 1;
+    create_info.mipLevels = 1;
+    create_info.format = ImageFormat::RGBA8_UNORM;
+    create_info.usage = ImageUsage::SampledImage;
+
+    HardwareImage icon(create_info);
+    if (!icon) {
+        CFW_LOG_WARNING("Optics cursor icon GPU image creation failed");
+        return false;
+    }
+
+    HardwareExecutor executor;
+    executor << icon.copyFrom(pixels->rgba.data()) << executor.commit();
+    executor.waitForDeferredResources();
+    hardware_->cursorIconImage = std::move(icon);
+    CFW_LOG_INFO("Optics cursor icon uploaded ({}x{})", pixels->width, pixels->height);
+    return true;
+}
+
 void OpticsSystem::bind_native_view_resources(std::uintptr_t camera_handle,
                                               uint32_t width,
                                               uint32_t height,
@@ -1482,6 +1595,32 @@ OpticsSystem::SurfaceRenderTarget& OpticsSystem::acquire_surface_target(void* su
     return target;
 }
 
+OpticsSystem::SurfaceRenderTarget& OpticsSystem::acquire_offscreen_screenshot_target(
+    std::uintptr_t camera_handle,
+    uint32_t width,
+    uint32_t height,
+    uint64_t frame_index) {
+    width = std::max(width, 1u);
+    height = std::max(height, 1u);
+
+    auto& target = offscreen_screenshot_targets_[camera_handle];
+    if (!target.final_output || !target.ui_overlay || !target.composite_output ||
+        target.width != width || target.height != height) {
+        hardware_->executor.waitForDeferredResources();
+        target.final_output =
+            HardwareImage(width, height, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
+        target.ui_overlay =
+            HardwareImage(width, height, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
+        target.composite_output =
+            HardwareImage(width, height, ImageFormat::RGBA16_FLOAT, ImageUsage::StorageImage);
+        target.width = width;
+        target.height = height;
+    }
+
+    target.last_used_frame = frame_index;
+    return target;
+}
+
 void OpticsSystem::evict_idle_surface_targets(uint64_t frame_index) {
     for (auto it = surface_targets_.begin(); it != surface_targets_.end();) {
         const auto& target = it->second;
@@ -1493,6 +1632,21 @@ void OpticsSystem::evict_idle_surface_targets(uint64_t frame_index) {
                 SharedDataHub::instance().image_storage().deallocate(target.image_handle);
             }
             it = surface_targets_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void OpticsSystem::evict_idle_offscreen_screenshot_targets(uint64_t frame_index) {
+    for (auto it = offscreen_screenshot_targets_.begin();
+         it != offscreen_screenshot_targets_.end();) {
+        const auto& target = it->second;
+        const bool idle =
+            frame_index > target.last_used_frame &&
+            (frame_index - target.last_used_frame) > kSurfaceTargetIdleEvictFrames;
+        if (idle) {
+            it = offscreen_screenshot_targets_.erase(it);
         } else {
             ++it;
         }
@@ -1517,7 +1671,11 @@ bool OpticsSystem::initialize(Kernel::ISystemContext* ctx) {
     if (auto* event_bus = ctx->event_bus()) {
         screenshot_request_sub_id_ = event_bus->subscribe<Events::ScreenshotRequestEvent>(
             [this](const Events::ScreenshotRequestEvent& event) {
-                if (event.camera_handle == 0 || event.file_path.empty()) {
+                if (event.camera_handle == 0 || event.file_path.empty() ||
+                    !SharedDataHub::instance().camera_storage().try_acquire_read(event.camera_handle)) {
+                    if (event.completion_promise) {
+                        event.completion_promise->set_value(false);
+                    }
                     return;
                 }
                 std::lock_guard<std::mutex> lock(screenshot_mutex_);
@@ -1562,6 +1720,17 @@ void OpticsSystem::update() {
     apply_pending_camera_viewport_updates();
     apply_pending_camera_state_updates();
     apply_pending_camera_releases();
+
+    // 延迟获取 GeometrySystem 指针（不能在 initialize() 中获取，会死锁）
+    // initialize_all() 持锁遍历系统，get_system() 也需同锁 → 非递归 mutex 重入崩溃
+    if (!geometry_system_ && !geometry_system_queried_) {
+        geometry_system_queried_ = true;
+        auto& kernel = Kernel::KernelContext::instance();
+        if (auto* sys_mgr = kernel.system_manager()) {
+            auto sys = sys_mgr->get_system("Geometry");
+            geometry_system_ = dynamic_cast<GeometrySystem*>(sys ? sys.get() : nullptr);
+        }
+    }
 
 #ifdef CORONA_ENABLE_VISION
     std::vector<std::uintptr_t> requested_vision_cameras;
@@ -1623,6 +1792,8 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
     auto& tonemap = *hardware_->tonemapPipeline;
     // UI overlay/warp/composite 管线现由 compose_surface_ui_overlay() 内部使用。
 
+    fail_unrenderable_pending_screenshots();
+
     for (auto scene_it = SharedDataHub::instance().scene_storage().cbegin();
          scene_it != SharedDataHub::instance().scene_storage().cend(); ++scene_it) {
         const auto& scene = *scene_it;
@@ -1632,19 +1803,40 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
         for (auto cam_handle : scene.camera_handles) {
             if (auto camera = SharedDataHub::instance().camera_storage().try_acquire_read(cam_handle)) {
                 if (camera->render_backend == CameraRenderBackend::Vision) {
+                    if (camera->surface == nullptr && has_pending_screenshot(cam_handle)) {
+                        fail_pending_screenshots(cam_handle);
+                    }
                     continue;
                 }
                 void* surface = camera->surface;
-                if (surface == nullptr) {
+                const bool offscreen_screenshot = surface == nullptr;
+                if (offscreen_screenshot && !has_pending_screenshot(cam_handle)) {
                     continue;
                 }
 
-                // 显示相机：在覆写其 surface 专属输出前，等待上一帧合成器消费完成。
-                auto& target = acquire_surface_target(surface, camera->width,
-                                                      camera->height, frame_index);
-                if (auto consumed_device =
-                        SharedDataHub::instance().image_storage().acquire_write(target.image_handle)) {
-                    hardware_->executor.wait(consumed_device->consumed_executor);
+                SurfaceRenderTarget* target_ptr = nullptr;
+                try {
+                    target_ptr = offscreen_screenshot
+                                     ? &acquire_offscreen_screenshot_target(cam_handle,
+                                                                            camera->width,
+                                                                            camera->height,
+                                                                            frame_index)
+                                     : &acquire_surface_target(surface, camera->width,
+                                                               camera->height, frame_index);
+                } catch (const std::exception& error) {
+                    CFW_LOG_ERROR("OpticsSystem: failed to allocate render target for camera {}: {}",
+                                  cam_handle, error.what());
+                    fail_pending_screenshots(cam_handle);
+                    continue;
+                }
+                auto& target = *target_ptr;
+
+                if (!offscreen_screenshot) {
+                    // 显示相机：在覆写其 surface 专属输出前，等待上一帧合成器消费完成。
+                    if (auto consumed_device =
+                            SharedDataHub::instance().image_storage().acquire_write(target.image_handle)) {
+                        hardware_->executor.wait(consumed_device->consumed_executor);
+                    }
                 }
                 bind_native_view_resources(cam_handle, camera->width, camera->height,
                                            frame_index);
@@ -1711,15 +1903,57 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                             // 版 try_acquire_write 等锁（不漏帧），槽位失效时返回无效句柄而非抛异常。
                             if (auto geom = geom_storage.try_acquire_write(optics.geometry_handle)) {
                                 ktm::fmat4x4 model_matrix{ktm::fmat4x4::from_eye()};
+                                ktm::fvec3 world_center{0.0f, 0.0f, 0.0f};
                                 if (auto transform = transform_storage.try_acquire_read(geom->transform_handle)) {
                                     model_matrix = transform->compute_matrix();
+                                    // 必须在 camera_basis 变换前提取世界位置（否则 model_matrix[3] 不再是世界坐标）
+                                    world_center = transform->position;
                                     model_matrix = apply_native_local_correction(model_matrix, *geom);
                                     if (camera_basis != nullptr) {
                                         model_matrix = multiply_ktm_mat4(*camera_basis, model_matrix);
                                     }
                                 }
 
-                                for (auto& m : geom->mesh_handles) {
+                                // ---- 计算物体在世界空间中的包围信息（用于LOD选择） ----
+                                float bounding_radius = 1.0f;
+                                bool use_lod = false;
+
+                                if (geometry_system_) {
+                                    auto& ms = SharedDataHub::instance().mechanics_storage();
+                                    if (auto mech = ms.try_acquire_read(profile->mechanics_handle)) {
+                                        float dx = mech->max_xyz.x - mech->min_xyz.x;
+                                        float dy = mech->max_xyz.y - mech->min_xyz.y;
+                                        float dz = mech->max_xyz.z - mech->min_xyz.z;
+                                        bounding_radius = std::sqrt(dx*dx + dy*dy + dz*dz) * 0.5f;
+                                        use_lod = true;
+                                    }
+                                }
+
+                                for (uint32_t mesh_index = 0; mesh_index < static_cast<uint32_t>(geom->mesh_handles.size()); ++mesh_index) {
+                                    auto& m = geom->mesh_handles[mesh_index];
+
+                                    // ---- LOD 缓冲替换 ----
+                                    HardwareBuffer render_vb = m.vertexBuffer;
+                                    HardwareBuffer render_ib = m.indexBuffer;
+                                    HardwareBuffer render_vs = m.vertexStorageBuffer;
+                                    HardwareBuffer render_is = m.indexStorageBuffer;
+
+                                    if (use_lod && geometry_system_) {
+                                        float screen_ratio = GeometrySystem::compute_screen_ratio(
+                                            camera->position, camera->fov,
+                                            world_center, bounding_radius);
+
+                                        if (auto* lod_buf = geometry_system_->resolve_lod_buffers(
+                                                optics.geometry_handle, mesh_index,
+                                                screen_ratio)) {
+                                            if (lod_buf->vertex_buffer && lod_buf->index_buffer) {
+                                                render_vb = lod_buf->vertex_buffer;
+                                                render_ib = lod_buf->index_buffer;
+                                                if (lod_buf->vertex_storage) render_vs = lod_buf->vertex_storage;
+                                                if (lod_buf->index_storage)  render_is = lod_buf->index_storage;
+                                            }
+                                        }
+                                    }
                                     // --- Collect material info ---
                                     auto materialID = static_cast<uint32_t>(batch.materials.size());
                                     {
@@ -1770,11 +2004,11 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                                     {
                                         Hardware::InstanceInfo inst{};
                                         inst.modelMatrix = model_matrix;
-                                        inst.vertexBufferIndex = m.vertexStorageBuffer
-                                                                     ? m.vertexStorageBuffer.storeDescriptor()
+                                        inst.vertexBufferIndex = render_vs
+                                                                     ? render_vs.storeDescriptor()
                                                                      : 0;
-                                        inst.indexBufferIndex = m.indexStorageBuffer
-                                                                    ? m.indexStorageBuffer.storeDescriptor()
+                                        inst.indexBufferIndex = render_is
+                                                                    ? render_is.storeDescriptor()
                                                                     : 0;
                                         inst.materialID = materialID;
                                         inst.objectID = object_id;
@@ -1797,7 +2031,7 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                                         target_visibility[visibility_frag_glsl::pushConsts::textureIndex] =
                                             static_cast<uint32_t>(0);
                                     }
-                                    target_visibility.record(m.indexBuffer, m.vertexBuffer);
+                                    target_visibility.record(render_ib, render_vb);
                                 }
                             }
                             ++object_id;
@@ -2010,7 +2244,11 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                     }
                 }
 
-                // 截图对任意相机（显示/离屏）都适用，从最终 Optics 输出读取。
+                if (offscreen_screenshot) {
+                    process_pending_screenshots(cam_handle, *presented_target);
+                    continue;
+                }
+
                 process_pending_screenshots(cam_handle, *presented_target);
 
                 // 显示相机把自己 surface 的输出发布给 DisplaySystem（按 surface 区分）。
@@ -2043,6 +2281,7 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
 
     // 回收长期空闲（相机解绑 / 视口关闭）的 surface 目标，约束动态开关下的显存占用。
     evict_idle_surface_targets(frame_index);
+    evict_idle_offscreen_screenshot_targets(frame_index);
     evict_idle_native_view_resources(frame_index);
     evict_idle_ui_view_resources(frame_index);
 }
@@ -2126,9 +2365,10 @@ HardwareImage* OpticsSystem::compose_surface_ui_overlay(
                                                &camera_basis, uiBatch);
 
     const bool stereo_ui = mode == ViewportUiMode::Stereo3D;
+    const bool cursor_icon_ready = stereo_ui && ensure_cursor_icon_texture();
     const auto cursor_it = viewport_cursor_states_.find(camera_handle);
     const bool cursor_visible =
-        stereo_ui && cursor_it != viewport_cursor_states_.end() && cursor_it->second.visible &&
+        stereo_ui && cursor_icon_ready && cursor_it != viewport_cursor_states_.end() && cursor_it->second.visible &&
         cursor_it->second.cursor_shape != ViewportUiCursorShape::Hidden &&
         std::isfinite(cursor_it->second.x) && std::isfinite(cursor_it->second.y);
     const ViewportCursorState* cursor_state =
@@ -2192,7 +2432,7 @@ HardwareImage* OpticsSystem::compose_surface_ui_overlay(
         if (preserve_existing_overlay && hardware_->gbufferSize.x > 0u &&
             hardware_->gbufferSize.y > 0u) {
             constexpr int32_t kCursorPadding = 4;
-            constexpr uint32_t kCursorExtent = 32;
+            constexpr uint32_t kCursorExtent = 56;
             const auto cursor_x = static_cast<int32_t>(std::floor(cursor_state->x));
             const auto cursor_y = static_cast<int32_t>(std::floor(cursor_state->y));
             cursor_origin_x = static_cast<uint32_t>(std::max(cursor_x - kCursorPadding, 0));
@@ -2212,6 +2452,8 @@ HardwareImage* OpticsSystem::compose_surface_ui_overlay(
         opticsCursor.pushConsts.cursorY = cursor_state->y;
         opticsCursor.pushConsts.cursorShape =
             static_cast<std::uint32_t>(cursor_state->cursor_shape);
+        opticsCursor.pushConsts.cursorImage = hardware_->cursorIconImage.storeDescriptor();
+        opticsCursor.pushConsts.cursorSize = 48.0f;
         opticsCursor.pushConsts.preserveExisting = preserve_existing_overlay ? 1u : 0u;
         cursorDispatchX = (cursor_width + 7u) / 8u;
         cursorDispatchY = (cursor_height + 7u) / 8u;
@@ -2387,6 +2629,71 @@ void OpticsSystem::process_vision_actor_pick(std::uintptr_t camera_handle,
 }
 #endif
 
+bool OpticsSystem::has_pending_screenshot(std::uintptr_t camera_handle) {
+    std::lock_guard<std::mutex> lock(screenshot_mutex_);
+    return std::any_of(pending_screenshots_.begin(), pending_screenshots_.end(),
+                       [camera_handle](const PendingScreenshot& req) {
+                           return req.camera_handle == camera_handle;
+                       });
+}
+
+void OpticsSystem::fail_pending_screenshots(std::uintptr_t camera_handle) {
+    std::vector<PendingScreenshot> matched;
+    {
+        std::lock_guard<std::mutex> lock(screenshot_mutex_);
+        auto it = std::remove_if(pending_screenshots_.begin(), pending_screenshots_.end(),
+                                 [camera_handle](const PendingScreenshot& req) {
+                                     return req.camera_handle == camera_handle;
+                                 });
+        matched.assign(std::make_move_iterator(it), std::make_move_iterator(pending_screenshots_.end()));
+        pending_screenshots_.erase(it, pending_screenshots_.end());
+    }
+
+    for (auto& req : matched) {
+        if (req.completion_promise) {
+            req.completion_promise->set_value(false);
+        }
+    }
+}
+
+void OpticsSystem::fail_unrenderable_pending_screenshots() {
+    std::vector<std::uintptr_t> pending_handles;
+    {
+        std::lock_guard<std::mutex> lock(screenshot_mutex_);
+        pending_handles.reserve(pending_screenshots_.size());
+        for (const auto& req : pending_screenshots_) {
+            if (std::find(pending_handles.begin(), pending_handles.end(), req.camera_handle) ==
+                pending_handles.end()) {
+                pending_handles.push_back(req.camera_handle);
+            }
+        }
+    }
+
+    for (const auto camera_handle : pending_handles) {
+        if (!SharedDataHub::instance().camera_storage().try_acquire_read(camera_handle)) {
+            fail_pending_screenshots(camera_handle);
+            continue;
+        }
+
+        bool in_enabled_scene = false;
+        bool in_any_scene = false;
+        for (const auto& scene : SharedDataHub::instance().scene_storage()) {
+            if (std::find(scene.camera_handles.begin(), scene.camera_handles.end(), camera_handle) ==
+                scene.camera_handles.end()) {
+                continue;
+            }
+            in_any_scene = true;
+            if (scene.enabled) {
+                in_enabled_scene = true;
+                break;
+            }
+        }
+        if (!in_any_scene || !in_enabled_scene) {
+            fail_pending_screenshots(camera_handle);
+        }
+    }
+}
+
 void OpticsSystem::process_pending_screenshots(std::uintptr_t camera_handle, HardwareImage& render_target) {
     std::vector<PendingScreenshot> matched;
     {
@@ -2486,6 +2793,7 @@ void OpticsSystem::shutdown() {
         }
     }
     surface_targets_.clear();
+    offscreen_screenshot_targets_.clear();
     native_view_resources_.clear();
 #ifdef CORONA_ENABLE_VISION
     clear_vision_runtimes();
@@ -2540,6 +2848,12 @@ std::size_t OpticsSystem::compute_vision_scene_signature() const {
                 // Material parameters bridged into the Vision principled BSDF.
                 mix_float(optics->metallic);
                 mix_float(optics->roughness);
+                mix_float(optics->subsurface);
+                mix_float(optics->anisotropic);
+                mix_float(optics->sheen);
+                mix_float(optics->sheenTint);
+                mix_float(optics->clearcoat);
+                mix_float(optics->clearcoatGloss);
 
                 auto geom = geom_storage.try_acquire_read(optics->geometry_handle);
                 if (!geom) continue;
@@ -3341,8 +3655,13 @@ void OpticsSystem::run_vision_frame(float frame_count, uint64_t frame_index) {
 
         for (auto cam_handle : scene.camera_handles) {
             auto camera = SharedDataHub::instance().camera_storage().try_acquire_read(cam_handle);
-            if (!camera || camera->render_backend != CameraRenderBackend::Vision ||
-                camera->surface == nullptr) {
+            if (!camera || camera->render_backend != CameraRenderBackend::Vision) {
+                continue;
+            }
+            if (camera->surface == nullptr) {
+                if (has_pending_screenshot(cam_handle)) {
+                    fail_pending_screenshots(cam_handle);
+                }
                 continue;
             }
 
@@ -3380,6 +3699,14 @@ void OpticsSystem::apply_pending_vision_scene_load() {
                              : "external",
                          path);
         }
+        return;
+    }
+
+    const auto& runtime = active_vision_runtime();
+    if (runtime.pipeline && runtime.source == VisionPipelineSource::EngineBuilt) {
+        // Empty path is a state request: leave ExternalFile mode and use the
+        // engine-built scene. If that state is already active, the normal
+        // dynamic signature sync below will rebuild only when scene data changed.
         return;
     }
 

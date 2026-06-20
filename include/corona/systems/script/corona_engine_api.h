@@ -50,6 +50,9 @@ class Geometry {
     /// 获取模型 AABB，返回 {min_x, min_y, min_z, max_x, max_y, max_z}
     [[nodiscard]] std::array<float, 6> get_aabb() const;
 
+    /// 获取构造时传入的模型文件路径，用于 Actor 身份标识和资源加载/卸载
+    [[nodiscard]] const std::filesystem::path& get_model_path() const;
+
    private:
     friend class Mechanics;
     friend class Optics;
@@ -67,6 +70,7 @@ class Geometry {
     std::uintptr_t handle_{};
     std::uintptr_t transform_handle_{};
     std::uintptr_t model_resource_handle_{};
+    std::filesystem::path model_path_;
 };
 
 // ============================================================================
@@ -265,6 +269,7 @@ class Camera {
     [[nodiscard]] std::uintptr_t get_handle() const;
     void set_surface(void* surface);
     [[nodiscard]] void* get_surface() const;
+    void set_offscreen_capture_mode(bool enabled);
     void save_screenshot(const std::string& path) const;
     bool save_screenshot_sync(const std::string& path) const;
 

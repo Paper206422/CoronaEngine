@@ -26,11 +26,11 @@ from Quasar.ai_workflow.state import WorkflowState
 
 from .constants import FULL_PIPELINE_FUNCTION_ID, FULL_PIPELINE_V2_FUNCTION_ID
 from .nodes import (
-    classify_and_generate_terrain_node,
     run_multi_scene_node,
     run_model_retrieval_node,
     run_scene_composition_node,
 )
+from ..multi_scene_parallel_workflow.nodes import classify_and_generate_terrain_node
 
 try:
     from .test_cases import TEST_CASES

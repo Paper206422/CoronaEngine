@@ -85,7 +85,7 @@ struct MechanicsDevice {
     float damping{0.99f};
 
     // 物理开关：false 时物理系统跳过该对象（不参与模拟，但仍保留数据）
-    bool physics_enabled{true};
+    bool physics_enabled{false};
 
     // 力学碰撞检测开关：false 时完全禁用该物体的碰撞检测（物体不与其他物体或地面碰撞）
     bool bEnableCollision{false};

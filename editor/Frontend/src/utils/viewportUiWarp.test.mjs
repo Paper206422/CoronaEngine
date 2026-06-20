@@ -23,34 +23,23 @@ const calibration = normalizeLfdCalibration({
   parallaxScale: 2,
 });
 
-const red = computeLfdUiWarpSample({
-  pixelX: 32,
-  pixelY: 16,
-  channel: 0,
-  rect: { x: 20, y: 10, width: 80, height: 40 },
-  depth: 0.5,
-  calibration,
-});
+// Unified green-driven phase: the sample no longer depends on a channel arg.
 const green = computeLfdUiWarpSample({
   pixelX: 32,
   pixelY: 16,
-  channel: 1,
   rect: { x: 20, y: 10, width: 80, height: 40 },
   depth: 0.5,
   calibration,
 });
 
-assert.notEqual(red.phase, green.phase);
-assert.notEqual(red.sampleX, green.sampleX);
-assert.equal(red.sampleY, green.sampleY);
 assertNear(green.phaseAccumulator, (32 - 0.25 * 16) / 8 + 0.1);
 assertNear(green.phase, 0.2);
 assertNear(green.sampleX, 12.2);
+assertNear(green.sampleY, 6);
 
 const flat = computeLfdUiWarpSample({
   pixelX: 32,
   pixelY: 16,
-  channel: 1,
   rect: { x: 20, y: 10, width: 80, height: 40 },
   depth: 0,
   calibration: { ...calibration, parallaxScale: 0 },
@@ -58,7 +47,9 @@ const flat = computeLfdUiWarpSample({
 assert.equal(flat.sampleX, 12);
 assert.equal(flat.sampleY, 6);
 
-const shiftedPixel = computeLfdUiWarpPixel({
+// Horizontal 2-tap linear interpolation: absoluteX = 7 + phase(0.75)*2 = 8.5,
+// so the pixel blends column 8 (transparent) and column 9 (opaque white) 50/50.
+const interpolatedPixel = computeLfdUiWarpPixel({
   pixelX: 7,
   pixelY: 0,
   rect: { x: 0, y: 0, width: 16, height: 16 },
@@ -70,10 +61,10 @@ const shiftedPixel = computeLfdUiWarpPixel({
     rgbSubpixelOffsets: [0, 0, 0],
     parallaxScale: 2,
   },
-  sampleChannel: (_channel, x) => (x >= 9 ? [1, 1, 1, 1] : [0, 0, 0, 0]),
+  sampleChannel: (x) => (x >= 9 ? [1, 1, 1, 1] : [0, 0, 0, 0]),
 });
 
-assert.deepEqual(shiftedPixel.color, [1, 1, 1]);
-assert.equal(shiftedPixel.alpha, 1);
+assert.deepEqual(interpolatedPixel.color, [0.5, 0.5, 0.5]);
+assert.equal(interpolatedPixel.alpha, 0.5);
 
 console.log('viewport UI warp tests passed');

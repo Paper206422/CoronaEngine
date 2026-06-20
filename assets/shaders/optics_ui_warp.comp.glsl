@@ -23,17 +23,37 @@ float wrapPhaseCentered(float phase)
     return 2.0 * wrapped - 1.0;
 }
 
-vec4 channelSample(int channel, ivec2 pos)
+// Continuous green-channel phase gamma_g in [-1, 1): a shader-friendly proxy
+// for the exit angle. We deliberately use ONLY the central (green) sub-pixel
+// offset and produce a single unified texture coordinate. Shifting R/G/B
+// independently (as physical sub-pixel separation would suggest) causes severe
+// color fringing at sharp UI edges; a single green-driven sample trades
+// negligible optical exactness for absolute color cohesion.
+float greenPhaseCentered(ivec2 pos)
 {
-    float rgbOffset = pushConsts.rgbSubpixelOffsets[channel];
+    float greenOffset = pushConsts.rgbSubpixelOffsets[1];
     float pitch = max(abs(pushConsts.lenticularPitch), 1.0e-5);
     float phaseAccumulator =
-        (float(pos.x) + rgbOffset - pushConsts.slant * float(pos.y)) / pitch +
+        (float(pos.x) + greenOffset - pushConsts.slant * float(pos.y)) / pitch +
         pushConsts.phaseOffset;
-    float phase = wrapPhaseCentered(phaseAccumulator);
-    float sampleX = float(pos.x) + phase * pushConsts.parallaxScale;
-    ivec2 samplePos = ivec2(clamp(int(round(sampleX)), 0, int(pushConsts.outputWidth) - 1), pos.y);
-    return imageLoad(images[pushConsts.inputImage], samplePos);
+    return wrapPhaseCentered(phaseAccumulator);
+}
+
+// Horizontal-only bilinear (2-tap linear) fetch. The overlay is a storage image
+// (no hardware sampler), so we interpolate manually between the two neighboring
+// columns to smooth the fractional sub-pixel offset and remove the staircase
+// shimmer that nearest-neighbor rounding produced. The warp is X-only, so Y is
+// sampled directly.
+vec4 sampleBilinearX(float sampleX, int y)
+{
+    float maxX = float(int(pushConsts.outputWidth) - 1);
+    float clamped = clamp(sampleX, 0.0, maxX);
+    int x0 = int(floor(clamped));
+    int x1 = min(x0 + 1, int(pushConsts.outputWidth) - 1);
+    float w = clamped - float(x0);
+    vec4 c0 = imageLoad(images[pushConsts.inputImage], ivec2(x0, y));
+    vec4 c1 = imageLoad(images[pushConsts.inputImage], ivec2(x1, y));
+    return mix(c0, c1, w);
 }
 
 void main()
@@ -43,18 +63,14 @@ void main()
         return;
     }
 
-    vec4 redSample = channelSample(0, pos);
-    vec4 greenSample = channelSample(1, pos);
-    vec4 blueSample = channelSample(2, pos);
-    float alpha = max(max(redSample.a, greenSample.a), blueSample.a);
-    if (alpha <= 0.0) {
+    float gamma = greenPhaseCentered(pos);
+    float sampleX = float(pos.x) + gamma * pushConsts.parallaxScale;
+    vec4 warped = sampleBilinearX(sampleX, pos.y);
+
+    if (warped.a <= 0.0) {
         imageStore(images[pushConsts.outputImage], pos, vec4(0.0));
         return;
     }
 
-    vec3 warped;
-    warped.r = redSample.r;
-    warped.g = greenSample.g;
-    warped.b = blueSample.b;
-    imageStore(images[pushConsts.outputImage], pos, vec4(warped, alpha));
+    imageStore(images[pushConsts.outputImage], pos, warped);
 }

@@ -1,0 +1,120 @@
+{
+  "scene": {
+    "camera": {
+      "param": {
+        "name": "AlignmentCamera",
+        "fov_y": 45,
+        "transform": {
+          "type": "look_at",
+          "param": {
+            "position": [0, 1, 5],
+            "target_pos": [0, 1, 0],
+            "up": [0, 1, 0]
+          }
+        }
+      }
+    },
+    "materials": [
+      {
+        "type": "principled_bsdf",
+        "name": "AlignmentMaterial",
+        "param": {
+          "color": {
+            "node": {
+              "type": "number",
+              "param": {
+                "value": [0.25, 0.5, 0.75]
+              }
+            }
+          },
+          "roughness": {
+            "node": {
+              "type": "number",
+              "param": {
+                "value": 0.65
+              }
+            }
+          },
+          "metallic": {
+            "node": {
+              "type": "number",
+              "param": {
+                "value": 0.35
+              }
+            }
+          },
+          "coat_weight": {
+            "node": {
+              "type": "number",
+              "param": {
+                "value": 0.4
+              }
+            }
+          },
+          "coat_roughness": {
+            "node": {
+              "type": "number",
+              "param": {
+                "value": 0.2
+              }
+            }
+          }
+        }
+      }
+    ],
+    "shapes": [
+      {
+        "type": "model",
+        "name": "AlignedModel",
+        "param": {
+          "fn": "model_a.obj",
+          "material": "AlignmentMaterial",
+          "transform": {
+            "type": "matrix4x4",
+            "param": {
+              "matrix4x4": [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0, 0.0],
+                [0.0, 0.0, 3.0, 0.0],
+                [1.0, 2.0, 3.0, 1.0]
+              ]
+            }
+          }
+        }
+      },
+      {
+        "type": "model",
+        "name": "AlignedModel",
+        "param": {
+          "fn": "model_b.obj",
+          "material": "AlignmentMaterial",
+          "transform": {
+            "type": "trs",
+            "param": {
+              "t": [-1.0, 0.5, 2.0],
+              "s": [0.5, 0.75, 1.25]
+            }
+          }
+        }
+      },
+      {
+        "type": "quad",
+        "name": "UnsupportedQuad",
+        "param": {
+          "width": 2,
+          "height": 2,
+          "material": "AlignmentMaterial"
+        }
+      },
+      {
+        "type": "cube",
+        "name": "UnsupportedCube",
+        "param": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        }
+      }
+    ]
+  }
+}

@@ -26,8 +26,13 @@ class FakeCoronaEditor:
         return None
 
     @classmethod
-    def js_call_func(cls, path, function_name, args):
-        cls.calls.append((path, function_name, args))
+    def js_call_func(cls, *args):
+        if len(args) == 2:
+            _event_name, payload = args
+            cls.calls.append(("/AITalkBar", "receiveAIMessageChunk", payload))
+        else:
+            path, function_name, payload = args
+            cls.calls.append((path, function_name, payload))
 
 
 class FakeLoop:
@@ -51,6 +56,60 @@ class FakeEventLoopRunner:
 
 
 def install_import_stubs():
+    langchain_core_module = types.ModuleType("langchain_core")
+    langchain_api_module = types.ModuleType("langchain_core._api")
+    langchain_deprecation_module = types.ModuleType("langchain_core._api.deprecation")
+
+    class LangChainPendingDeprecationWarning(Warning):
+        pass
+
+    setattr(
+        langchain_deprecation_module,
+        "LangChainPendingDeprecationWarning",
+        LangChainPendingDeprecationWarning,
+    )
+    sys.modules["langchain_core"] = langchain_core_module
+    sys.modules["langchain_core._api"] = langchain_api_module
+    sys.modules["langchain_core._api.deprecation"] = langchain_deprecation_module
+
+    langchain_tools_module = types.ModuleType("langchain_core.tools")
+
+    class BaseTool:
+        pass
+
+    setattr(langchain_tools_module, "BaseTool", BaseTool)
+    sys.modules["langchain_core.tools"] = langchain_tools_module
+
+    yaml_module = types.ModuleType("yaml")
+
+    def safe_load(stream):
+        text = stream.read() if hasattr(stream, "read") else str(stream)
+        result = {"modules": []}
+        current = None
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line == "modules:":
+                continue
+            if line.startswith("- "):
+                current = {}
+                result["modules"].append(current)
+                line = line[2:].strip()
+            if ":" not in line or current is None:
+                continue
+            key, value = line.split(":", 1)
+            value = value.strip()
+            if value.lower() == "true":
+                parsed_value = True
+            elif value.lower() == "false":
+                parsed_value = False
+            else:
+                parsed_value = value.strip("\"'")
+            current[key.strip()] = parsed_value
+        return result
+
+    yaml_module.safe_load = safe_load
+    sys.modules["yaml"] = yaml_module
+
     corona_editor_module = types.ModuleType("CoronaCore.core.corona_editor")
     setattr(corona_editor_module, "CoronaEditor", FakeCoronaEditor)
     sys.modules["CoronaCore.core.corona_editor"] = corona_editor_module

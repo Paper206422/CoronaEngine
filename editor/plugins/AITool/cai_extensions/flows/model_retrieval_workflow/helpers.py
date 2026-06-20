@@ -18,6 +18,8 @@ from Quasar.ai_config.paths_config import _get_active_project_path
 logger = logging.getLogger(__name__)
 
 PREVIEW_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+OBJECT_SEARCH_KEY_ENV_NAMES = ("DASHSCOPE_API_KEY", "DASH_SCOPE_API_KEY")
+OBJECT_EMBEDDING_ENABLE_ENV = "CORONA_ENABLE_OBJECT_EMBEDDING"
 
 
 def _resolve_preview_part_url(part: Dict[str, Any]) -> str:
@@ -77,14 +79,107 @@ def get_tool(name: str) -> Any:
     return {t.name: t for t in tools}.get(name)
 
 
+def _read_config_value(raw: Any, key: str, default: Any = None) -> Any:
+    if isinstance(raw, dict):
+        return raw.get(key, default)
+    return getattr(raw, key, default)
+
+
+def _provider_api_key(providers: Any, provider_name: str) -> str:
+    if not provider_name:
+        return ""
+
+    provider = None
+    try:
+        if isinstance(providers, dict):
+            provider = providers.get(provider_name)
+        elif hasattr(providers, "get"):
+            provider = providers.get(provider_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("object search provider lookup failed: %s", exc)
+
+    if provider is None:
+        return ""
+    return str(_read_config_value(provider, "api_key", "") or "").strip()
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enable", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disable", "disabled"}:
+            return False
+    return default
+
+
+def object_embedding_tools_enabled(config: Any | None = None) -> bool:
+    """Dashscope embedding is opt-in for F5 stability."""
+    env_value = os.environ.get(OBJECT_EMBEDDING_ENABLE_ENV)
+    if env_value is not None:
+        return _as_bool(env_value, default=False)
+
+    if config is None:
+        try:
+            config = get_ai_config()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("object embedding config read failed; disabled by default: %s", exc)
+            return False
+
+    recognition_cfg = _read_config_value(config, "object_recognition", {}) or {}
+    return _as_bool(
+        _read_config_value(recognition_cfg, "enable_embedding", None),
+        default=False,
+    ) or _as_bool(
+        _read_config_value(recognition_cfg, "enable_dashscope_embedding", None),
+        default=False,
+    )
+
+
+def _object_search_has_embedding_key(config: Any) -> bool:
+    """判断图搜嵌入服务是否具备可用凭据，避免运行期批量 401。"""
+    if not object_embedding_tools_enabled(config):
+        return False
+
+    recognition_cfg = _read_config_value(config, "object_recognition", {}) or {}
+    enabled = _read_config_value(recognition_cfg, "enable", True)
+    if enabled is False:
+        return False
+
+    provider_name = str(_read_config_value(recognition_cfg, "provider", "dashscope") or "dashscope").strip()
+    direct_key = str(_read_config_value(recognition_cfg, "dashscope_api_key", "") or "").strip()
+    provider_key = _provider_api_key(_read_config_value(config, "providers", {}) or {}, provider_name)
+    env_key = next((os.environ.get(name, "").strip() for name in OBJECT_SEARCH_KEY_ENV_NAMES if os.environ.get(name, "").strip()), "")
+
+    return bool(direct_key or provider_key or env_key)
+
+
 def get_search_tool():
     """获取物体搜索工具。"""
-    # return None  # TEMP: 临时屏蔽嵌入模型，跳过检索阶段
+    try:
+        config = get_ai_config()
+        if not _object_search_has_embedding_key(config):
+            logger.info(
+                "物体 embedding 检索未启用，跳过 search_similar_object，后续将直接进入 3D 生成降级路径"
+            )
+            return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("物体图搜凭据预检失败，跳过检索阶段: %s", exc)
+        return None
     return get_tool("search_similar_object")
 
 
 def get_store_tool():
     """获取物体入库工具。"""
+    if not object_embedding_tools_enabled():
+        logger.info("物体 embedding 入库未启用，跳过 store_object")
+        return None
     return get_tool("store_object")
 
 
@@ -338,6 +433,11 @@ def resolve_model_file(model_path: str) -> str:
         """扫描目录，返回第一个支持的模型文件。"""
         if not os.path.isdir(dir_path):
             return ""
+        runtime_dir = os.path.join(dir_path, "runtime")
+        if os.path.isdir(runtime_dir):
+            runtime_result = _scan_dir(runtime_dir)
+            if runtime_result:
+                return runtime_result
         for entry in sorted(os.listdir(dir_path)):
             _, ext = os.path.splitext(entry)
             if ext.lower() in supported_exts:

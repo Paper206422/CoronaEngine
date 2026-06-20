@@ -1,244 +1,249 @@
 <template>
-  <div class="fui-root">
-    <!-- 背景层 -->
-    <div class="fui-bg-grid"></div>
-    <div class="fui-bg-scan"></div>
-    <div class="fui-bg-tags">
-      <span class="fui-tag" style="top:8%;left:5%">SYS::CORONA-SETTINGS</span>
-      <span class="fui-tag" style="top:15%;right:8%">ASSET-ID-019</span>
-      <span class="fui-tag" style="bottom:12%;left:10%">CAM-SPD-001</span>
-      <span class="fui-tag" style="bottom:20%;right:5%">MOD::EDITOR-CORE</span>
-    </div>
-
-    <!-- 标题栏（非 docked 模式） -->
+  <div class="tactical-panel">
     <DockTitleBar
       v-if="!isDocked"
       title="编辑器设置"
-      extraClass="fui-titlebar"
+      extraClass="bg-[#3d4d2e]"
       routePath="/SetUp"
       @close="closeFloat"
     />
 
-    <!-- 主内容 -->
-    <div class="fui-content">
+    <div class="panel-body">
+      <!-- ═══════════ 2×2 GRID ═══════════ -->
+      <div class="grid-2x2">
+        <!-- Grid dividing lines -->
+        <div class="grid-line grid-line-h"></div>
+        <div class="grid-line grid-line-v"></div>
 
-      <!-- 工具栏：返回主页 + 保存状态 -->
-      <div class="fui-toolbar">
-        <button class="fui-btn-home" @click="goHome">
-          <span class="fui-btn-home-icon">◄</span>
-          <span>返回主页</span>
-        </button>
-        <div class="fui-status">
-          <span class="fui-status-dot" :class="{ active: saveVisible }"></span>
-          <span>{{ saveVisible ? '已保存' : '就绪' }}</span>
+        <!-- Center mechanical emblem -->
+        <div class="center-emblem">
+          <div class="emblem-ring">
+            <svg class="emblem-gear" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <!-- Outer toothed ring -->
+              <circle cx="32" cy="32" r="29" stroke="currentColor" stroke-width="2.5" fill="none" opacity="0.8"/>
+              <!-- 8 gear teeth -->
+              <g stroke="currentColor" stroke-width="2.2" fill="none" opacity="0.9">
+                <line x1="32" y1="1"  x2="32" y2="7"/>
+                <line x1="54" y1="10" x2="50" y2="14"/>
+                <line x1="63" y1="32" x2="57" y2="32"/>
+                <line x1="54" y1="54" x2="50" y2="50"/>
+                <line x1="32" y1="63" x2="32" y2="57"/>
+                <line x1="10" y1="54" x2="14" y2="50"/>
+                <line x1="1"  y1="32" x2="7" y2="32"/>
+                <line x1="10" y1="10" x2="14" y2="14"/>
+              </g>
+              <!-- Inner hexagonal aperture -->
+              <polygon points="32,18 44,25 44,39 32,46 20,39 20,25"
+                       stroke="currentColor" stroke-width="1.3" fill="none"
+                       stroke-linejoin="round" opacity="0.7"/>
+              <!-- Center hub dot -->
+              <circle cx="32" cy="32" r="4" fill="currentColor" opacity="0.55"/>
+              <circle cx="32" cy="32" r="2" fill="#181c13"/>
+            </svg>
+          </div>
+        </div>
+
+        <!-- ═══ Q1: 左上 · 存档设置 ═══ -->
+        <div class="quadrant q1">
+          <div class="quadrant-header">
+            <span class="quadrant-diamond"></span>
+            <span class="quadrant-title">存档设置</span>
+            <span class="quadrant-subtitle">ARCHIVE</span>
+          </div>
+          <div class="quadrant-body">
+            <!-- Autosave interval stepper -->
+            <div class="control-group">
+              <label class="control-label">自动保存间隔</label>
+              <div class="stepper-row">
+                <button class="stepper-btn" @click="stepAutosave(-1)" :disabled="form.autosave_interval <= 1">−</button>
+                <div class="stepper-value-box">
+                  <span class="stepper-number">{{ form.autosave_interval }}</span>
+                </div>
+                <button class="stepper-btn" @click="stepAutosave(1)" :disabled="form.autosave_interval >= 60">+</button>
+                <span class="stepper-unit">分钟</span>
+              </div>
+            </div>
+
+            <!-- Hint text -->
+            <p class="hint-text">新建存档 · 指定位置、名称</p>
+
+            <!-- Additional: VSync toggle -->
+            <div class="control-group">
+              <div class="toggle-row">
+                <span class="control-label">垂直同步</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" v-model="form.vsync" />
+                  <span class="toggle-track"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ Q2: 右上 · 网络与AI ═══ -->
+        <div class="quadrant q2">
+          <div class="quadrant-header">
+            <span class="quadrant-diamond"></span>
+            <span class="quadrant-title">网络与AI</span>
+            <span class="quadrant-subtitle">NETWORK · AI</span>
+          </div>
+          <div class="quadrant-body">
+            <!-- LAN Password -->
+            <div class="control-group">
+              <label class="control-label">局域网密码设置</label>
+              <input
+                class="input-box"
+                type="text"
+                v-model="form.lan_password"
+                placeholder="输入局域网密码..."
+              />
+            </div>
+
+            <!-- AI Tips toggle -->
+            <div class="control-group">
+              <div class="toggle-row">
+                <span class="control-label">AI 提示</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" v-model="form.ai_tips_enabled" />
+                  <span class="toggle-track"></span>
+                </label>
+              </div>
+            </div>
+
+            <!-- AI Tips frequency dropdown -->
+            <div class="control-group">
+              <label class="control-label">AI 提示频率</label>
+              <div class="select-wrapper">
+                <select v-model="form.ai_tips_frequency">
+                  <option value="high">高</option>
+                  <option value="medium">中</option>
+                  <option value="low">低</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- AI hint time (numerical backing, hidden but kept in sync) -->
+            <div class="control-group">
+              <label class="control-label">包菜提示间隔</label>
+              <div class="slider-row">
+                <input
+                  type="range"
+                  min="0.5" max="10" step="0.1"
+                  v-model.number="form.cabbage_hint_time"
+                  class="slider"
+                />
+                <span class="slider-value">{{ form.cabbage_hint_time.toFixed(1) }}s</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ Q3: 左下 · 音频监视 ═══ -->
+        <div class="quadrant q3">
+          <div class="quadrant-header">
+            <span class="quadrant-diamond"></span>
+            <span class="quadrant-title">音频监视</span>
+            <span class="quadrant-subtitle">AUDIO MONITOR</span>
+          </div>
+          <div class="quadrant-body">
+            <!-- Master Volume -->
+            <div class="control-group">
+              <div class="slider-label-row">
+                <span class="control-label">主音量</span>
+                <span class="slider-percent">{{ form.master_volume }}%</span>
+              </div>
+              <input
+                type="range" min="0" max="100" step="1"
+                v-model.number="form.master_volume"
+                class="slider"
+              />
+            </div>
+
+            <!-- BGM Volume -->
+            <div class="control-group">
+              <div class="slider-label-row">
+                <span class="control-label">背景音乐</span>
+                <span class="slider-percent">{{ form.bgm_volume }}%</span>
+              </div>
+              <input
+                type="range" min="0" max="100" step="1"
+                v-model.number="form.bgm_volume"
+                class="slider"
+              />
+            </div>
+
+            <!-- SFX Volume -->
+            <div class="control-group">
+              <div class="slider-label-row">
+                <span class="control-label">效果音</span>
+                <span class="slider-percent">{{ form.sfx_volume }}%</span>
+              </div>
+              <input
+                type="range" min="0" max="100" step="1"
+                v-model.number="form.sfx_volume"
+                class="slider"
+              />
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ Q4: 右下 · 外观与操作 ═══ -->
+        <div class="quadrant q4">
+          <div class="quadrant-header">
+            <span class="quadrant-diamond"></span>
+            <span class="quadrant-title">外观与操作</span>
+            <span class="quadrant-subtitle">APPEARANCE</span>
+          </div>
+          <div class="quadrant-body">
+            <!-- Theme dropdown -->
+            <div class="control-group">
+              <label class="control-label">界面主题</label>
+              <div class="select-wrapper">
+                <select v-model.number="form.theme_index">
+                  <option :value="0">暗色</option>
+                  <option :value="1">亮色</option>
+                  <option :value="2">古典</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Language dropdown -->
+            <div class="control-group">
+              <label class="control-label">界面语言</label>
+              <div class="select-wrapper">
+                <select v-model.number="form.language_index">
+                  <option :value="0">中文</option>
+                  <option :value="1">English</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- UI Scale (text display) -->
+            <div class="control-group">
+              <label class="control-label">UI 缩放</label>
+              <div class="scale-display">
+                <span class="scale-value">{{ form.ui_scale.toFixed(1) }}x</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- 四象限矩阵布局 -->
-      <div class="fui-quad-grid">
-
-        <!-- 中心全息核心 -->
-        <div class="fui-holo-core">
-          <div class="fui-tesseract">
-            <div class="fui-tesseract-face fui-tf-front"></div>
-            <div class="fui-tesseract-face fui-tf-back"></div>
-            <div class="fui-tesseract-face fui-tf-left"></div>
-            <div class="fui-tesseract-face fui-tf-right"></div>
-            <div class="fui-tesseract-face fui-tf-top"></div>
-            <div class="fui-tesseract-face fui-tf-bottom"></div>
-            <div class="fui-tesseract-inner"></div>
-          </div>
-          <div class="fui-crosshair-h"></div>
-          <div class="fui-crosshair-v"></div>
-        </div>
-
-        <!-- Q1: 工作流与提示 (左上) -->
-        <div class="fui-quad fui-quad-tl" :class="{ collapsed: !sections.workflow }">
-          <div class="fui-quad-header" @click="sections.workflow = !sections.workflow">
-            <span class="fui-quad-icon">◇</span>
-            <span class="fui-quad-label">工作流与提示</span>
-            <span class="fui-quad-arrow">▼</span>
-          </div>
-          <div v-show="sections.workflow" class="fui-quad-body">
-            <!-- 包菜提示时间 -->
-            <div class="fui-field">
-              <div class="fui-field-head">
-                <span class="fui-field-label">包菜提示时间</span>
-                <span class="fui-field-val">{{ form.cabbage_hint_time.toFixed(1) }}<small>秒</small></span>
-              </div>
-              <div class="fui-slider-track">
-                <div class="fui-slider-fill" :style="{ width: ((form.cabbage_hint_time - 0.5) / 9.5 * 100) + '%' }"></div>
-                <input type="range" min="0.5" max="10" step="0.1" v-model.number="form.cabbage_hint_time" class="fui-slider" />
-              </div>
-            </div>
-            <!-- 自动存档间隔 -->
-            <div class="fui-field">
-              <div class="fui-field-head">
-                <span class="fui-field-label">自动存档间隔</span>
-                <span class="fui-field-val">{{ form.autosave_interval }}<small>分钟</small></span>
-              </div>
-              <div class="fui-slider-track">
-                <div class="fui-slider-fill" :style="{ width: ((form.autosave_interval - 1) / 59 * 100) + '%' }"></div>
-                <input type="range" min="1" max="60" step="1" v-model.number="form.autosave_interval" class="fui-slider" />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Q2: 引擎与图形 (右上) -->
-        <div class="fui-quad fui-quad-tr" :class="{ collapsed: !sections.engine }">
-          <div class="fui-quad-header" @click="sections.engine = !sections.engine">
-            <span class="fui-quad-icon">◈</span>
-            <span class="fui-quad-label">引擎与图形</span>
-            <span class="fui-quad-arrow">▼</span>
-          </div>
-          <div v-show="sections.engine" class="fui-quad-body">
-            <!-- 垂直同步 -->
-            <div class="fui-field fui-field-row">
-              <span class="fui-field-label">垂直同步</span>
-              <label class="fui-toggle" :class="{ on: form.vsync }" @click="form.vsync = !form.vsync">
-                <span class="fui-toggle-track">
-                  <span class="fui-toggle-circuit"></span>
-                </span>
-                <span class="fui-toggle-thumb"></span>
-              </label>
-            </div>
-            <!-- 相机速度 -->
-            <div class="fui-field">
-              <div class="fui-field-head">
-                <span class="fui-field-label">相机速度</span>
-                <span class="fui-field-val">{{ form.camera_speed.toFixed(1) }}</span>
-              </div>
-              <div class="fui-slider-track">
-                <div class="fui-slider-fill" :style="{ width: ((form.camera_speed - 0.1) / 9.9 * 100) + '%' }"></div>
-                <input type="range" min="0.1" max="10" step="0.1" v-model.number="form.camera_speed" class="fui-slider" />
-              </div>
-            </div>
-            <!-- 网格对齐 -->
-            <div class="fui-field">
-              <div class="fui-field-head">
-                <span class="fui-field-label">网格对齐</span>
-                <span class="fui-field-val">{{ form.grid_snap_size.toFixed(0) }}</span>
-              </div>
-              <div class="fui-slider-track">
-                <div class="fui-slider-fill" :style="{ width: ((form.grid_snap_size - 1) / 199 * 100) + '%' }"></div>
-                <input type="range" min="1" max="200" step="1" v-model.number="form.grid_snap_size" class="fui-slider" />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Q3: 音频 (左下) -->
-        <div class="fui-quad fui-quad-bl" :class="{ collapsed: !sections.audio }">
-          <div class="fui-quad-header" @click="sections.audio = !sections.audio">
-            <span class="fui-quad-icon">∿</span>
-            <span class="fui-quad-label">音频</span>
-            <span class="fui-quad-arrow">▼</span>
-          </div>
-          <div v-show="sections.audio" class="fui-quad-body">
-            <!-- 主音量 -->
-            <div class="fui-field">
-              <div class="fui-field-head">
-                <span class="fui-field-label">主音量</span>
-                <span class="fui-field-val">{{ form.master_volume }}<small>%</small></span>
-              </div>
-              <div class="fui-slider-track fui-slider-audio">
-                <div class="fui-waveform" :style="{ width: form.master_volume + '%' }">
-                  <svg class="fui-wave-svg" viewBox="0 0 200 24" preserveAspectRatio="none">
-                    <path :d="wavePath(form.master_volume)" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
-                  </svg>
-                </div>
-                <input type="range" min="0" max="100" step="1" v-model.number="form.master_volume" class="fui-slider fui-slider-wave" />
-              </div>
-            </div>
-            <!-- 背景音乐 -->
-            <div class="fui-field">
-              <div class="fui-field-head">
-                <span class="fui-field-label">背景音乐</span>
-                <span class="fui-field-val">{{ form.bgm_volume }}<small>%</small></span>
-              </div>
-              <div class="fui-slider-track fui-slider-audio">
-                <div class="fui-waveform" :style="{ width: form.bgm_volume + '%' }">
-                  <svg class="fui-wave-svg" viewBox="0 0 200 24" preserveAspectRatio="none">
-                    <path :d="wavePath(form.bgm_volume)" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
-                  </svg>
-                </div>
-                <input type="range" min="0" max="100" step="1" v-model.number="form.bgm_volume" class="fui-slider fui-slider-wave" />
-              </div>
-            </div>
-            <!-- 效果音 -->
-            <div class="fui-field">
-              <div class="fui-field-head">
-                <span class="fui-field-label">效果音</span>
-                <span class="fui-field-val">{{ form.sfx_volume }}<small>%</small></span>
-              </div>
-              <div class="fui-slider-track fui-slider-audio">
-                <div class="fui-waveform" :style="{ width: form.sfx_volume + '%' }">
-                  <svg class="fui-wave-svg" viewBox="0 0 200 24" preserveAspectRatio="none">
-                    <path :d="wavePath(form.sfx_volume)" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
-                  </svg>
-                </div>
-                <input type="range" min="0" max="100" step="1" v-model.number="form.sfx_volume" class="fui-slider fui-slider-wave" />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Q4: 外观 (右下) -->
-        <div class="fui-quad fui-quad-br" :class="{ collapsed: !sections.appearance }">
-          <div class="fui-quad-header" @click="sections.appearance = !sections.appearance">
-            <span class="fui-quad-icon">◉</span>
-            <span class="fui-quad-label">外观</span>
-            <span class="fui-quad-arrow">▼</span>
-          </div>
-          <div v-show="sections.appearance" class="fui-quad-body">
-            <!-- 界面主题 - 分段选择器 -->
-            <div class="fui-field">
-              <span class="fui-field-label">界面主题</span>
-              <div class="fui-segment-group">
-                <button
-                  v-for="(t, i) in themes"
-                  :key="i"
-                  class="fui-segment"
-                  :class="{ active: form.theme_index === i }"
-                  @click="form.theme_index = i"
-                >{{ t }}</button>
-              </div>
-            </div>
-            <!-- 界面语言 - 分段选择器 -->
-            <div class="fui-field">
-              <span class="fui-field-label">界面语言</span>
-              <div class="fui-segment-group">
-                <button
-                  v-for="(l, i) in languages"
-                  :key="i"
-                  class="fui-segment"
-                  :class="{ active: form.language_index === i }"
-                  @click="form.language_index = i"
-                >{{ l }}</button>
-              </div>
-            </div>
-            <!-- UI 缩放 -->
-            <div class="fui-field">
-              <div class="fui-field-head">
-                <span class="fui-field-label">UI 缩放</span>
-                <span class="fui-field-val">{{ form.ui_scale.toFixed(1) }}<small>x</small></span>
-              </div>
-              <div class="fui-slider-track">
-                <div class="fui-slider-fill" :style="{ width: ((form.ui_scale - 0.5) / 1.5 * 100) + '%' }"></div>
-                <input type="range" min="0.5" max="2.0" step="0.1" v-model.number="form.ui_scale" class="fui-slider" />
-              </div>
-            </div>
-          </div>
-        </div>
-
+      <!-- ═══════════ BUTTON ROW ═══════════ -->
+      <div class="button-row">
+        <button class="btn btn-cancel" @click="handleExit">退出</button>
+        <button class="btn btn-ghost" @click="goHome">回到主页</button>
+        <button class="btn btn-primary" @click="handleSaveArchive">保存（新建存档）</button>
       </div>
     </div>
+
+    <!-- 保存提示 badge -->
+    <div class="save-badge" :class="{ show: saveVisible }">设置已保存</div>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, watch, onMounted, computed } from 'vue';
+import { ref, reactive, watch, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useDockStore } from '@/stores/dockStore.js';
 import { useDockPanel } from '@/composables/useDockPanel.js';
@@ -253,20 +258,25 @@ function goHome() {
   router.push('/StartScreen');
 }
 
-const themes = ['暗色', '亮色', '古典'];
-const languages = ['中文', 'English'];
-
 const STORAGE_KEY = 'corona_editor_settings';
 
 const defaultSettings = {
-  cabbage_hint_time: 3.0,
+  // ── 存档 ──
   autosave_interval: 15,
+  // ── 网络与AI ──
+  lan_password: '',
+  ai_tips_enabled: true,
+  ai_tips_frequency: 'medium',   // 'high' | 'medium' | 'low'
+  cabbage_hint_time: 3.0,
+  // ── 引擎与图形 ──
   vsync: true,
   camera_speed: 2.5,
   grid_snap_size: 50,
+  // ── 音频 ──
   master_volume: 80,
   bgm_volume: 70,
   sfx_volume: 100,
+  // ── 外观 ──
   theme_index: 0,
   language_index: 0,
   ui_scale: 1.0,
@@ -299,8 +309,8 @@ function persist() {
 }
 
 function notifyEngine() {
-  if (typeof cefQuery !== 'undefined') {
-    cefQuery({
+  if (typeof window.cefQuery === 'function') {
+    window.cefQuery({
       request: JSON.stringify({
         function: 'update_settings',
         module: 'EditorSettings',
@@ -324,22 +334,34 @@ watch(form, () => {
   showSaved();
 }, { deep: true });
 
+// ── Stepper for autosave interval ──
+function stepAutosave(delta) {
+  const next = form.autosave_interval + delta;
+  if (next >= 1 && next <= 60) {
+    form.autosave_interval = next;
+  }
+}
+
+// ── Save archive action ──
+function handleSaveArchive() {
+  persist();
+  notifyEngine();
+  showSaved();
+}
+
+// ── Exit action ──
+function handleExit() {
+  if (closeDockPanel) {
+    closeDockPanel();
+  } else {
+    window.__settingsOpen = false;
+  }
+}
+
 const closeFloat = () => {
   window.__settingsOpen = false;
   if (closeDockPanel) { closeDockPanel(); return; }
 };
-
-/** 音频波形路径生成 */
-function wavePath(amplitude) {
-  const pts = [];
-  const scale = amplitude / 100;
-  for (let i = 0; i <= 20; i++) {
-    const x = (i / 20) * 200;
-    const y = 12 + Math.sin(i * 1.8 + Date.now() * 0.002) * 8 * scale + Math.sin(i * 3.3) * 4 * scale;
-    pts.push(`${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`);
-  }
-  return pts.join(' ');
-}
 
 onMounted(() => {
   notifyEngine();
@@ -348,498 +370,568 @@ onMounted(() => {
 
 <style scoped>
 /* ═══════════════════════════════════════════
-   FUI — Futuristic UI Design System
+   TACOM · 军工战术终端 — 编辑器设置面板
    ═══════════════════════════════════════════ */
 
-/* ── 根容器 ── */
-.fui-root {
+/* ── CSS Variables ── */
+.tactical-panel {
+  --bg-root:       #131610;
+  --bg-surface:    #1a1e16;
+  --bg-input:      #161a12;
+  --bg-btn:        #2e3824;
+  --bg-btn-hover:  #3d4a32;
+  --grid-color:    #2a3520;
+  --border:        #38442c;
+  --border-thick:  #465636;
+  --text-primary:  #c4d0a8;
+  --text-muted:    #6e7d56;
+  --text-label:    #8a9a6e;
+  --accent:        #5a7042;
+  --accent-hover:  #6d8552;
+  --toggle-off:    #2c3022;
+  --toggle-on:     #4e6636;
+  --slider-track:  #222817;
+  --slider-fill:   #4e6636;
+  --danger-border: #5a4038;
+  --danger-bg:     #3d2822;
+  --danger-hover:  #5a3830;
+  --emblem:        #4e6438;
+
   flex: 1;
   min-height: 0;
   width: 100%;
-  position: relative;
+  border-radius: 4px;
   overflow: hidden;
-  background: #020818;
-  color: #c8d6e5;
-  font-family: 'Segoe UI', system-ui, sans-serif;
+  position: relative;
+  background: var(--bg-root);
   display: flex;
   flex-direction: column;
-  border-radius: 8px;
+  font-family: 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
 }
 
-/* ── 背景网格 ── */
-.fui-bg-grid {
+/* CRT scanline texture */
+.tactical-panel::before {
+  content: '';
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 0;
-  background-image:
-    linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
-  background-size: 32px 32px;
-}
-
-/* ── 扫描线 ── */
-.fui-bg-scan {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
+  z-index: 50;
   background: repeating-linear-gradient(
     0deg,
     transparent,
     transparent 2px,
-    rgba(0, 200, 255, 0.008) 2px,
-    rgba(0, 200, 255, 0.008) 4px
+    rgba(0,0,0,0.025) 2px,
+    rgba(0,0,0,0.025) 4px
   );
-  animation: scanMove 8s linear infinite;
-}
-@keyframes scanMove {
-  0% { transform: translateY(0); }
-  100% { transform: translateY(4px); }
+  border-radius: inherit;
 }
 
-/* ── 背景标签 ── */
-.fui-bg-tags {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-}
-.fui-tag {
-  position: absolute;
-  font-size: 8px;
-  font-family: 'Consolas', 'Courier New', monospace;
-  color: rgba(0, 200, 255, 0.12);
-  letter-spacing: 1px;
-  text-transform: uppercase;
-}
-
-/* ── 标题栏 ── */
-:deep(.fui-titlebar) {
-  background: linear-gradient(90deg, #0a1628, #0d2137, #0a1628) !important;
-  border-bottom: 1px solid rgba(0, 220, 255, 0.2) !important;
-  color: #00e5ff !important;
-}
-
-/* ── 内容区 ── */
-.fui-content {
+/* ── Panel Body ── */
+.panel-body {
   flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ═══════════════════════════════════════════
+   2×2 GRID
+   ═══════════════════════════════════════════ */
+.grid-2x2 {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  position: relative;
+  min-height: 0;
+}
+
+/* ── Grid Dividing Lines ── */
+.grid-line {
+  position: absolute;
+  background: var(--grid-color);
+  pointer-events: none;
+  z-index: 5;
+}
+.grid-line-h {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-1px);
+}
+.grid-line-v {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-1px);
+}
+
+/* Hash marks at edges of grid lines */
+.grid-line-h::before,
+.grid-line-h::after {
+  content: '';
+  position: absolute;
+  background: var(--grid-color);
+  top: -4px;
+  width: 10px;
+  height: 10px;
+}
+.grid-line-h::before { left: 0; }
+.grid-line-h::after  { right: 0; }
+
+.grid-line-v::before,
+.grid-line-v::after {
+  content: '';
+  position: absolute;
+  background: var(--grid-color);
+  left: -4px;
+  width: 10px;
+  height: 10px;
+}
+.grid-line-v::before { top: 0; }
+.grid-line-v::after  { bottom: 0; }
+
+/* ── Center Emblem ── */
+.center-emblem {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10;
+  pointer-events: none;
+}
+.emblem-ring {
+  width: 56px;
+  height: 56px;
+  background: var(--bg-surface);
+  border: 2px solid var(--border-thick);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 5px var(--bg-root);
+}
+.emblem-gear {
+  width: 32px;
+  height: 32px;
+  color: var(--emblem);
+  animation: gear-spin 24s linear infinite;
+}
+@keyframes gear-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ═══════════════════════════════════════════
+   QUADRANTS
+   ═══════════════════════════════════════════ */
+.quadrant {
   position: relative;
   z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-.fui-content::-webkit-scrollbar { width: 4px; }
-.fui-content::-webkit-scrollbar-track { background: #020818; }
-.fui-content::-webkit-scrollbar-thumb { background: #0a3050; border-radius: 2px; }
-.fui-content::-webkit-scrollbar-thumb:hover { background: #0d5080; }
-
-/* ── 工具栏 ── */
-.fui-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-bottom: 6px;
-  border-bottom: 1px solid rgba(0, 200, 255, 0.08);
-}
-.fui-btn-home {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 8px;
-  background: rgba(0, 200, 255, 0.06);
-  border: 1px solid rgba(0, 200, 255, 0.15);
-  border-radius: 2px;
-  color: #00c8ff;
-  font-size: 10px;
-  cursor: pointer;
-  transition: all 0.2s;
-  font-family: inherit;
-}
-.fui-btn-home:hover {
-  background: rgba(0, 200, 255, 0.14);
-  border-color: rgba(0, 200, 255, 0.35);
-  box-shadow: 0 0 12px rgba(0, 200, 255, 0.15);
-}
-.fui-btn-home-icon { font-size: 9px; }
-.fui-status {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 9px;
-  color: #506070;
-}
-.fui-status-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #304050;
-  transition: all 0.3s;
-}
-.fui-status-dot.active {
-  background: #00ff88;
-  box-shadow: 0 0 6px #00ff88;
-}
-
-/* ── 四象限网格 ── */
-.fui-quad-grid {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 40px 1fr;
-  grid-template-rows: 1fr 40px 1fr;
-  gap: 0;
-  min-height: 440px;
-  position: relative;
-}
-
-/* ── 中心核心区 ── */
-.fui-holo-core {
-  grid-column: 2;
-  grid-row: 2;
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 5;
-}
-.fui-crosshair-h, .fui-crosshair-v {
-  position: absolute;
-  background: rgba(0, 200, 255, 0.1);
-}
-.fui-crosshair-h {
-  width: 200%;
-  height: 1px;
-  left: -50%;
-}
-.fui-crosshair-v {
-  width: 1px;
-  height: 200%;
-  top: -50%;
-}
-
-/* ── 全息核心（tesseract） ── */
-.fui-tesseract {
-  width: 32px;
-  height: 32px;
-  position: relative;
-  transform-style: preserve-3d;
-  animation: tesseractRotate 8s linear infinite;
-}
-@keyframes tesseractRotate {
-  0% { transform: rotateX(0deg) rotateY(0deg) rotateZ(0deg); }
-  100% { transform: rotateX(360deg) rotateY(360deg) rotateZ(360deg); }
-}
-.fui-tesseract-face {
-  position: absolute;
-  width: 32px;
-  height: 32px;
-  border: 1px solid rgba(0, 220, 255, 0.5);
-  background: rgba(0, 180, 255, 0.06);
-  box-shadow: inset 0 0 8px rgba(0, 200, 255, 0.1), 0 0 10px rgba(0, 200, 255, 0.15);
-}
-.fui-tf-front  { transform: translateZ(8px); }
-.fui-tf-back   { transform: translateZ(-8px); }
-.fui-tf-left   { transform: rotateY(90deg) translateZ(8px); }
-.fui-tf-right  { transform: rotateY(-90deg) translateZ(8px); }
-.fui-tf-top    { transform: rotateX(90deg) translateZ(8px); }
-.fui-tf-bottom { transform: rotateX(-90deg) translateZ(8px); }
-.fui-tesseract-inner {
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  top: 10px;
-  left: 10px;
-  border: 1px solid rgba(0, 255, 200, 0.4);
-  background: rgba(0, 255, 200, 0.04);
-  box-shadow: 0 0 14px rgba(0, 255, 200, 0.2);
-  transform: translateZ(0px);
-}
-
-/* ── 象限面板 ── */
-.fui-quad {
-  background: rgba(4, 16, 36, 0.7);
-  border: 1px solid rgba(0, 180, 255, 0.13);
-  border-radius: 4px;
-  display: flex;
-  flex-direction: column;
+  padding: 18px 16px;
+  min-height: 0;
   overflow: hidden;
-  transition: border-color 0.3s;
-}
-.fui-quad:hover {
-  border-color: rgba(0, 200, 255, 0.25);
-}
-.fui-quad.collapsed .fui-quad-body {
-  display: none;
-}
-.fui-quad.collapsed .fui-quad-arrow {
-  transform: rotate(-90deg);
 }
 
-.fui-quad-tl { grid-column: 1; grid-row: 1; }
-.fui-quad-tr { grid-column: 3; grid-row: 1; }
-.fui-quad-bl { grid-column: 1; grid-row: 3; }
-.fui-quad-br { grid-column: 3; grid-row: 3; }
+/* Inner padding offsets so content doesn't overlap center emblem */
+.q1 { padding-right:  44px; padding-bottom: 44px; }
+.q2 { padding-left:   44px; padding-bottom: 44px; }
+.q3 { padding-right:  44px; padding-top:    44px; }
+.q4 { padding-left:   44px; padding-top:    44px; }
 
-/* ── 象限标题 ── */
-.fui-quad-header {
+/* ── Quadrant Header ── */
+.quadrant-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
-  background: rgba(0, 160, 255, 0.06);
-  border-bottom: 1px solid rgba(0, 180, 255, 0.1);
-  cursor: pointer;
-  user-select: none;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--grid-color);
   flex-shrink: 0;
 }
-.fui-quad-header:hover {
-  background: rgba(0, 180, 255, 0.1);
+.quadrant-diamond {
+  width: 7px;
+  height: 7px;
+  background: var(--accent);
+  transform: rotate(45deg);
+  flex-shrink: 0;
 }
-.fui-quad-icon {
-  font-size: 14px;
-  color: #00d4ff;
-  text-shadow: 0 0 6px rgba(0, 212, 255, 0.4);
-  width: 18px;
-  text-align: center;
-}
-.fui-quad-label {
-  flex: 1;
-  font-size: 11px;
+.quadrant-title {
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 1.5px;
+  letter-spacing: 0.06em;
+  color: var(--text-primary);
+}
+.quadrant-subtitle {
+  font-family: 'Share Tech Mono', 'Courier New', monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  margin-left: auto;
   text-transform: uppercase;
-  color: #80c8e0;
-}
-.fui-quad-arrow {
-  font-size: 8px;
-  color: #4080a0;
-  transition: transform 0.25s;
 }
 
-/* ── 象限内容 ── */
-.fui-quad-body {
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  overflow-y: auto;
+/* ── Quadrant Body ── */
+.quadrant-body {
   flex: 1;
-}
-.fui-quad-body::-webkit-scrollbar { width: 3px; }
-.fui-quad-body::-webkit-scrollbar-thumb { background: #0a3050; border-radius: 2px; }
-
-/* ── 字段 ── */
-.fui-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 12px;
+  overflow-y: auto;
+  min-height: 0;
 }
-.fui-field-row {
-  flex-direction: row;
+.quadrant-body::-webkit-scrollbar {
+  width: 3px;
+}
+.quadrant-body::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+/* ═══════════════════════════════════════════
+   CONTROLS
+   ═══════════════════════════════════════════ */
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.control-label {
+  font-size: 12px;
+  color: var(--text-label);
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+/* ── Horizontal Slider ── */
+.slider-row {
+  display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
 }
-.fui-field-head {
+.slider-label-row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
 }
-.fui-field-label {
-  font-size: 10px;
-  color: #6a90b0;
-  letter-spacing: 0.6px;
-  text-transform: uppercase;
-}
-.fui-field-val {
+.slider-percent,
+.slider-value {
+  font-family: 'Share Tech Mono', 'Courier New', monospace;
   font-size: 12px;
-  font-weight: 600;
-  color: #00e5ff;
-  font-family: 'Consolas', 'Courier New', monospace;
-  text-shadow: 0 0 6px rgba(0, 229, 255, 0.3);
-}
-.fui-field-val small {
-  font-size: 9px;
-  font-weight: 400;
-  color: #5090a0;
-  margin-left: 2px;
+  color: var(--text-muted);
+  min-width: 36px;
+  text-align: right;
 }
 
-/* ── 自定义滑块 ── */
-.fui-slider-track {
-  position: relative;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  background: rgba(0, 20, 40, 0.8);
-  border: 1px solid rgba(0, 160, 255, 0.15);
-  border-radius: 2px;
-  overflow: hidden;
-}
-.fui-slider-fill {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  background: linear-gradient(90deg, rgba(0, 200, 255, 0.12), rgba(0, 240, 200, 0.18));
-  border-right: 1px solid rgba(0, 220, 255, 0.3);
-  pointer-events: none;
-  transition: width 0.1s ease;
-}
-.fui-slider {
+input[type="range"].slider {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 100%;
-  background: transparent;
+  height: 5px;
+  background: var(--slider-track);
+  border: 1px solid var(--border);
   outline: none;
   cursor: pointer;
-  position: relative;
-  z-index: 1;
-  margin: 0;
 }
-.fui-slider::-webkit-slider-thumb {
+input[type="range"].slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 10px;
-  height: 22px;
-  background: linear-gradient(180deg, #00e5ff, #0080aa);
-  border: 1px solid #00e5ff;
-  border-radius: 2px;
+  appearance: none;
+  width: 13px;
+  height: 18px;
+  background: var(--accent);
+  border: 1px solid var(--border-thick);
   cursor: pointer;
-  box-shadow: 0 0 10px rgba(0, 229, 255, 0.5), 0 0 20px rgba(0, 229, 255, 0.2);
-  position: relative;
+  transition: background 0.15s;
 }
-.fui-slider::-webkit-slider-thumb::after {
+input[type="range"].slider::-webkit-slider-thumb:hover {
+  background: var(--accent-hover);
+}
+
+/* ── Stepper ── */
+.stepper-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+.stepper-btn {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-input);
+  border: 2px solid var(--border-thick);
+  color: var(--text-primary);
+  font-size: 16px;
+  font-family: 'Share Tech Mono', monospace;
+  cursor: pointer;
+  transition: all 0.15s;
+  outline: none;
+  padding: 0;
+  line-height: 1;
+}
+.stepper-btn:first-of-type {
+  border-right: none;
+}
+.stepper-btn:last-of-type {
+  border-left: none;
+}
+.stepper-btn:hover:not(:disabled) {
+  background: var(--bg-btn);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+.stepper-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.stepper-value-box {
+  width: 48px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-input);
+  border-top: 2px solid var(--border-thick);
+  border-bottom: 2px solid var(--border-thick);
+}
+.stepper-number {
+  font-family: 'Share Tech Mono', 'Courier New', monospace;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.05em;
+}
+.stepper-unit {
+  margin-left: 10px;
+  font-size: 12px;
+  color: var(--text-label);
+}
+
+/* ── Hint Text ── */
+.hint-text {
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.03em;
+  margin: 0;
+  padding: 2px 0;
+  opacity: 0.7;
+}
+
+/* ── Input Box ── */
+.input-box {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--bg-input);
+  border: 2px solid var(--border-thick);
+  color: var(--text-primary);
+  font-family: 'Share Tech Mono', 'Courier New', monospace;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  outline: none;
+  transition: border-color 0.18s;
+}
+.input-box::placeholder {
+  color: var(--text-muted);
+  opacity: 0.4;
+}
+.input-box:focus {
+  border-color: var(--accent);
+}
+
+/* ── Toggle Switch ── */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.toggle-switch {
+  position: relative;
+  width: 42px;
+  height: 22px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.toggle-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-track {
+  position: absolute;
+  inset: 0;
+  background: var(--toggle-off);
+  border: 1px solid var(--border);
+  transition: background 0.2s;
+}
+.toggle-switch input:checked + .toggle-track {
+  background: var(--toggle-on);
+}
+.toggle-track::after {
   content: '';
   position: absolute;
-  inset: 2px;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 1px,
-    rgba(0, 255, 200, 0.3) 1px,
-    rgba(0, 255, 200, 0.3) 2px
-  );
+  top: 2px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  background: var(--text-label);
+  transition: transform 0.2s;
+}
+.toggle-switch input:checked + .toggle-track::after {
+  transform: translateX(18px);
+  background: var(--text-primary);
 }
 
-/* ── 音频滑块波形 ── */
-.fui-slider-audio {
+/* ── Dropdown / Select ── */
+.select-wrapper {
   position: relative;
 }
-.fui-waveform {
+.select-wrapper::after {
+  content: '';
   position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid var(--accent);
   pointer-events: none;
-  z-index: 0;
-  overflow: hidden;
-  transition: width 0.1s ease;
 }
-.fui-wave-svg {
+select {
   width: 100%;
-  height: 100%;
-  color: rgba(0, 255, 180, 0.5);
+  padding: 7px 32px 7px 10px;
+  background: var(--bg-input);
+  border: 2px solid var(--border-thick);
+  color: var(--text-primary);
+  font-family: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  outline: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: border-color 0.18s;
 }
-.fui-slider-wave::-webkit-slider-thumb {
-  background: linear-gradient(180deg, #00ffaa, #008855);
-  border-color: #00ffaa;
-  box-shadow: 0 0 10px rgba(0, 255, 170, 0.5);
+select:focus {
+  border-color: var(--accent);
+}
+select option {
+  background: var(--bg-surface);
+  color: var(--text-primary);
 }
 
-/* ── 霓虹开关 ── */
-.fui-toggle {
-  position: relative;
-  width: 44px;
-  height: 24px;
-  cursor: pointer;
+/* ── Scale Display ── */
+.scale-display {
+  padding: 7px 10px;
+  background: var(--bg-input);
+  border: 2px solid var(--border-thick);
   display: flex;
   align-items: center;
 }
-.fui-toggle-track {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  border-radius: 12px;
-  background: #0a1a2e;
-  border: 1px solid rgba(0, 160, 255, 0.25);
-  transition: all 0.3s;
-  overflow: hidden;
-}
-.fui-toggle.on .fui-toggle-track {
-  background: rgba(0, 200, 255, 0.1);
-  border-color: #00c8ff;
-  box-shadow: 0 0 12px rgba(0, 200, 255, 0.25), inset 0 0 8px rgba(0, 200, 255, 0.08);
-}
-.fui-toggle-circuit {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  width: 28px;
-  height: 1px;
-  background: rgba(0, 200, 255, 0.3);
-  transform: translateY(-50%);
-  transition: all 0.3s;
-}
-.fui-toggle.on .fui-toggle-circuit {
-  background: #00e5ff;
-  width: 34px;
-  box-shadow: 0 0 6px #00e5ff;
-}
-.fui-toggle-thumb {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #1a3a50, #0a1a2e);
-  border: 1px solid rgba(0, 180, 255, 0.4);
-  transition: all 0.3s;
-  box-shadow: 0 0 4px rgba(0, 180, 255, 0.2);
-}
-.fui-toggle.on .fui-toggle-thumb {
-  left: 22px;
-  background: linear-gradient(135deg, #00e5ff, #006080);
-  border-color: #00e5ff;
-  box-shadow: 0 0 12px rgba(0, 229, 255, 0.5);
+.scale-value {
+  font-family: 'Share Tech Mono', 'Courier New', monospace;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.06em;
 }
 
-/* ── 分段选择器 ── */
-.fui-segment-group {
+/* ═══════════════════════════════════════════
+   BUTTON ROW
+   ═══════════════════════════════════════════ */
+.button-row {
   display: flex;
-  border: 1px solid rgba(0, 180, 255, 0.2);
-  border-radius: 3px;
-  overflow: hidden;
-  background: rgba(0, 20, 40, 0.6);
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 18px;
+  border-top: 2px solid var(--border);
+  background: var(--bg-surface);
+  flex-shrink: 0;
 }
-.fui-segment {
-  flex: 1;
-  padding: 5px 4px;
-  font-size: 10px;
-  font-family: inherit;
-  color: #5080a0;
-  background: transparent;
-  border: none;
-  border-right: 1px solid rgba(0, 180, 255, 0.1);
+
+.btn {
+  font-family: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  padding: 8px 22px;
+  border: 1px solid var(--border-thick);
+  border-radius: 22px;
   cursor: pointer;
-  transition: all 0.2s;
-  letter-spacing: 0.5px;
-  text-align: center;
+  transition: all 0.18s;
+  outline: none;
+  white-space: nowrap;
+  line-height: 1.3;
 }
-.fui-segment:last-child { border-right: none; }
-.fui-segment:hover {
-  background: rgba(0, 200, 255, 0.08);
-  color: #80d0f0;
+.btn:active {
+  transform: scale(0.97);
 }
-.fui-segment.active {
-  background: rgba(0, 210, 255, 0.15);
-  color: #00e5ff;
-  font-weight: 600;
-  box-shadow: inset 0 1px 0 rgba(0, 229, 255, 0.3);
-  text-shadow: 0 0 6px rgba(0, 229, 255, 0.3);
+
+.btn-primary {
+  background: var(--bg-btn);
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+.btn-primary:hover {
+  background: var(--bg-btn-hover);
+  border-color: var(--accent-hover);
+  color: #dde8c8;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-label);
+}
+.btn-ghost:hover {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.btn-cancel {
+  background: transparent;
+  color: #b89888;
+  border-color: var(--danger-border);
+}
+.btn-cancel:hover {
+  background: var(--danger-bg);
+  border-color: var(--danger-hover);
+  color: #d8b8a8;
+}
+
+/* ═══════════════════════════════════════════
+   SAVE BADGE
+   ═══════════════════════════════════════════ */
+.save-badge {
+  position: absolute;
+  bottom: 8px;
+  right: 14px;
+  background: var(--accent);
+  color: #e0ecc8;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  padding: 4px 10px;
+  border-radius: 3px;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.3s, transform 0.3s;
+  pointer-events: none;
+  z-index: 30;
+}
+.save-badge.show {
+  opacity: 1;
+  transform: translateY(0);
 }
 </style>

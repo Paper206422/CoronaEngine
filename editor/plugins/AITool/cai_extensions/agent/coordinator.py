@@ -51,10 +51,20 @@ class AgentCoordinator:
 
     def handle(self, user_text: str, scene_state=None, style_bible=None) -> Dict[str, Any]:
         start = time.time(); scene = scene_state or {}
-        intent = self.intent_agent.analyze(user_text, scene_state=scene, style_bible=style_bible)
+        memory = self._memory_for_scene(scene)
+
+        # 对话历史（渐进式交互：让 LLM 知道之前说了什么、做了什么）
+        conv_hist = ""
+        try:
+            conv_hist = memory.session.get_recent_conversation(5)
+        except Exception:
+            pass
+
+        intent = self.intent_agent.analyze(user_text, scene_state=scene, style_bible=style_bible,
+                                           conversation_history=conv_hist)
 
         # ── 记忆增强：回忆相似历史操作，注入推断 ──
-        memory_hint = self._recall_similar(intent)
+        memory_hint = self._recall_similar(intent, scene_state=scene)
 
         style_check = self.style_agent.precheck(intent, style_bible)
         spatial = self.spatial_agent.solve(intent, scene_state=scene)
@@ -80,15 +90,52 @@ class AgentCoordinator:
                 "disambiguation": disambiguation, "memory_hint": memory_hint,
                 "elapsed_seconds": round(time.time() - start, 2)}
 
-    def _recall_similar(self, intent: Dict[str, Any]) -> str:
+    def _memory_for_scene(self, scene_state: Dict[str, Any] | None = None):
+        scene = scene_state or {}
+        metadata = scene.get("metadata", {}) if isinstance(scene, dict) else {}
+        scope = {}
+        for key in ("lanchat_memory_scope", "memory_scope"):
+            value = scene.get(key) if isinstance(scene, dict) else None
+            if not isinstance(value, dict):
+                value = metadata.get(key) if isinstance(metadata, dict) else None
+            if isinstance(value, dict):
+                scope.update(value)
+
+        def _scope_value(*keys: str) -> str:
+            for source in (metadata, scene, scope):
+                if not isinstance(source, dict):
+                    continue
+                for key in keys:
+                    value = source.get(key)
+                    if value not in (None, ""):
+                        return str(value).strip()
+            return ""
+
+        room_id = _scope_value("room_id", "lanchat_room_id")
+        plan_id = _scope_value("plan_id", "seed_plan_id")
+        batch_id = _scope_value("batch_id")
+        agent_id = _scope_value("agent_id", "agent_name")
+        scene_id = _scope_value("scene_id", "scene_name") or "default"
+        if room_id or plan_id or batch_id or agent_id:
+            from .memory import get_scoped_memory_manager
+            return get_scoped_memory_manager(
+                scene_id=scene_id,
+                room_id=room_id,
+                plan_id=plan_id,
+                batch_id=batch_id,
+                agent_id=agent_id,
+            )
+        from .memory import get_memory_manager
+        return get_memory_manager(scene_id)
+
+    def _recall_similar(self, intent: Dict[str, Any], scene_state: Dict[str, Any] | None = None) -> str:
         """回忆相似历史操作，返回可附加到回复的记忆提示（无则空串）。"""
         try:
-            from .memory import get_memory_manager
             action = intent.get("action", "")
             target = intent.get("target", "")
             if action != "add" or not target:
                 return ""
-            similar = get_memory_manager().find_similar_operations(action, target)
+            similar = self._memory_for_scene(scene_state).find_similar_operations(action, target)
             if len(similar) >= 2:
                 logger.info("[Coordinator] 记忆增强: '%s' 近期已添加 %d 次", target, len(similar))
                 return f"💭 你已连续添加了 {len(similar)} 个「{target}」类物体，需要我按相同方式继续布置吗？"
@@ -207,14 +254,35 @@ class AgentCoordinator:
 
     def _acquire_model(self, target: str, intent: Dict[str, Any],
                        scene_state: Dict[str, Any] = None) -> str:
-        """获取 3D 模型文件路径（搜索 → 生成 → 下载）。
+        """获取 3D 模型文件路径（搜索 → 生成 → 下载，或直接文件路径）。
 
-        优先使用聊天中的参考图 URL (fileid://)，
-        其次使用 intent 中可能携带的 image_url。
+        若 intent 中检测到显式的模型文件路径（.obj/.glb/.fbx等），
+        直接返回该路径，跳过搜索和 3D 生成。
 
         Returns:
             本地 .glb/.fbx 路径，或空字符串表示获取失败。
         """
+        import os as _os, re as _re
+
+        # 检测显式文件路径（用户指定了具体模型文件）
+        direct_path = (
+            (scene_state or {}).get("intermediate", {}).get("direct_model_path", "")
+            or intent.get("parameters", {}).get("model_path", "")
+        )
+        if not direct_path and target:
+            # target 本身可能就是路径（如 "F:\path\to\model.obj"）
+            m = _re.search(r"((?:[A-Za-z]:|/)[^\s]{2,}\.(?:obj|glb|gltf|fbx|dae|stl))",
+                           target, _re.IGNORECASE)
+            if m:
+                direct_path = m.group(1)
+        if direct_path:
+            direct_path = direct_path.replace("/", _os.sep).replace("\\", _os.sep)
+            if _os.path.isfile(direct_path):
+                logger.info("[Coordinator][3D] _acquire_model: 使用指定文件路径 %s", direct_path)
+                return direct_path
+            else:
+                logger.warning("[Coordinator][3D] 文件路径不存在: %s", direct_path)
+
         # 收集所有可能的参考图来源
         scene = scene_state or {}
         image_url = (
@@ -282,8 +350,7 @@ class AgentCoordinator:
 
     def _record(self, intent, spatial, result, scene_state=None):
         try:
-            from .memory import get_memory_manager
-            m = get_memory_manager()  # 进程级单例，记忆持久
+            m = self._memory_for_scene(scene_state)  # scoped when room/plan context exists
             m.record_operation({"action":intent.get("action"),"target":intent.get("target"),"position":spatial.get("position"),"status":result.get("status"),"confidence":intent.get("confidence")})
         except Exception as e:
             logger.warning("[Coordinator] _record failed: %s", e)

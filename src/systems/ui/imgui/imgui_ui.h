@@ -62,7 +62,11 @@ class UiFrameRunner {
    private:
     int url_input_active_tab_ = -1;
     bool system_cursor_hidden_ = false;
+    bool system_cursor_custom_ = false;
+    bool viewport_system_cursor_load_attempted_ = false;
+    SDL_Cursor* viewport_system_cursor_ = nullptr;
 
+    SDL_Cursor* ensure_viewport_system_cursor();
     void apply_system_cursor_visibility(SDL_Window* main_window, int active_tab_id);
 
     UiLayoutManager layout_manager_{};

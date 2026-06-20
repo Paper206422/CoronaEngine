@@ -43,6 +43,7 @@ function getPanelIdFromRoute() {
     '/ProjectSettings': 'ProjectSettings',
     '/ScratchTool': 'ScratchTool',
     '/AITalkBar': 'AITalkBar',
+    '/Network': 'Network',
     '/SetUp': 'EditorSettings',
   };
   return map[path] || null;

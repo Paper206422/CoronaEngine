@@ -181,6 +181,17 @@ def _build_import_model_tool(scene_manager) -> StructuredTool:
             if scale:
                 actor.set_scale(scale)
 
+            # 6.5 关闭物理模拟：AI 摆放的物体落点由布局算法决定，开物理会让它们互相
+            # 碰撞、被求解器永久推挤——落点不完美→穿插→求解器永不收敛→主线程纯 CPU
+            # 死循环→永久假死无报错（杀进程重进会看到东歪西斜的场景）。与基础设施
+            # actor（terrain/shell/floor/fence，scene_composer 里已关）保持一致。
+            mech = getattr(actor, "_mechanics", None)
+            if mech is not None:
+                try:
+                    mech.set_physics_enabled(False)
+                except Exception:
+                    pass
+
             # 7. 添加到场景
             scene.add_actor(actor)
 

@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 from Quasar.ai_workflow.streaming import stream_output_node
 from ..model_retrieval_workflow.helpers import resolve_model_file
-from ..scene_composition_workflow_v2.asset_metadata import build_asset_metadata_batch
+from ..shared.asset_metadata import build_asset_metadata_batch
 
 from .formatters import NO_OUTPUT
 

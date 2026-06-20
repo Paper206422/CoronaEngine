@@ -14,6 +14,11 @@ from importlib import import_module
 from pathlib import Path
 from typing import Iterable
 
+try:
+    from plugins.AITool.services.workflow_command_policy import should_register_workflow_command
+except Exception:  # noqa: BLE001
+    from services.workflow_command_policy import should_register_workflow_command  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 
@@ -115,6 +120,7 @@ class CabbageWorkflowPlugin:
         command_registry = runtime.get_registry("workflow_command")
         registered_flows: list[int] = []
         registered_commands: list[str] = []
+        hidden_commands: list[str] = []
 
         for module_name in self.flow_modules:
             try:
@@ -144,6 +150,9 @@ class CabbageWorkflowPlugin:
                 for command, function_id in commands.items():
                     if not isinstance(command, str) or not isinstance(function_id, int):
                         continue
+                    if not should_register_workflow_command(command):
+                        hidden_commands.append(command)
+                        continue
                     try:
                         command_registry.register(command, function_id, overwrite=True)
                         registered_commands.append(command)
@@ -158,9 +167,56 @@ class CabbageWorkflowPlugin:
         runtime.metadata.setdefault("cabbage_adapter", {})[self.name] = {
             "flows": registered_flows,
             "commands": registered_commands,
+            "hidden_commands": hidden_commands,
         }
-        logger.info("[cai_extensions] commands registered: %s", registered_commands)
-        return {"name": self.name, "flows": registered_flows, "commands": registered_commands}
+        logger.info(
+            "[cai_extensions] commands registered: %s hidden: %s",
+            registered_commands,
+            hidden_commands,
+        )
+        return {
+            "name": self.name,
+            "flows": registered_flows,
+            "commands": registered_commands,
+            "hidden_commands": hidden_commands,
+        }
+
+
+class CabbageWorkflowSyncPlugin:
+    name = "cabbage.workflow_sync"
+    enabled = True
+
+    def __init__(self, context: CabbageContext):
+        self.context = context
+
+    def register(self, runtime) -> dict:
+        # 网络同步隔离能力依赖 Quasar 新增的 register_workflow_execution_scope_factory。
+        # 当部署的 Quasar 版本较旧（缺该符号）时，仅降级关闭本能力，绝不能让整个 AITool
+        # 插件 import 失败——否则 main.py:44 的 _install_cai_extensions 会抛异常，AITool 类
+        # 永远定义不出来，LANChat start_room 报 "cannot import name 'AITool'"，AI 助手与
+        # 联机 demo 全部不可用。
+        try:
+            from Quasar.ai_workflow import register_workflow_execution_scope_factory
+            from CoronaCore.core import network_sync_policy
+        except Exception as exc:
+            logger.warning(
+                "[cai_extensions] workflow sync scope unavailable (Quasar 版本缺 "
+                "register_workflow_execution_scope_factory)，已降级跳过: %s",
+                exc,
+            )
+            runtime.metadata.setdefault("cabbage_adapter", {})[self.name] = False
+            return {"name": self.name, "enabled": False}
+
+        def create_scope(workflow_context):
+            return network_sync_policy.deferred_actor_broadcasts(
+                pause_engine_sync=True,
+                transaction_key=workflow_context.session_id,
+            )
+
+        register_workflow_execution_scope_factory(create_scope)
+        runtime.metadata.setdefault("cabbage_adapter", {})[self.name] = True
+        logger.debug("[cai_extensions] workflow sync scope installed")
+        return {"name": self.name}
 
 
 class CabbageEngineModulesPlugin:
@@ -210,6 +266,7 @@ def create_plugins(context: CabbageContext | None = None):
         CabbageAppConfigPlugin(context),
         CabbageEngineToolsPlugin(context),
         CabbageWorkflowPlugin(context),
+        CabbageWorkflowSyncPlugin(context),
         CabbageEngineModulesPlugin(context),
     ]
 

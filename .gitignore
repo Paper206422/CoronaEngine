@@ -19,7 +19,6 @@ Makefile
 .idea/
 .vs/
 .claude/
-.codegraph/
 codex.md
 AGENTS.md
 implementation.md
@@ -38,16 +37,24 @@ __pycache__/
 
 # Log files
 *.log
-.claude/
 .codex/
+
+# CodeGraph (本地代码索引工具产物 + 含机器绝对路径，仅本地使用)
 .codegraph/
+.mcp.json
 
 # Thoth local dashboard/runtime cache
 /research.db
 /research.db-*
+/.tmp/
+/temp/
 /.pytest_cache/
 /.pre-commit-config.yaml
 /scripts/
 /tests/test_structure.py
 /tools/dashboard/
 *.py[cod]
+
+# 密钥文件 —— 严禁提交
+**/ai_setting.py
+**/ai_setting.*

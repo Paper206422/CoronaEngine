@@ -135,6 +135,11 @@ class Camera:
     def get_surface(self) -> int:
         return self.engine_obj.get_surface()
 
+    def set_offscreen_capture_mode(self, enabled: bool):
+        self.engine_obj.set_offscreen_capture_mode(bool(enabled))
+        if enabled:
+            self.view_open = False
+
     def save_screenshot(self, path: str):
         self.engine_obj.save_screenshot(path)
 

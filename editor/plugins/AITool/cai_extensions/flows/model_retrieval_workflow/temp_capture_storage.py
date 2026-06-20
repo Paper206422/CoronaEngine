@@ -121,7 +121,16 @@ def save_to_temp_then_move(
     except OSError:
         pass
 
-    camera.save_screenshot_sync(temp_path_str)
+    try:
+        from plugins.AITool.cai_extensions.agent.model_reviewer import (
+            _save_camera_screenshot_with_timeout,
+        )
+    except ModuleNotFoundError:
+        from cai_extensions.agent.model_reviewer import (
+            _save_camera_screenshot_with_timeout,
+        )
+
+    _save_camera_screenshot_with_timeout(camera, temp_path_str, timeout=5.0)
     if not _is_written_image(temp_path_str):
         logger.error(
             "[Workflow][capture] 临时截图写入失败: actor=%s, view=%s, path=%s",

@@ -34,7 +34,13 @@ def test_event_bus():
 
 def test_memory():
     logger.info("--- Test: Memory ---")
-    from cai_extensions.agent.memory import MemoryManager, SceneMemory, SessionMemory
+    from cai_extensions.agent.memory import (
+        MemoryManager,
+        SceneMemory,
+        SessionMemory,
+        get_memory_manager,
+        reset_memory_manager,
+    )
     sess = SessionMemory(max_operations=5)
     sess.add_conversation("加个台灯", "已放置"); sess.add_operation({"action": "add", "target": "台灯"})
     _assert(len(sess.conversation_history) == 1 and len(sess.recent_operations) == 1, "session store")
@@ -44,6 +50,17 @@ def test_memory():
     ctx = mgr.get_context_for_prompt(); _assert("m" in ctx["style_bible_text"], "context")
     scene.save("/tmp/_test_agent_mem.json"); loaded = SceneMemory.load("/tmp/_test_agent_mem.json")
     _assert(loaded.style_bible["theme"] == "cyberpunk", "roundtrip")
+    reset_memory_manager()
+    room_a = get_memory_manager("room-a")
+    room_a.record_conversation("A 想要暗黑集市", "已记录")
+    room_b = get_memory_manager("room-b")
+    _assert(room_a is get_memory_manager("room-a"), "same scene memory reused")
+    _assert(room_a is not room_b, "different scenes isolated")
+    _assert("暗黑集市" not in room_b.get_context_for_prompt()["conversation_history"], "no cross-scene conversation leak")
+    reset_memory_manager("room-a")
+    _assert(get_memory_manager("room-a") is not room_a, "scene reset replaces only target")
+    _assert(get_memory_manager("room-b") is room_b, "scene reset keeps other scenes")
+    reset_memory_manager()
     logger.info("  Memory: all passed")
 
 def test_intent_agent():
@@ -156,6 +173,7 @@ def test_adapter():
         MasterAgent, SummaryAgent, PersonaRouter, Specialist,
         create_master_agent, create_summary_agent,
         is_scene_command, is_builtin_command, SPECIALISTS, _GENERALIST,
+        _extract_cai_text_chunk,
     )
     _assert(is_scene_command("加个台灯"), "detect add"); _assert(is_scene_command("把沙发删掉"), "detect delete")
     _assert(is_scene_command("把台灯往右移"), "detect move"); _assert(not is_scene_command("你好"), "skip hello")
@@ -169,6 +187,11 @@ def test_adapter():
     spec = SPECIALISTS["cyberpunk"]
     prompt = spec.inject_prompt("test"); _assert("赛博朋克" in prompt and "neon glass" in prompt, "inject")
     _assert(len(_GENERALIST.capabilities) >= 5, "generalist caps")
+    cai_chunk = (
+        '{"session_id":"s","error_code":0,"status_info":"ok",'
+        '"llm_content":[{"part":[{"content_type":"text","content_text":"真实回复"}]}]}'
+    )
+    _assert(_extract_cai_text_chunk(cai_chunk) == "真实回复", "extract CAI envelope text")
     m = MasterAgent(fallback_chat=lambda s, m: "fake")
     _assert("场景设计大师" in m._handle_help(""), "help gen")
     _assert("灯光师" in m._handle_help("灯光专家"), "help spec")

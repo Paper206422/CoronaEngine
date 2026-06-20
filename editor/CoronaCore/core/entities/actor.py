@@ -1,4 +1,5 @@
 import configparser
+import json
 import logging
 import shutil
 import time
@@ -13,6 +14,7 @@ from ..components.mechanics import Mechanics
 from ..components.acoustics import Acoustics
 from ..components.optics import Optics
 from ..corona_editor import CoronaEditor
+from .. import network_sync_policy
 from ...utils.proejct_utils import auto_save
 
 CoronaEngine = CoronaEditor.CoronaEngine
@@ -133,6 +135,9 @@ class Actor:
         self.file_data.read(data_path, encoding='utf-8')
 
         # 读取模型路径
+        saved_name = self.file_data['base'].get('name', '')
+        if saved_name:
+            self.name = saved_name
         self.model_path = self.file_data['base']['path']
         self.actor_guid = self.file_data['base'].get('actor_guid', '')
         self._follow_camera = self.file_data['base'].getboolean('follow_camera', fallback=False)
@@ -147,6 +152,9 @@ class Actor:
 
     def _load_from_actor_data(self, actor_data: dict, data_path: str):
         """从actor_data字典加载actor数据"""
+        saved_name = actor_data.get('name', '')
+        if saved_name:
+            self.name = str(saved_name)
         file_follow_camera = False
         if self.actor_type == "actor":
             self.file_data.read(data_path, encoding='utf-8')
@@ -246,29 +254,137 @@ class Actor:
         except Exception:
             pass
 
-    def _create_and_add_profile(self):
-        """创建组件、配置集合并添加到actor"""
+        # 恢复持久化的物理开关（与 to_dict() 序列化的 mechanics.physics_enabled 对称）。
+        # 向后兼容：字段缺失时保持引擎默认（开启），只有显式存了的 actor 才生效——
+        # 否则 AI 摆放/已禁用物理的物体冷重载后又默认开启，进 play 模式被求解器推得
+        # 东歪西斜（甚至互相穿插导致求解器死循环）。零回归：老场景无此字段，行为不变。
+        mech_data = actor_data.get("mechanics")
+        if isinstance(mech_data, dict) and "physics_enabled" in mech_data:
+            if hasattr(self, "_mechanics") and self._mechanics is not None:
+                try:
+                    self._mechanics.set_physics_enabled(bool(mech_data["physics_enabled"]))
+                except Exception:
+                    pass
+
+    def _create_profile_for_geometry(self, geometry):
+        """Create an engine profile for a geometry and return its Python wrappers."""
         ActorProfile = getattr(CoronaEngine, 'ActorProfile', None)
         if ActorProfile is None:
             raise RuntimeError("CoronaEngine 未提供 ActorProfile 类型")
 
         # 创建各个组件
-        self._optics = Optics(self._geometry)
-        self._mechanics = Mechanics(self._geometry)
-        self._acoustics = Acoustics(self._geometry)
+        optics = Optics(geometry)
+        mechanics = Mechanics(geometry)
+        acoustics = Acoustics(geometry)
 
         # 创建并配置profile
         prof = ActorProfile()
-        prof.geometry = self._geometry.engine_obj
-        prof.optics = self._optics.engine_obj
-        prof.mechanics = self._mechanics.engine_obj
-        prof.acoustics = self._acoustics.engine_obj
+        prof.geometry = geometry.engine_obj
+        prof.optics = optics.engine_obj
+        prof.mechanics = mechanics.engine_obj
+        prof.acoustics = acoustics.engine_obj
 
         # 添加到actor并激活
         stored = self.engine_obj.add_profile(prof)
         if stored is None:
             raise RuntimeError("无法向 Actor 添加默认 Profile（几何/组件不一致）")
         self.engine_obj.set_active_profile(stored)
+        return stored, optics, mechanics, acoustics
+
+    def _create_and_add_profile(self):
+        """创建组件、配置集合并添加到actor"""
+        stored, optics, mechanics, acoustics = self._create_profile_for_geometry(self._geometry)
+        self._profile = stored
+        self._optics = optics
+        self._mechanics = mechanics
+        self._acoustics = acoustics
+
+    def _resolve_model_path(self, route: str) -> str:
+        if not route:
+            return ""
+        if os.path.isabs(route):
+            return route
+        return os.path.join(_active_project_path() or '', route)
+
+    @staticmethod
+    def _safe_call(obj, method_name, default=None):
+        if obj is None or not hasattr(obj, method_name):
+            return default
+        try:
+            return getattr(obj, method_name)()
+        except Exception as exc:
+            logging.warning("Failed to read %s from %s: %s", method_name, obj, exc)
+            return default
+
+    @staticmethod
+    def _safe_set(obj, method_name, value):
+        if obj is None or value is None or not hasattr(obj, method_name):
+            return
+        try:
+            getattr(obj, method_name)(value)
+        except Exception as exc:
+            logging.warning("Failed to restore %s on %s: %s", method_name, obj, exc)
+
+    @staticmethod
+    def _safe_set_many(obj, method_name, values):
+        if obj is None or values is None or not hasattr(obj, method_name):
+            return
+        try:
+            getattr(obj, method_name)(*values)
+        except Exception as exc:
+            logging.warning("Failed to restore %s on %s: %s", method_name, obj, exc)
+
+    def _capture_model_state(self) -> Dict[str, Any]:
+        return {
+            'position': self._safe_call(getattr(self, '_geometry', None), 'get_position'),
+            'rotation': self._safe_call(getattr(self, '_geometry', None), 'get_rotation'),
+            'scale': self._safe_call(getattr(self, '_geometry', None), 'get_scale'),
+            'optics': (self._safe_call(getattr(self, '_optics', None), 'to_dict', {}) or {}),
+            'mechanics': (self._safe_call(getattr(self, '_mechanics', None), 'to_dict', {}) or {}),
+            'collision_type': getattr(self, '_collision_type', 'box'),
+        }
+
+    def _restore_model_state(self, state: Dict[str, Any]):
+        if state.get('position') is not None:
+            self._geometry.set_position(state['position'])
+        if state.get('rotation') is not None:
+            self._geometry.set_rotation(state['rotation'])
+        if state.get('scale') is not None:
+            self._geometry.set_scale(state['scale'])
+
+        optics_state = state.get('optics') or {}
+        optics_setters = {
+            'metallic': 'set_metallic',
+            'roughness': 'set_roughness',
+            'subsurface': 'set_subsurface',
+            'specular': 'set_specular',
+            'specular_tint': 'set_specular_tint',
+            'anisotropic': 'set_anisotropic',
+            'sheen': 'set_sheen',
+            'sheen_tint': 'set_sheen_tint',
+            'clearcoat': 'set_clearcoat',
+            'clearcoat_gloss': 'set_clearcoat_gloss',
+            'visible': 'set_visible',
+            'ambient': 'set_ambient',
+            'diffuse': 'set_diffuse',
+            'specular_color': 'set_specular_color',
+            'shininess': 'set_shininess',
+        }
+        for key, setter in optics_setters.items():
+            self._safe_set(getattr(self, '_optics', None), setter, optics_state.get(key))
+
+        mechanics_state = state.get('mechanics') or {}
+        self._safe_set(getattr(self, '_mechanics', None), 'set_mass', mechanics_state.get('mass'))
+        self._safe_set(getattr(self, '_mechanics', None), 'set_restitution', mechanics_state.get('restitution'))
+        self._safe_set(getattr(self, '_mechanics', None), 'set_damping', mechanics_state.get('damping'))
+        self._safe_set(getattr(self, '_mechanics', None), 'set_physics_enabled',
+                       mechanics_state.get('physics_enabled'))
+        self._safe_set_many(getattr(self, '_mechanics', None), 'set_linear_lock',
+                            mechanics_state.get('linear_lock'))
+        self._safe_set_many(getattr(self, '_mechanics', None), 'set_angular_lock',
+                            mechanics_state.get('angular_lock'))
+
+        self.set_collision_enabled(state.get('collision_type', 'box'))
 
     def _apply_mechanics_data(self, mechanics_data: dict):
         if not isinstance(mechanics_data, dict):
@@ -423,12 +539,41 @@ class Actor:
     def _broadcast_actor_created(self):
         """通过 NetworkSystem 广播 Actor 创建事件到已连接的 peer。"""
         try:
-            self._ensure_network_model_path_in_project()
-            # Use the same format as to_dict() for the actor data
-            actor_data = self.to_dict()
-            CoronaEditor.js_call_func("actor-sync-broadcast", [actor_data])
+            network_sync_policy.publish_actor_created(
+                self,
+                prepare=lambda actor: actor._ensure_network_model_path_in_project(),
+                emit=lambda actor_data: CoronaEditor.js_call_func(
+                    "actor-sync-broadcast",
+                    [actor_data],
+                ),
+            )
         except Exception as exc:
             logging.warning("Actor network create broadcast failed for %s: %s",
+                            self.name or self.route, exc)
+
+    def _broadcast_actor_transform_updated(self):
+        """Broadcast a demo-grade transform delta for an already-synced Actor."""
+        try:
+            if self.network_remote or self._suppress_network_broadcast:
+                return
+            if not network_sync_policy.actor_is_syncable(self):
+                return
+            payload = {
+                "actor_guid": self.actor_guid,
+                "scene": self.parent.route if self.parent else "",
+                "name": self.name,
+                "actor_type": self.actor_type,
+                "geometry": {
+                    "position": list(self.get_position()),
+                    "rotation": list(self.get_rotation()),
+                    "scale": list(self.get_scale()),
+                },
+                "source_user_id": "",
+                "correlation_id": "",
+            }
+            CoronaEditor.js_call_func("actor-transform-sync-broadcast", [payload])
+        except Exception as exc:
+            logging.warning("Actor network transform broadcast failed for %s: %s",
                             self.name or self.route, exc)
 
     def _disable_local_physics_for_remote_actor(self):
@@ -453,13 +598,53 @@ class Actor:
         route_path = Path(self.route)
         source_path = route_path if route_path.is_absolute() else (project_root / route_path)
         source_path = source_path.resolve()
+        source_path = self._prefer_runtime_model_path(source_path)
 
         try:
             source_path.relative_to(project_root)
             rel_path = source_path.relative_to(project_root).as_posix()
+            local_model_subdir = self._local_model_library_resource_subdir(rel_path)
+            if local_model_subdir:
+                if not source_path.is_file():
+                    logging.warning("Actor local model library path is missing: %s",
+                                    source_path)
+                    return
+                copied_paths = self._copy_model_asset_bundle_to_project(
+                    source_path,
+                    project_root,
+                    target_subdir=local_model_subdir,
+                )
+                if not copied_paths:
+                    return
+                self.route = copied_paths[0]
+                self.model_path = copied_paths[0]
+                self.final_model_path = str(project_root / copied_paths[0])
+                self.model_dependencies = copied_paths[1:]
+                return
+            stable_model_subdir = self._project_models_resource_subdir(rel_path)
+            if stable_model_subdir:
+                if not source_path.is_file():
+                    logging.warning("Actor project models path is missing: %s",
+                                    source_path)
+                    return
+                copied_paths = self._copy_model_asset_bundle_to_project(
+                    source_path,
+                    project_root,
+                    target_subdir=stable_model_subdir,
+                )
+                if not copied_paths:
+                    return
+                self.route = copied_paths[0]
+                self.model_path = copied_paths[0]
+                self.final_model_path = str(project_root / copied_paths[0])
+                self.model_dependencies = copied_paths[1:]
+                return
             self.route = rel_path
             self.model_path = rel_path
             self.final_model_path = str(source_path)
+            if source_path.is_file():
+                self.model_dependencies = self._project_relative_dependency_paths(
+                    source_path, project_root)
             return
         except ValueError:
             pass
@@ -478,17 +663,51 @@ class Actor:
         self.final_model_path = str(project_root / copied_paths[0])
         self.model_dependencies = copied_paths[1:]
 
+    @staticmethod
+    def _prefer_runtime_model_path(source_path: Path) -> Path:
+        if not source_path.is_file() or source_path.parent.name == "runtime":
+            return source_path
+        runtime_candidate = source_path.parent / "runtime" / source_path.name
+        if runtime_candidate.is_file():
+            return runtime_candidate.resolve()
+        if source_path.parent.name == "original":
+            sibling_candidate = source_path.parent.parent / "runtime" / source_path.name
+            if sibling_candidate.is_file():
+                return sibling_candidate.resolve()
+        return source_path
+
+    @staticmethod
+    def _local_model_library_resource_subdir(rel_path: str) -> Optional[str]:
+        normalized = rel_path.replace("\\", "/")
+        prefix = "assets/local_model_library/"
+        if not normalized.startswith(prefix):
+            return None
+        local_rel = normalized[len("assets/"):]
+        return Path(local_rel).parent.as_posix()
+
+    @staticmethod
+    def _project_models_resource_subdir(rel_path: str) -> Optional[str]:
+        normalized = rel_path.replace("\\", "/")
+        prefix = "models/"
+        if not normalized.startswith(prefix):
+            return None
+        return Path(normalized).parent.as_posix()
+
     def _copy_model_asset_bundle_to_project(self, source_path: Path,
-                                            project_root: Path) -> List[str]:
+                                            project_root: Path,
+                                            target_subdir: Optional[str] = None) -> List[str]:
         resource_dir = project_root / "Resource"
         resource_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = resource_dir
+        if target_subdir:
+            target_dir = resource_dir / target_subdir
 
         copied = []
 
         def copy_relative(src: Path, relative_to_source_dir: Path = None):
             rel_under_source = (src.name if relative_to_source_dir is None
                                 else src.relative_to(relative_to_source_dir).as_posix())
-            dst = resource_dir / rel_under_source
+            dst = target_dir / rel_under_source
             dst.parent.mkdir(parents=True, exist_ok=True)
             if src.resolve() != dst.resolve():
                 shutil.copy2(src, dst)
@@ -499,24 +718,69 @@ class Actor:
 
         copied_model_path = copy_relative(source_path)
 
-        if source_path.suffix.lower() == ".obj":
+        suffix = source_path.suffix.lower()
+        if suffix == ".obj":
             source_dir = source_path.parent
             for mtl_path in self._read_obj_material_libraries(source_path):
                 mtl_source = (source_dir / mtl_path).resolve()
                 if not mtl_source.is_file():
                     logging.warning("OBJ material library missing: %s", mtl_source)
                     continue
-                copied_mtl_path = copy_relative(mtl_source)
+                copy_relative(mtl_source, source_dir)
                 for texture_path in self._read_mtl_texture_paths(mtl_source):
                     texture_source = (mtl_source.parent / texture_path).resolve()
                     if not texture_source.is_file():
                         logging.warning("MTL texture missing: %s", texture_source)
                         continue
                     copy_relative(texture_source, source_dir)
+        elif suffix == ".gltf":
+            for dep_path in self._collect_gltf_dependencies(source_path):
+                copy_relative(dep_path, source_path.parent)
+        elif suffix in {".fbx", ".dae", ".usd"}:
+            for dep_path in self._collect_common_material_dependencies(source_path):
+                copy_relative(dep_path, source_path.parent)
 
         if copied and copied[0] != copied_model_path.relative_to(project_root).as_posix():
             copied.insert(0, copied_model_path.relative_to(project_root).as_posix())
         return copied
+
+    def _project_relative_dependency_paths(self, source_path: Path,
+                                           project_root: Path) -> List[str]:
+        dependencies = []
+        for dep_path in self._collect_model_dependency_sources(source_path):
+            try:
+                rel_path = dep_path.resolve().relative_to(project_root).as_posix()
+            except ValueError:
+                logging.warning("Skipping dependency outside project: %s", dep_path)
+                continue
+            if rel_path not in dependencies:
+                dependencies.append(rel_path)
+        return dependencies
+
+    def _collect_model_dependency_sources(self, source_path: Path) -> List[Path]:
+        suffix = source_path.suffix.lower()
+        dependencies = []
+        if suffix == ".obj":
+            source_dir = source_path.parent
+            for mtl_path in self._read_obj_material_libraries(source_path):
+                mtl_source = (source_dir / mtl_path).resolve()
+                if not mtl_source.is_file():
+                    logging.warning("OBJ material library missing: %s", mtl_source)
+                    continue
+                if mtl_source not in dependencies:
+                    dependencies.append(mtl_source)
+                for texture_path in self._read_mtl_texture_paths(mtl_source):
+                    texture_source = (mtl_source.parent / texture_path).resolve()
+                    if not texture_source.is_file():
+                        logging.warning("MTL texture missing: %s", texture_source)
+                        continue
+                    if texture_source not in dependencies:
+                        dependencies.append(texture_source)
+        elif suffix == ".gltf":
+            dependencies.extend(self._collect_gltf_dependencies(source_path))
+        elif suffix in {".fbx", ".dae", ".usd"}:
+            dependencies.extend(self._collect_common_material_dependencies(source_path))
+        return dependencies
 
     @staticmethod
     def _read_obj_material_libraries(obj_path: Path) -> List[Path]:
@@ -555,6 +819,52 @@ class Actor:
         except Exception as exc:
             logging.warning("Failed to parse MTL dependencies for %s: %s", mtl_path, exc)
         return textures
+
+    @staticmethod
+    def _collect_gltf_dependencies(gltf_path: Path) -> List[Path]:
+        dependencies = []
+        try:
+            data = json.loads(gltf_path.read_text(encoding="utf-8"))
+            base_dir = gltf_path.parent
+            uris = []
+            for buffer in data.get("buffers", []) or []:
+                uri = buffer.get("uri") if isinstance(buffer, dict) else None
+                if uri:
+                    uris.append(uri)
+            for image in data.get("images", []) or []:
+                uri = image.get("uri") if isinstance(image, dict) else None
+                if uri:
+                    uris.append(uri)
+            for uri in uris:
+                normalized = str(uri).strip()
+                if not normalized or normalized.startswith("data:"):
+                    continue
+                dep_path = (base_dir / normalized).resolve()
+                if dep_path.is_file() and dep_path not in dependencies:
+                    dependencies.append(dep_path)
+                elif not dep_path.is_file():
+                    logging.warning("GLTF dependency missing: %s", dep_path)
+        except Exception as exc:
+            logging.warning("Failed to parse GLTF dependencies for %s: %s", gltf_path, exc)
+        return dependencies
+
+    @staticmethod
+    def _collect_common_material_dependencies(model_path: Path) -> List[Path]:
+        material_suffixes = {
+            ".mtl", ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".exr", ".hdr",
+        }
+        dependencies = []
+        try:
+            for candidate in sorted(model_path.parent.iterdir(),
+                                    key=lambda path: path.name.lower()):
+                if candidate == model_path or not candidate.is_file():
+                    continue
+                if candidate.suffix.lower() in material_suffixes:
+                    dependencies.append(candidate.resolve())
+        except Exception as exc:
+            logging.warning("Failed to collect material dependencies for %s: %s",
+                            model_path, exc)
+        return dependencies
 
     def save_data(self):
         if self.parent:
@@ -600,15 +910,40 @@ class Actor:
     @auto_save
     def set_model(self, route):
         self.model_path = route
-        if not hasattr(self, '_geometry'):
-            old_collision_type = getattr(self, '_collision_type', 'box')
-            self._geometry = Geometry(self.model_path)
-            self._create_and_add_profile()
-            # 恢复碰撞状态，避免切换模型后开关重置
-            self.set_collision_enabled(old_collision_type)
-            # 重新设置碰撞回调（新的 mechanics 需要重新注册回调）
-            self._setup_collision_callback()
-            self._setup_on_move_callback()
+        self.final_model_path = self._resolve_model_path(route)
+
+        if not self.final_model_path:
+            return True
+
+        old_profile = getattr(self, '_profile', None)
+        if old_profile is None and hasattr(self.engine_obj, 'get_active_profile'):
+            try:
+                old_profile = self.engine_obj.get_active_profile()
+            except Exception as exc:
+                logging.warning("Failed to read active profile before model replace: %s", exc)
+
+        state = self._capture_model_state()
+
+        new_geometry = Geometry(self.final_model_path)
+        stored, optics, mechanics, acoustics = self._create_profile_for_geometry(new_geometry)
+
+        self._geometry = new_geometry
+        self._profile = stored
+        self._optics = optics
+        self._mechanics = mechanics
+        self._acoustics = acoustics
+
+        self._restore_model_state(state)
+
+        if old_profile is not None and old_profile is not stored and hasattr(self.engine_obj, 'remove_profile'):
+            try:
+                self.engine_obj.remove_profile(old_profile)
+            except Exception as exc:
+                logging.warning("Failed to remove old profile after model replace: %s", exc)
+
+        # 重新设置回调（新的 mechanics 需要重新注册回调）
+        self._setup_collision_callback()
+        self._setup_on_move_callback()
         return True
 
     @auto_save
@@ -616,30 +951,51 @@ class Actor:
         self.script_path = route
         return True
 
-    # 兼容编辑器的变换操作：直接作用于几何体
+    # 兼容编辑器的变换操作：直接作用于几何体。
+    # Contract:
+    # - set_position/set_rotation/set_scale are absolute setters.
+    # - translate/rotate_delta/scale_delta are relative operations.
     @auto_save
-    def scale(self, v: List[float]):
-        if not hasattr(self, '_geometry'):
-            raise False
-        self._geometry.set_scale(v)
-        return True
-
-    @auto_save
-    def move(self, v: List[float]):
+    def translate(self, delta: List[float]):
         if not hasattr(self, '_geometry'):
             return False
         pos = self._geometry.get_position()
-        new_pos = [pos[0] + v[0], pos[1] + v[1], pos[2] + v[2]]
-        self._geometry.set_position(new_pos)
+        self._geometry.set_position([pos[0] + delta[0], pos[1] + delta[1], pos[2] + delta[2]])
+        self._broadcast_actor_transform_updated()
         return True
 
     @auto_save
-    def rotate(self, euler: List[float]):
+    def rotate_delta(self, delta: List[float]):
         if not hasattr(self, '_geometry'):
             return False
         rot = self._geometry.get_rotation()
-        self._geometry.set_rotation([rot[0] + euler[0], rot[1] + euler[1], rot[2] + euler[2]])
+        self._geometry.set_rotation([rot[0] + delta[0], rot[1] + delta[1], rot[2] + delta[2]])
+        self._broadcast_actor_transform_updated()
         return True
+
+    @auto_save
+    def scale_delta(self, factor):
+        if not hasattr(self, '_geometry'):
+            return False
+        if isinstance(factor, (int, float)):
+            factor = [factor, factor, factor]
+        current = self._geometry.get_scale()
+        self._geometry.set_scale([
+            current[0] * factor[0],
+            current[1] * factor[1],
+            current[2] * factor[2],
+        ])
+        self._broadcast_actor_transform_updated()
+        return True
+
+    def move(self, v: List[float]):
+        return self.translate(v)
+
+    def rotate(self, euler: List[float]):
+        return self.rotate_delta(euler)
+
+    def scale(self, v: List[float]):
+        return self.set_scale(v)
 
     @auto_save
     def set_position(self, position: List[float], if_init=False):
@@ -648,6 +1004,7 @@ class Actor:
         self._geometry.set_position(position)
         if if_init:
             return False
+        self._broadcast_actor_transform_updated()
         return True
 
     def get_position(self) -> List[float]:
@@ -662,6 +1019,7 @@ class Actor:
         self._geometry.set_rotation(euler)
         if if_init:
             return False
+        self._broadcast_actor_transform_updated()
         return True
 
     def get_rotation(self) -> List[float]:
@@ -676,6 +1034,7 @@ class Actor:
         self._geometry.set_scale(scale)
         if if_init:
             return False
+        self._broadcast_actor_transform_updated()
         return True
 
     def get_scale(self) -> List[float]:
@@ -843,6 +1202,7 @@ class Actor:
         if self.actor_guid:
             CoronaEditor.js_call_func("actor-ownership-claim",
                                       [{"actor_guid": self.actor_guid}])
+            self._broadcast_actor_transform_updated()
         self.save_data()
 
 

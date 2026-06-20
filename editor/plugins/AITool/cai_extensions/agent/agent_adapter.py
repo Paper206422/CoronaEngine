@@ -27,8 +27,32 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from typing import Any, Callable, Dict, List, Optional
+
+try:
+    from plugins.AITool.services.agent_progress_context import (
+        agent_progress_sink,
+        get_current_progress_sink,
+    )
+    from plugins.AITool.services.intent_understanding import get_intent_understanding_service
+    from plugins.AITool.services.lanchat_scene_runtime import get_lanchat_scene_runtime
+    from plugins.AITool.services.workflow_command_policy import (
+        DEPRECATED_WORKFLOW_COMMAND_MESSAGE,
+        is_deprecated_user_workflow_command,
+    )
+except Exception:  # noqa: BLE001
+    from services.agent_progress_context import (  # type: ignore
+        agent_progress_sink,
+        get_current_progress_sink,
+    )
+    from services.intent_understanding import get_intent_understanding_service  # type: ignore
+    from services.lanchat_scene_runtime import get_lanchat_scene_runtime  # type: ignore
+    from services.workflow_command_policy import (  # type: ignore
+        DEPRECATED_WORKFLOW_COMMAND_MESSAGE,
+        is_deprecated_user_workflow_command,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +64,11 @@ _SCENE_COMMAND_PATTERNS = [
     r"(?:加个?|添加|放个?|增加|创建|新[增建]|导入).{1,20}",
     r"(?:删[掉除]|移除|去掉|清除).{0,20}$",
     r"(?:把|将).{1,20}(?:移[动到]?|挪[动到]?|搬[到]?|推到?|拉到?)",
-    r"(?:往|向)(?:左|右|前|后|上|下)移",
+    r"(?:往|向)(?:左|右|前|后|上|下).{0,5}(?:移|挪|搬|推|拉)",
     r"(?:放大|缩小|变大|变小|旋转|改成?|调整|修改).{1,20}",
     r"(?:布置|摆放|排列|安排|设计|规划|装饰).{1,30}",
     r"(?:灯光|光照|照明|氛围|环境光|光源).{1,20}",
-    r"生成.{0,8}(?:3d|3D|模型|物体|场景|家具|清单)",
+    r"生成.{0,9}(?:3d|3D|模型|物体|场景|家具|清单|卧室|客厅|厨房|书房|房间|浴室|办公室|餐厅)",
     r"(?:按|根据|依据).{0,10}清单",
     r"(?:组合|搭建).{0,8}(?:场景|房间|卧室|客厅|酒吧)",
     r"@agent\s", r"@场景\s", r"/sc_agent\s",
@@ -88,6 +112,473 @@ def is_builtin_command(text: str) -> Optional[str]:
     if re.match(r"^/(?:检查|巡检|patrol|check)\b", text) or re.match(r"^(?:巡检一下|风格检查|检查风格)\b", text):
         return "patrol"
     return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 开放式意图路由（LLM 判别，替代关键词清单）
+# ═══════════════════════════════════════════════════════════════════════════
+
+_COMPOSE_INTENT_SYSTEM_PROMPT = """你是 LANChat 场景生成助手的意图判别器。
+判断用户这条消息是否在要求【生成/搭建一个完整的 3D 场景或环境】。
+
+是 compose(返回 true)的例子(不限关键词，任何室内/室外/混合环境都算):
+- "生成一个现代客厅" / "做一个赛博朋克酒吧街" / "来个蒙古包草原"
+- "我想要一片露营地" / "搭一个海底世界" / "弄个中世纪集市"
+- "布置一个北欧风卧室" / "整一个篝火露营的场景"
+
+不是 compose(返回 false)的例子:
+- 对【已有场景里单个/少数物体】的增删改移: "把椅子放大" / "删掉那盏灯" / "加一个茶几" / "沙发往左移"
+- 闲聊/提问/建议: "你好" / "客厅一般放什么" / "谢谢" / "这个配色好看吗"
+
+只输出 JSON: {"compose": true} 或 {"compose": false}"""
+
+
+def _llm_is_compose_intent(text: str, timeout: float = 20.0) -> Optional[bool]:
+    """LLM 判断是否为整场景生成意图。返回 True/False；失败返回 None（交由调用方兜底）。
+
+    超时：future timeout(20s) 必须 > HTTP request_timeout(18s)，否则 HTTP 还没超时
+    就被 future 掐断（曾因 future=8 < http=15 导致 GPT-5.5 在 8s 临界处被误杀掉进 chat）。
+    """
+    if not text or not text.strip():
+        return None
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        from langchain_core.messages import HumanMessage, SystemMessage
+        from Quasar.ai_models.base_pool.registry import get_chat_model
+
+        def _do():
+            model = get_chat_model(temperature=0, request_timeout=18.0)
+            return model.invoke([
+                SystemMessage(content=_COMPOSE_INTENT_SYSTEM_PROMPT),
+                HumanMessage(content=text.strip()[:500]),
+            ])
+
+        ex = ThreadPoolExecutor(max_workers=1)
+        try:
+            resp = ex.submit(_do).result(timeout=timeout)
+        finally:
+            ex.shutdown(wait=False)
+
+        raw = (resp.content if hasattr(resp, "content") else str(resp)).strip()
+        if "```" in raw:
+            s = raw.find("{")
+            e = raw.rfind("}")
+            if s != -1 and e != -1:
+                raw = raw[s:e + 1]
+        data = json.loads(raw)
+        result = bool(data.get("compose", False))
+        logger.info("[MasterAgent] LLM 意图判别: compose=%s for %r", result, text[:40])
+        return result
+    except Exception as e:
+        logger.warning("[MasterAgent] LLM 意图判别失败, 回退关键词: %s", e)
+        return None
+
+
+# 内部链路 chunk 判据：菜包 agentic stream 会把工具中间结果（如 remove_model 返回的
+# raw JSON）也当文本 chunk 吐出。这些含内部 actor 名（__room_/__shell_/__terrain_/
+# __interior_）或工具状态键（remaining_actors/removed_actor/imported），不能给用户看。
+# 注意：session_id/error_code/status_info 是 CAI 成功响应信封的固定字段，不是内部工具特征。
+_INTERNAL_CHUNK_MARKERS = (
+    "__room_", "__shell_", "__terrain_", "__interior_",
+    "remaining_actors", "removed_actor", "imported_actor",
+    '"status":', '"actor":', '"position":', '"rotation":', '"scale":',
+    "scene_json_updated",
+)
+
+
+def _is_internal_tool_chunk(chunk) -> bool:
+    """判断一个 stream chunk 是否是内部工具结果（不该暴露给用户）。"""
+    if not isinstance(chunk, str):
+        return False
+    return any(m in chunk for m in _INTERNAL_CHUNK_MARKERS)
+
+
+def _looks_like_tool_json(obj: Any) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    keys = set(obj.keys())
+    return bool(
+        {"actor", "position"} <= keys
+        or {"actor", "scale"} <= keys
+        or {"removed_actor", "remaining_actors"} & keys
+        or {"imported_actor", "scene_json_updated"} & keys
+    )
+
+
+def _strip_visible_tool_json(text: str) -> str:
+    """Remove raw tool JSON objects from otherwise natural-language text."""
+    if not text:
+        return ""
+
+    out: List[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != "{":
+            out.append(text[i])
+            i += 1
+            continue
+        depth = 0
+        in_str = False
+        escaped = False
+        end = -1
+        for j in range(i, n):
+            ch = text[j]
+            if in_str:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = j + 1
+                    break
+        if end == -1:
+            out.append(text[i])
+            i += 1
+            continue
+        candidate = text[i:end]
+        try:
+            data = json.loads(candidate)
+        except Exception:  # noqa: BLE001
+            out.append(text[i])
+            i += 1
+            continue
+        if _looks_like_tool_json(data):
+            i = end
+            continue
+        out.append(candidate)
+        i = end
+
+    cleaned = "".join(out)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _extract_cai_text_chunk(chunk) -> str:
+    """从 CAI JSON 信封 chunk 中提取用户可见文本；非 JSON 则按纯文本处理。
+
+    运行时可能返回 build_success_response 的 JSON 字符串，也可能由上层
+    stream adapter 先转成 dict，或包一层 data/event。这里做宽松解析，但只
+    抽取明确的自然语言字段，避免把 session_id/status_info 再暴露给用户。
+    """
+    if isinstance(chunk, dict):
+        data = chunk
+    elif isinstance(chunk, str):
+        try:
+            data = json.loads(chunk)
+        except (json.JSONDecodeError, TypeError):
+            return "" if _is_internal_tool_chunk(chunk) else chunk
+    else:
+        return ""
+
+    def _collect_text(obj) -> List[str]:
+        if isinstance(obj, str):
+            if _is_internal_tool_chunk(obj):
+                stripped = _strip_visible_tool_json(obj)
+                return [stripped] if stripped else []
+            return [_strip_visible_tool_json(obj)]
+        if isinstance(obj, list):
+            out: List[str] = []
+            for item in obj:
+                out.extend(_collect_text(item))
+            return out
+        if not isinstance(obj, dict):
+            return []
+
+        out: List[str] = []
+        for content in obj.get("llm_content", []) or []:
+            if not isinstance(content, dict):
+                continue
+            for part in content.get("part", []) or []:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("content_type") == "text":
+                    text = str(part.get("content_text", "") or "")
+                    if text:
+                        stripped = _strip_visible_tool_json(text)
+                        if stripped and not _is_internal_tool_chunk(stripped):
+                            out.append(stripped)
+
+        # 兼容 stream/event 包装层：只认常见自然语言字段，不递归扫所有键，
+        # 避免 session_id/error_code/status_info 被误拼进回复。
+        for key in ("content_text", "text", "content", "delta"):
+            val = obj.get(key)
+            if isinstance(val, str) and val:
+                stripped = _strip_visible_tool_json(val)
+                if stripped and not _is_internal_tool_chunk(stripped):
+                    out.append(stripped)
+        for key in ("data", "message", "payload", "response"):
+            val = obj.get(key)
+            if isinstance(val, (dict, list)):
+                out.extend(_collect_text(val))
+        return out
+
+    if not isinstance(data, dict):
+        return ""
+    return "".join(_collect_text(data))
+
+
+def is_compose_intent(text: str) -> bool:
+    """关键词未命中后，判断是否仍是【整场景生成】意图（开放式）。
+
+    设计：本函数只在 is_scene_command 关键词【未命中】时调用，所以这里：
+    1. 明显闲聊/提问（_NON_SCENE_PATTERNS）→ False，不调 LLM（省延迟）
+    2. 否则交 LLM 开放式判断（"做个海底世界""来个蒙古包草原"等清单外描述在此被捕获）
+    3. LLM 不可用 → 保守 False（退回旧关键词行为，宁可漏判不误触发）
+    """
+    t = (text or "").strip()
+    if not t or len(t) < 2:
+        return False
+    for pat in _NON_SCENE_PATTERNS:
+        if re.match(pat, t):
+            return False
+    return bool(_llm_is_compose_intent(t))  # None(失败) → False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 意图三分类（compose / edit / chat）—— 取代关键词路由
+# ═══════════════════════════════════════════════════════════════════════════
+
+_INTENT_CLASSIFY_SYSTEM_PROMPT = """你是 LANChat 场景助手的意图分类器。把用户消息分成三类之一。
+
+compose（从无到有生成一个完整的 3D 场景/环境）：
+- "生成一个现代客厅" / "做一个赛博朋克酒吧街" / "来个蒙古包草原"
+- "搭一个海底世界" / "布置一个北欧风卧室" / "整一个篝火露营场景"
+
+edit（修改场景里【已有的】具体物体——有明确的操作对象 + 动作）：
+- 缩放: "放大蒙古包3倍" / "把矮桌变小" / "蒙古包调大一点"
+- 移动: "沙发往左移" / "把椅子挪到墙角"
+- 旋转/删除/增加单个: "旋转椅子90度" / "删掉那盏灯" / "加一个茶几"
+
+chat（闲聊/提问/评价/反馈——没有明确的"对某物做某操作"指令）：
+- "你好" / "谢谢" / "客厅一般放什么" / "这个配色好看吗"
+- "蒙古包没有调整好" / "感觉有点小" / "不太对"（只是评价/抱怨，没说具体怎么改）
+
+判别要点：
+- 明确"对哪个物体做什么操作（放大/缩小/移动/旋转/删除/加）" → edit
+- 只是抱怨/评价/没说具体怎么改 → chat（即使提到物体名）
+- 从零搭整个场景/环境 → compose
+
+只输出 JSON：{"intent":"compose"} 或 {"intent":"edit"} 或 {"intent":"chat"}"""
+
+
+_SCENE_WRITE_INTENT_SYSTEM_PROMPT = """你是 LANChat 3D 场景执行路由器。判断用户这条消息是否明确要求系统写入或修改持久化 3D 场景。
+
+你必须先判断 scene_write_intent：
+- true: 用户要求创建、布置、导入、删除、移动、缩放、旋转、替换或调整 3D 场景/物体。
+- false: 用户只是在闲聊、提问、评价、让某个角色说话/表演/想象、或没有明确要求改变场景。
+
+target 只能是：
+- scene_world: 新建或重搭完整场景/环境/空间。
+- existing_object: 修改现有场景中的具体物体或局部元素。
+- agent_self: 请求被 @ 的角色本人回答、扮演、表演、想象或表达。
+- conversation: 普通对话、问候、解释、建议、总结。
+- abstract_topic: 讨论想法/概念，但没有要求写入场景。
+
+intent 只能是：
+- compose: 从无到有创建完整场景/空间。
+- edit: 修改已有场景对象或局部。
+- chat: 不应执行场景写入。
+
+重要原则：
+- 消息里出现场景名、地点、动作或想象画面，不等于要写入 3D 场景。
+- 对角色说“我想看你……”“你是谁”“你觉得……”通常是 agent_self 或 conversation，scene_write_intent=false。
+- 只有用户明确让系统“生成/做/搭建/布置/设计/加入/删除/移动/调整”场景或物体时才 scene_write_intent=true。
+- 不确定时选 chat，scene_write_intent=false，confidence 低于 0.55。
+
+输出严格 JSON：
+{"intent":"compose|edit|chat","scene_write_intent":true|false,"target":"scene_world|existing_object|agent_self|conversation|abstract_topic","confidence":0到1,"reason":"一句简短理由"}"""
+
+
+def _coerce_scene_intent_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in {"true", "1", "yes", "y", "是", "yes."}:
+            return True
+        if low in {"false", "0", "no", "n", "否", ""}:
+            return False
+    return bool(value)
+
+
+def _coerce_scene_intent_confidence(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except Exception:  # noqa: BLE001
+        return 0.0
+    return max(0.0, min(1.0, confidence))
+
+
+def _extract_json_object(raw: str) -> str:
+    raw = (raw or "").strip()
+    if "```" in raw:
+        s = raw.find("{")
+        e = raw.rfind("}")
+        if s != -1 and e != -1:
+            return raw[s:e + 1]
+    return raw
+
+
+def _llm_classify_scene_intent(text: str, timeout: float = 20.0) -> Optional[Dict[str, Any]]:
+    """LLM 结构化判断：区分普通角色对话和真正的场景写入请求。"""
+    if not text or not text.strip():
+        return None
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        from langchain_core.messages import HumanMessage, SystemMessage
+        from Quasar.ai_models.base_pool.registry import get_chat_model
+
+        def _do():
+            model = get_chat_model(temperature=0, request_timeout=18.0)
+            return model.invoke([
+                SystemMessage(content=_SCENE_WRITE_INTENT_SYSTEM_PROMPT),
+                HumanMessage(content=text.strip()[:500]),
+            ])
+
+        ex = ThreadPoolExecutor(max_workers=1)
+        try:
+            resp = ex.submit(_do).result(timeout=timeout)
+        finally:
+            ex.shutdown(wait=False)
+
+        raw = _extract_json_object(resp.content if hasattr(resp, "content") else str(resp))
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        intent = str(data.get("intent") or "chat").strip().lower()
+        if intent not in {"compose", "edit", "chat"}:
+            intent = "chat"
+        target = str(data.get("target") or "").strip().lower()
+        if target not in {"scene_world", "existing_object", "agent_self", "conversation", "abstract_topic"}:
+            target = ""
+        decision = {
+            "intent": intent,
+            "scene_write_intent": _coerce_scene_intent_bool(data.get("scene_write_intent")),
+            "target": target,
+            "confidence": _coerce_scene_intent_confidence(data.get("confidence", 0.0)),
+            "reason": str(data.get("reason") or "")[:300],
+        }
+        logger.info(
+            "[MasterAgent] LLM 场景写入意图: intent=%s write=%s target=%s confidence=%.2f for %r",
+            decision["intent"],
+            decision["scene_write_intent"],
+            decision["target"],
+            decision["confidence"],
+            text[:40],
+        )
+        return decision
+    except Exception as e:
+        logger.warning("[MasterAgent] LLM 场景写入意图判别失败, 回退旧分类: %s", e)
+        return None
+
+
+def _intent_from_scene_intent_decision(decision: Any) -> Optional[str]:
+    if not isinstance(decision, dict):
+        return None
+    intent = str(decision.get("intent") or "chat").strip().lower()
+    if intent not in {"compose", "edit", "chat"}:
+        return None
+    scene_write_intent = _coerce_scene_intent_bool(decision.get("scene_write_intent"))
+    confidence = _coerce_scene_intent_confidence(decision.get("confidence", 0.0))
+    target = str(decision.get("target") or "").strip().lower()
+    if not scene_write_intent or confidence < 0.55:
+        return "chat"
+    if intent == "compose":
+        return "compose" if target in {"scene_world", ""} else "chat"
+    if intent == "edit":
+        return "edit" if target in {"existing_object", "scene_world", ""} else "chat"
+    return "chat"
+
+
+def _llm_classify_intent(text: str, timeout: float = 20.0) -> Optional[str]:
+    """LLM 三分类：返回 "compose" | "edit" | "chat"；失败返回 None（交调用方兜底）。
+
+    超时同 _llm_is_compose_intent：future(20s) > HTTP request_timeout(18s)。
+    """
+    if not text or not text.strip():
+        return None
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        from langchain_core.messages import HumanMessage, SystemMessage
+        from Quasar.ai_models.base_pool.registry import get_chat_model
+
+        def _do():
+            model = get_chat_model(temperature=0, request_timeout=18.0)
+            return model.invoke([
+                SystemMessage(content=_INTENT_CLASSIFY_SYSTEM_PROMPT),
+                HumanMessage(content=text.strip()[:500]),
+            ])
+
+        ex = ThreadPoolExecutor(max_workers=1)
+        try:
+            resp = ex.submit(_do).result(timeout=timeout)
+        finally:
+            ex.shutdown(wait=False)
+
+        raw = _extract_json_object(resp.content if hasattr(resp, "content") else str(resp))
+        data = json.loads(raw)
+        intent = str(data.get("intent", "")).strip().lower()
+        if intent in ("compose", "edit", "chat"):
+            logger.info("[MasterAgent] LLM 意图分类: %s for %r", intent, text[:40])
+            return intent
+        return None
+    except Exception as e:
+        logger.warning("[MasterAgent] LLM 意图分类失败, 回退关键词: %s", e)
+        return None
+
+
+def classify_intent(text: str) -> str:
+    """意图三分类路由：compose（生成整场景）/ edit（改已有物体）/ chat（闲聊）。
+
+    优先 LLM 语义分类（关键词漏判/误判的根治）；明显闲聊走快速路径省延迟；
+    LLM 不可用时退回关键词兜底（is_scene_command 命中再用 is_compose_request 分 compose/edit）。
+    """
+    t = (text or "").strip()
+    if not t or len(t) < 2:
+        return "chat"
+    # 快速路径：明显问候/提问/致谢 → chat（零延迟，不调 LLM）
+    for pat in _NON_SCENE_PATTERNS:
+        if re.match(pat, t):
+            return "chat"
+    # LLM 结构化路由（权威）：普通角色对话即使提到想象场景，也不能写入 3D 场景。
+    service = get_intent_understanding_service()
+    decision = service.classify(t, allow_llm=False)
+    if decision.intent in ("generation_start", "plan_drafting", "plan_revision"):
+        return "compose"
+    if decision.intent in (
+        "intervention_add",
+        "intervention_modify",
+        "intervention_delete",
+        "post_generation_add",
+        "final_adjustment_request",
+    ):
+        return "edit"
+    if decision.reason != "fallback default":
+        return "chat"
+    legacy_decision = _llm_classify_scene_intent(t)
+    r = _intent_from_scene_intent_decision(legacy_decision)
+    if r in ("compose", "edit", "chat"):
+        return r
+    r = _llm_classify_intent(t)
+    if r in ("compose", "edit", "chat"):
+        return r
+    # LLM 失败兜底：退回关键词。命中场景关键词再分 compose/edit，否则 chat
+    if is_scene_command(t):
+        from .scene_composer import is_compose_request
+        return "compose" if (is_compose_request(t)) else "edit"
+    return "chat"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -345,7 +836,7 @@ class MasterAgent:
         self,
         fallback_chat: Callable[[str, List[str]], str] = None,
         global_style: Dict[str, Any] = None,
-        scene_max_items: int = 8,
+        scene_max_items: int = 8,  # 阶段测试期降到 4，省 hunyuan 消耗（之前 12）
     ) -> None:
         self._fallback_chat = fallback_chat
         self._global_style = global_style or {}
@@ -386,7 +877,6 @@ class MasterAgent:
 
     def _group_ai_chat(self, system: str, messages: list) -> str:
         """GroupAgent 的 ai_chat 回调 — 调用 CAIApp。"""
-        import json as _json
         try:
             from plugins.AITool.main import AITool
             from Quasar.cai.protocol.request import ChatRequest
@@ -394,18 +884,7 @@ class MasterAgent:
             text = f"{system}\n\n{convo}"
             req = ChatRequest.from_text(text=text, metadata={"skip_conversation_store": True})
             chunks = AITool._cai_app.chat(req)
-            # 解析流式JSON响应
-            result_text = []
-            for chunk in chunks:
-                try:
-                    data = _json.loads(chunk)
-                    for content in data.get("llm_content", []):
-                        for part in content.get("part", []):
-                            if part.get("content_type") == "text":
-                                result_text.append(part.get("content_text", ""))
-                except (_json.JSONDecodeError, KeyError, TypeError):
-                    continue
-            return "".join(result_text).strip() or "{}"
+            return "".join(_extract_cai_text_chunk(c) for c in chunks).strip() or "{}"
         except Exception as e:
             logger.warning("[MasterAgent] group_ai_chat failed: %s, using fallback", e)
             if self._fallback_chat:
@@ -427,6 +906,17 @@ class MasterAgent:
             trigger = self._extract_trigger_text(messages)
             logger.info("[MasterAgent] __call__ trigger=%r persona=%r", trigger[:80], (system or "")[:40])
 
+            slash_command = trigger.strip().split(maxsplit=1)[0] if trigger.strip().startswith("/") else ""
+            if slash_command and is_deprecated_user_workflow_command(slash_command):
+                logger.info("[MasterAgent] deprecated workflow command blocked: %s", slash_command)
+                return DEPRECATED_WORKFLOW_COMMAND_MESSAGE
+
+            # 0. 显式文件路径导入 → 跳过 LLM，直接调引擎 import_model
+            file_path = self._extract_file_path(trigger)
+            if file_path:
+                logger.info("[MasterAgent] routing → direct import %s", file_path)
+                return self._handle_direct_import(file_path)
+
             # 1. 内置命令
             cmd = is_builtin_command(trigger)
             if cmd == "help":
@@ -436,13 +926,33 @@ class MasterAgent:
             if cmd == "patrol":
                 return self._handle_patrol(system)
 
-            # 2. 场景指令
-            if is_scene_command(trigger):
-                logger.info("[MasterAgent] routing → scene")
-                return self._handle_scene(trigger, system, messages)
+            # 1.5 生成前轻量确认：只拦计划型请求；明确“确认/直接生成”会继续进入 compose。
+            agent_name = self._extract_current_agent_name(messages) or self._router.route(system).name
+            gate_action, gate_payload = get_lanchat_scene_runtime().handle_planning_gate(agent_name, trigger)
+            if gate_action == "reply":
+                logger.info("[MasterAgent] routing → planning confirmation gate")
+                return str(gate_payload or "")
+            if gate_action == "compose":
+                logger.info("[MasterAgent] routing → compose (confirmed plan)")
+                return self._handle_scene(str(gate_payload or trigger), system, messages, force_compose=True)
 
-            # 3. 普通聊天
-            logger.info("[MasterAgent] routing → chat")
+            # 2. 意图三分类（compose / edit / chat）——语义分类取代关键词路由。
+            #    关键词路由两类都翻车：真编辑漏判掉聊天（"把矮桌变小""蒙古包调大"），
+            #    抱怨误判进编辑（"蒙古包没有调整好"命中"调整"）。改用 LLM 语义分类。
+            intent_class = classify_intent(trigger)
+            if intent_class == "compose":
+                # 整场景生成（含清单外描述"海底世界""蒙古包草原"）→ force_compose 跳内层关键词门
+                logger.info("[MasterAgent] routing → compose (意图分类)")
+                return self._handle_scene(trigger, system, messages, force_compose=True)
+            if intent_class == "edit":
+                # 改已有物体（放大/移动/旋转/删除）→ 专用 edit 路径：
+                # 读引擎 actor 当前 transform + LLM 解析相对量（"3倍""y轴+2"）→ 算绝对目标 → set_actor_transform。
+                # 不走 _handle_scene/coordinator（那条为"add 新物体算落点"设计，move/scale 会崩+丢失相对量）。
+                logger.info("[MasterAgent] routing → edit (意图分类，专用变换执行)")
+                return self._handle_edit(trigger, messages)
+
+            # 3. 普通聊天（含评价/抱怨/提问，无明确操作指令）
+            logger.info("[MasterAgent] routing → chat (意图分类)")
             return self._handle_chat(system, messages)
         except Exception as e:
             logger.exception("[MasterAgent] __call__ 异常, 返回兜底回复")
@@ -451,6 +961,28 @@ class MasterAgent:
                                       "reset", "refused", "unreachable")):
                 return "🌐 网络好像不太稳定，请稍后再发一次～"
             return "🤖 抱歉，刚才处理消息时出了点问题，请换个说法再试一次。"
+
+    # ── 直接文件导入 ──────────────────────────────────────────────
+
+    def _handle_direct_import(self, file_path: str) -> str:
+        """直接导入指定模型文件到引擎场景（跳过 LLM 和混元生成）。"""
+        import os as _os
+        try:
+            from plugins.AITool.cai_extensions.flows.scene_composition_workflow.helpers import get_tool
+            tool = get_tool("import_model")
+            if tool is None:
+                return "⚠️ import_model 工具不可用，请确认引擎已启动且场景已加载。"
+            actor_name = _os.path.splitext(_os.path.basename(file_path))[0]
+            tool.invoke({
+                "model_path": file_path,
+                "actor_name": actor_name,
+                "position": [0.0, 0.0, 0.0],
+            })
+            logger.info("[MasterAgent] direct import success: %s", file_path)
+            return f"✅ 已导入「{actor_name}」到场景原点 (0,0,0)。"
+        except Exception as e:
+            logger.exception("[MasterAgent] direct import failed: %s", e)
+            return f"⚠️ 导入失败：{e}"
 
     # ── 内置命令 ──────────────────────────────────────────────────
 
@@ -540,9 +1072,395 @@ class MasterAgent:
 
     # ── 场景指令 ──────────────────────────────────────────────────
 
-    def _handle_scene(self, user_text: str, persona: str, messages: List[str]) -> str:
+    _EDIT_EXEC_SYSTEM_PROMPT = """你是 3D 场景编辑执行助手。你拥有直接操作引擎场景的工具（移动/缩放/旋转/删除物体），\
+必须【实际调用工具完成操作】，不要只回复文字。
+
+当前场景里可编辑的物体（这些是引擎里的真实 actor 名字，调工具时必须用这些名字）：
+{actors}
+
+执行规则：
+- 用户说的物体名可能是简称：用户说"蒙古包"，实际 actor 名是 "__shell_蒙古包"——调工具时用真实名字。
+        - 相对量要基于物体【当前 transform】（上面列出了）计算出绝对目标值再调工具：
+          * "放大3倍"=当前 scale 各分量 ×3；"缩小一半"=×0.5；"变大"≈×1.5；"变小"≈×0.7
+          * "y轴向上移动2"=当前 pos 的 y +2；"往左1米"=x -1（坐标系 X+右/Y+上/Z+屏幕内）
+          * 项目底层 rotation 使用【弧度】。用户说"旋转90度"时，先把 90 度转换为 1.5708 弧度，再做当前 rot 的 y +1.5708。
+- 设置绝对变换用 set_actor_transform（传 actor 真实名 + position/rotation/scale）；删除用对应删除工具。
+- 完成后用一句中文确认你做了什么（含物体名和新数值）。"""
+
+    def _actor_display_name(self, name: str) -> str:
+        display = str(name or "")
+        for prefix in ("__shell_", "__asset_"):
+            if display.startswith(prefix):
+                return display[len(prefix):]
+        return display
+
+    @staticmethod
+    def _canonical_edit_actor_name(name: str) -> str:
+        try:
+            from plugins.AITool.services.terrain_component_resolver import canonical_actor_id
+        except Exception:  # noqa: BLE001
+            try:
+                from ...services.terrain_component_resolver import canonical_actor_id  # type: ignore
+            except Exception:  # noqa: BLE001
+                canonical_actor_id = None  # type: ignore
+        if callable(canonical_actor_id):
+            return str(canonical_actor_id(name) or name)
+        return str(name or "")
+
+    @staticmethod
+    def _looks_like_boundary_reference(user_text: str) -> bool:
+        text = str(user_text or "")
+        return any(token in text for token in (
+            "_terrain_boundary",
+            "__terrain_boundary",
+            "terrain_boundary",
+            "地形边界",
+            "场地边界",
+            "边界",
+            "栅栏",
+            "围栏",
+        ))
+
+    @classmethod
+    def _is_system_edit_actor(cls, name: str) -> bool:
+        canonical = cls._canonical_edit_actor_name(name)
+        return canonical in {"__terrain_boundary", "__room_terrain"} or canonical.startswith("__terrain_")
+
+    def _pick_edit_actor(self, user_text: str, actors: List[Any]) -> Any | None:
+        if self._looks_like_boundary_reference(user_text):
+            for actor in actors:
+                name = str(getattr(actor, "name", "") or "")
+                if self._canonical_edit_actor_name(name) == "__terrain_boundary":
+                    return actor
+        matches: list[tuple[int, Any]] = []
+        for actor in actors:
+            name = str(getattr(actor, "name", "") or "")
+            canonical = self._canonical_edit_actor_name(name)
+            if canonical and canonical in user_text:
+                matches.append((len(canonical) + 100, actor))
+                continue
+            display = self._actor_display_name(name)
+            if name and name in user_text:
+                matches.append((len(name), actor))
+                continue
+            if display and display in user_text:
+                matches.append((len(display), actor))
+        if not matches:
+            return None
+        matches.sort(key=lambda item: item[0], reverse=True)
+        return matches[0][1]
+
+    def _parse_fast_scale_factor(self, user_text: str) -> float | None:
+        text = user_text.strip()
+        numeric = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*倍", text)
+        if numeric and any(k in text for k in ("放大", "变大", "扩大")):
+            return max(0.05, float(numeric.group(1)))
+        if numeric and any(k in text for k in ("缩小", "变小")):
+            return max(0.05, 1.0 / max(0.05, float(numeric.group(1))))
+        if "一半" in text and any(k in text for k in ("缩小", "变小")):
+            return 0.5
+        if any(k in text for k in ("最大", "大一点", "变大", "放大")):
+            return 1.35
+        if any(k in text for k in ("小一点", "变小", "缩小")):
+            return 0.75
+        return None
+
+    def _parse_fast_position_delta(self, user_text: str, actor: Any) -> List[float] | None:
+        text = user_text.strip()
+        try:
+            pos = [float(v) for v in actor.get_position()]
+        except Exception:
+            pos = [0.0, 0.0, 0.0]
+        step = 2.0 if any(k in text for k in ("远一点", "移远", "调远")) else 1.0
+        if "放中间" in text or "居中" in text or "到中间" in text:
+            return [-pos[0], 0.0, -pos[2]]
+        if "靠左" in text or "往左" in text or "左墙" in text:
+            return [-step, 0.0, 0.0]
+        if "靠右" in text or "往右" in text or "右墙" in text:
+            return [step, 0.0, 0.0]
+        if "往前" in text or "靠前" in text:
+            return [0.0, 0.0, step]
+        if "往后" in text or "靠后" in text:
+            return [0.0, 0.0, -step]
+        if "移远" in text or "远一点" in text or "调远" in text:
+            direction = 1.0 if pos[2] >= 0.0 else -1.0
+            if abs(pos[2]) < 0.2:
+                direction = -1.0
+            return [0.0, 0.0, direction * step]
+        if "近一点" in text or "靠近" in text:
+            direction = -1.0 if pos[2] >= 0.0 else 1.0
+            return [0.0, 0.0, direction * step]
+        return None
+
+    def _parse_fast_rotation_delta(self, user_text: str) -> float | None:
+        text = user_text.strip()
+        if not any(k in text for k in ("旋转", "转一下", "转动", "转到", "朝向", "方向")):
+            return None
+        numeric = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*度", text)
+        angle = float(numeric.group(1)) if numeric else 90.0
+        if any(k in text for k in ("逆时针", "往左转", "左转")):
+            angle = -angle
+        return math.radians(angle)
+
+    def _parse_fast_color(self, user_text: str) -> tuple[str, List[float]] | None:
+        colors = {
+            "红": ("红色", [1.0, 0.08, 0.06]),
+            "蓝": ("蓝色", [0.08, 0.28, 1.0]),
+            "绿": ("绿色", [0.08, 0.65, 0.18]),
+            "黄": ("黄色", [1.0, 0.82, 0.08]),
+            "白": ("白色", [0.92, 0.92, 0.88]),
+            "黑": ("黑色", [0.03, 0.03, 0.03]),
+            "灰": ("灰色", [0.45, 0.45, 0.45]),
+            "金": ("金色", [1.0, 0.68, 0.16]),
+            "银": ("银色", [0.75, 0.76, 0.78]),
+            "粉": ("粉色", [1.0, 0.45, 0.72]),
+            "紫": ("紫色", [0.55, 0.18, 0.85]),
+            "棕": ("棕色", [0.42, 0.22, 0.10]),
+        }
+        if not any(k in user_text for k in ("改色", "换色", "变成", "颜色", "涂成")):
+            return None
+        for key, value in colors.items():
+            if key in user_text:
+                return value
+        return None
+
+    def _try_apply_actor_color(self, actor: Any, rgb: List[float]) -> bool:
+        candidates = [
+            getattr(actor, "set_color", None),
+            getattr(actor, "set_diffuse", None),
+        ]
+        optics = getattr(actor, "_optics", None)
+        if optics is not None:
+            candidates.extend([
+                getattr(optics, "set_color", None),
+                getattr(optics, "set_diffuse", None),
+                getattr(optics, "set_base_color", None),
+            ])
+        for setter in candidates:
+            if not callable(setter):
+                continue
+            try:
+                setter(rgb)
+                return True
+            except TypeError:
+                try:
+                    setter(float(rgb[0]), float(rgb[1]), float(rgb[2]))
+                    return True
+                except Exception:
+                    continue
+            except Exception:
+                continue
+        return False
+
+    def _looks_like_fast_edit_request(self, user_text: str) -> bool:
+        return any(k in user_text for k in (
+            "放大", "缩小", "变大", "变小", "贴地", "穿模", "底座",
+            "移远", "靠墙", "靠左", "靠右", "往前", "往后", "居中",
+            "删除", "删掉", "移除", "不要这个", "旋转", "转一下",
+            "改色", "换色", "颜色", "涂成",
+            "换成", "低矮", "藤蔓", "木栏", "围栏", "栅栏", "边界",
+        ))
+
+    def _candidate_actor_reply(self, actors: List[Any]) -> str:
+        names = [self._actor_display_name(str(getattr(a, "name", "") or "")) for a in actors[:8]]
+        names = [n for n in names if n]
+        if not names:
+            return "我没找到可编辑的物体。"
+        return "我没找到你说的那个物体。你可以点名这些物体之一：" + "、".join(names)
+
+    def _try_fast_transform_edit(self, user_text: str, actors: List[Any]) -> str | None:
+        actor = self._pick_edit_actor(user_text, actors)
+        if actor is None:
+            return None
+
+        name = str(getattr(actor, "name", "") or "")
+        display = self._actor_display_name(name)
+        changed_parts: list[str] = []
+        scale_factor = self._parse_fast_scale_factor(user_text)
+        try:
+            if any(k in user_text for k in ("删除", "删掉", "移除", "不要这个")):
+                setter = getattr(actor, "set_visible", None)
+                if callable(setter):
+                    setter(False)
+                    return f"已快速隐藏 **{display}**。如果需要彻底删除，我可以在后续执行队列中继续清理。"
+                return None
+
+            if scale_factor is not None:
+                current = [float(v) for v in actor.get_scale()]
+                new_scale = [round(max(0.02, v * scale_factor), 4) for v in current[:3]]
+                actor.set_scale(new_scale)
+                changed_parts.append(f"缩放调整为 {new_scale}")
+
+            rotation_delta = self._parse_fast_rotation_delta(user_text)
+            if rotation_delta is not None:
+                current_rot = [float(v) for v in actor.get_rotation()]
+                while len(current_rot) < 3:
+                    current_rot.append(0.0)
+                current_rot[1] = round(current_rot[1] + rotation_delta, 3)
+                actor.set_rotation(current_rot[:3])
+                changed_parts.append(f"旋转调整为 {current_rot[:3]}（弧度）")
+
+            color = self._parse_fast_color(user_text)
+            if color is not None:
+                label, rgb = color
+                if self._try_apply_actor_color(actor, rgb):
+                    changed_parts.append(f"颜色调整为{label}")
+
+            boundary_style = self._try_fast_boundary_style_edit(user_text, actor)
+            if boundary_style:
+                changed_parts.extend(boundary_style)
+
+            delta = self._parse_fast_position_delta(user_text, actor)
+            if delta is not None:
+                current_pos = [float(v) for v in actor.get_position()]
+                new_pos = [
+                    round(current_pos[0] + float(delta[0]), 4),
+                    round(current_pos[1] + float(delta[1]), 4),
+                    round(current_pos[2] + float(delta[2]), 4),
+                ]
+                actor.set_position(new_pos)
+                changed_parts.append(f"位置调整为 {new_pos}")
+
+            needs_grounding = scale_factor is not None or any(
+                k in user_text for k in ("穿模", "贴地", "落地", "抬高", "底座", "重叠", "太挤", "碰撞")
+            )
+            if delta is not None:
+                needs_grounding = True
+            if not needs_grounding:
+                if not changed_parts:
+                    return None
+                pos = [round(float(v), 3) for v in actor.get_position()]
+                scale = [round(float(v), 3) for v in actor.get_scale()]
+                return f"已快速调整 **{display}**：{'；'.join(changed_parts)}。当前位置 {pos}，缩放 {scale}。"
+
+            try:
+                from plugins.AITool.cai_extensions.mcp.tools.transform_grounding import (
+                    resolve_actor_overlaps,
+                    snap_actor_to_ground,
+                )
+            except Exception:  # noqa: BLE001
+                from ..mcp.tools.transform_grounding import (  # type: ignore
+                    resolve_actor_overlaps,
+                    snap_actor_to_ground,
+                )
+
+            snapped = snap_actor_to_ground(actor)
+            if snapped is not None:
+                changed_parts.append(
+                    "已自动贴地"
+                )
+            obstacles = [other for other in actors if other is not actor]
+            repair = resolve_actor_overlaps(actor, obstacles, max_iterations=24)
+            if repair.get("changed"):
+                changed_parts.append("已避让重叠")
+            if repair.get("remaining_overlap"):
+                changed_parts.append("仍检测到局部重叠，请确认是否允许进一步移开")
+
+            if not changed_parts:
+                return None
+            pos = [round(float(v), 3) for v in actor.get_position()]
+            scale = [round(float(v), 3) for v in actor.get_scale()]
+            return f"已快速调整 **{display}**：{'；'.join(changed_parts)}。当前位置 {pos}，缩放 {scale}。"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[MasterAgent] fast edit failed for %s: %s", name, exc)
+            return None
+
+    def _try_fast_boundary_style_edit(self, user_text: str, actor: Any) -> list[str]:
+        name = str(getattr(actor, "name", "") or "")
+        if self._canonical_edit_actor_name(name) != "__terrain_boundary":
+            return []
+        text = str(user_text or "")
+        if not any(k in text for k in ("低矮", "矮一点", "藤蔓", "木栏", "围栏", "栅栏", "边界", "不自然", "奇怪")):
+            return []
+        changed: list[str] = []
+        if any(k in text for k in ("低矮", "矮一点", "太高", "别太高")):
+            try:
+                current = [float(v) for v in actor.get_scale()]
+                while len(current) < 3:
+                    current.append(1.0)
+                new_scale = [
+                    round(max(0.02, current[0]), 4),
+                    round(min(max(0.02, current[1]), 0.55), 4),
+                    round(max(0.02, current[2]), 4),
+                ]
+                actor.set_scale(new_scale[:3])
+                changed.append(f"边界高度缩放调整为 {new_scale[:3]}")
+            except Exception:
+                logger.debug("[MasterAgent] boundary scale adjustment unavailable", exc_info=True)
+        if any(k in text for k in ("藤蔓", "木栏", "木质", "温暖", "自然")):
+            rgb = [0.34, 0.45, 0.18] if "藤蔓" in text else [0.42, 0.25, 0.12]
+            if self._try_apply_actor_color(actor, rgb):
+                changed.append("边界颜色调整为自然木藤色")
+        if not changed:
+            changed.append("已定位系统地形边界；当前工具未提供材质替换能力，已避免误改其他物体")
+        return changed
+
+    def _handle_edit(self, user_text: str, messages: List[str]) -> str:
+        """编辑已有物体（增删改移缩放）→ 委托菜包 agentic 通道执行。
+
+        菜包通道（_cai_app.chat → handle_integrated_entrance_stream → stream_agent）是
+        验证过的 agentic 工具循环，引擎工具（set_actor_transform/remove_model 等）已全
+        注册进它的 ToolRegistry。这里只负责：① 给它真实 actor 列表（解决 __shell_ 名字
+        映射）；② 用【执行框架】prompt（而非聊天人设）让它真去调工具，不退化成闲聊。
+        """
+        # 1. 取真实 actor 列表（含 __shell_，排除 __room_/__interior_ 基础设施）
+        try:
+            from CoronaCore.core.managers import scene_manager
+            sc = scene_manager.get("")
+            if sc is None:
+                routes = scene_manager.list_all()
+                sc = scene_manager.get(routes[0]) if routes else None
+        except Exception as e:
+            logger.warning("[MasterAgent] edit: 无法访问场景: %s", e)
+            sc = None
+        if sc is None:
+            return "⚠️ 当前没有可编辑的场景，请先生成一个场景。"
+
+        editable_actors = []
+        actors_lines = []
+        for a in sc.get_actors():
+            nm = a.name
+            # 基础设施 actor（地形/草原/盒子/内皮地面）默认不进 AI 编辑列表（选项 B）：
+            # 草原由建筑足迹自动派生（terrain=platform_radius×8），手动改它既歧义
+            # （__room_terrain 地形 mesh + __terrain_grass 草簇是两个 actor）又跟派生冲突。
+            # 例外：__terrain_boundary 是用户在 F5 中会直接指出的系统边界，允许低风险 grounding/高度/颜色调整。
+            if (
+                    (nm.startswith("__room_") or nm.startswith("__interior_") or nm.startswith("__terrain_"))
+                    and self._canonical_edit_actor_name(nm) != "__terrain_boundary"
+            ):
+                continue
+            editable_actors.append(a)
+            try:
+                pos = [round(v, 2) for v in a.get_position()]
+                scl = [round(v, 2) for v in a.get_scale()]
+                rot = [round(v, 1) for v in a.get_rotation()]
+                actor_kind = "system_boundary" if self._canonical_edit_actor_name(nm) == "__terrain_boundary" else "editable"
+                actors_lines.append(f"  - {nm}: kind={actor_kind} pos={pos} scale={scl} rot={rot}")
+            except Exception:
+                actors_lines.append(f"  - {nm}")
+        if not actors_lines:
+            return "⚠️ 场景里没有可编辑的物体。"
+
+        if self._looks_like_fast_edit_request(user_text) and self._pick_edit_actor(user_text, editable_actors) is None:
+            return self._candidate_actor_reply(editable_actors)
+
+        fast_reply = self._try_fast_transform_edit(user_text, editable_actors)
+        if fast_reply:
+            logger.info("[MasterAgent] edit → fast transform path")
+            return fast_reply
+
+        # 2. 用执行框架 prompt 委托菜包 agentic 通道（它自主调引擎工具）
+        actors_text = "\n".join(actors_lines)
+        system = self._EDIT_EXEC_SYSTEM_PROMPT.format(actors=actors_text)
+        logger.info("[MasterAgent] edit → 委托菜包 agentic 通道 (%d 个可编辑物体)", len(actors_lines))
+        reply = self._call_caiapp(system, [f"用户: {user_text}"])
+        return reply or "[场景设计大师] ✅ 已处理你的调整请求。"
+
+    def _handle_scene(self, user_text: str, persona: str, messages: List[str],
+                      force_compose: bool = False) -> str:
         specialist = self._router.route(persona)
-        logger.info("[MasterAgent] scene → %s: %s", specialist.key, user_text[:80])
+        logger.info("[MasterAgent] scene → %s: %s (force_compose=%s)",
+                    specialist.key, user_text[:80], force_compose)
 
         style_bible = dict(self._global_style)
         if specialist.style_bible:
@@ -555,15 +1473,23 @@ class MasterAgent:
             "metadata": {"room_size": [5, 3, 3], "scene_name": "lanchat_scene", "style_bible": style_bible},
             "intermediate": {"style_bible": style_bible},
         }
+        lanchat_context = self._extract_lanchat_context(messages)
+        if lanchat_context:
+            scene_state["metadata"].update(lanchat_context)
 
         # 场景组合（物品清单/整体布置）→ SceneComposer 批量建模+布局+导入
         # 判断同时看当前指令 + 历史消息：用户可能只说"生成3d模型/按清单生成"，
         # 而真正的物品清单在之前 AI 给出的消息里。
+        # force_compose：外层已用开放式 LLM 判定是整场景生成（如"教堂""海底世界"），
+        # 跳过这道关键词门，否则清单外场景词会被二次过滤掉、掉进单步编辑。
         from .scene_composer import is_compose_request
         compose_text = self._gather_compose_text(user_text, messages)
-        if is_compose_request(user_text) or is_compose_request(compose_text):
+        if force_compose or is_compose_request(user_text) or is_compose_request(compose_text):
+            if get_current_progress_sink() is not None:
+                logger.info("[MasterAgent] LANChat compose request blocked from direct RoleAgent compose")
+                return "已收到生成类请求，请由房主确认方案后通过生成队列执行。"
             logger.info("[MasterAgent] scene → compose (整体场景组合)")
-            return self._handle_scene_compose(user_text, messages, specialist)
+            return self._handle_scene_compose(user_text, messages, specialist, persona)
 
         # 复杂需求 → Multi-Step Planning 分解；简单指令 → 单步 Coordinator
         from .multi_step_planner import MultiStepPlanner
@@ -574,17 +1500,34 @@ class MasterAgent:
         return self._handle_scene_single(user_text, scene_state, style_bible, specialist, messages)
 
     def _handle_scene_compose(self, user_text: str, messages: List[str],
-                              specialist: "Specialist") -> str:
+                              specialist: "Specialist", persona: str = "") -> str:
         """整体场景组合：从清单/方案批量生成模型、布局、导入引擎。"""
         from .scene_composer import SceneComposer
 
         # 优先从最近对话中找完整清单文本（用户可能只说"按清单生成"）
         compose_text = self._gather_compose_text(user_text, messages)
+        role_context = self._role_compose_context(persona)
+        runtime = get_lanchat_scene_runtime()
+        pending_context = runtime.consume_notes_for_prompt()
+        if pending_context:
+            compose_text = f"{compose_text}\n\n{pending_context}"
+        if role_context:
+            compose_text = f"{compose_text}\n\n## RoleAgent 软偏好\n{role_context}"
         image_url = self._extract_image_url(messages)
 
         composer = SceneComposer(room_size=[5.0, 3.0, 3.0], scene_name="lanchat_scene",
                                  max_items=self._scene_max_items)
-        result = composer.compose(compose_text, image_url=image_url, do_import=True)
+        agent_name = self._extract_current_agent_name(messages) or specialist.name
+        runtime.start_compose(agent_name, compose_text)
+        try:
+            result = composer.compose(
+                compose_text,
+                image_url=image_url,
+                do_import=True,
+                progress_sink=get_current_progress_sink(),
+            )
+        finally:
+            runtime.end_compose(agent_name)
 
         # 记录到 GroupAgent
         for _ in result.get("items", []):
@@ -599,18 +1542,102 @@ class MasterAgent:
         imported = result.get("imported", [])
         failed = result.get("failed", [])
         truncated = result.get("truncated", 0)
+        progress_events = result.get("progress_events") or []
+        progress_timeline = result.get("progress_timeline") or []
+        final_report_text = result.get("final_report_text") or ""
+        vlm_review_text = result.get("vlm_review_text") or ""
+        vlm_skipped = result.get("vlm_review_skipped") or []
+        vlm_timed_out = result.get("vlm_review_timed_out") or []
+        operation_count = int(result.get("operation_count") or 0)
+        pending_tasks = result.get("pending_tasks") or []
+        snapshot_path = result.get("zone_decompose_snapshot")
 
         lines = [f"{tag} 🏗️ 场景组合完成"]
+        if role_context:
+            role_name = role_context.splitlines()[0].replace("RoleAgent: ", "")
+            lines.append(f"  • RoleAgent：{role_name}（软偏好已注入）")
         lines.append(f"  • 识别物体：{extracted} 个")
         if truncated > 0:
             lines.append(f"  • ⚠️ 单次生成上限 {self._scene_max_items} 个，本次先做前 {self._scene_max_items} 个（剩 {truncated} 个可稍后继续）")
         lines.append(f"  • 获取模型：{model_count} 个")
         lines.append(f"  • 导入引擎：{len(imported)} 个")
+        if result.get("progressive"):
+            phases = result.get("phases_run") or []
+            lines.append(f"  • 渐进阶段：{(' / '.join(phases)) if phases else '已启用'}")
+        if progress_timeline:
+            last_progress = progress_timeline[-1]
+            user_progress = last_progress.get("user_message")
+            if user_progress:
+                lines.append(f"  • 阶段披露：{user_progress}")
+            else:
+                lines.append(f"  • 阶段披露：{last_progress.get('percent', 100)}%")
+        if progress_events:
+            lines.append(f"  • 最近进度：{progress_events[-1]}")
+        if operation_count:
+            lines.append(f"  • 捕获用户介入：{operation_count} 条")
+        if pending_tasks:
+            lines.append(f"  • 生成中吸收：{len(pending_tasks)} 条后续要求")
+            lines.extend(self._format_pending_tasks_summary(pending_tasks))
+        # 15a：shell 外壳建筑独立汇报（它不走家具路径，否则成败不可见）
+        shell_placed = result.get("shell_placed", [])
+        shell_failed = result.get("shell_failed", [])
+        if shell_placed or shell_failed:
+            lines.append(f"  • 外壳建筑：放置 {len(shell_placed)} 个" +
+                         (f"，失败 {len(shell_failed)} 个" if shell_failed else ""))
         if imported:
             lines.append(f"\n✅ 已放入场景：{('、'.join(imported[:10]))}")
+        if shell_placed:
+            lines.append(f"🏛️ 外壳：{('、'.join(shell_placed[:5]))}")
         if failed:
             lines.append(f"⚠️ 未完成：{('、'.join(failed[:8]))}")
+        if shell_failed:
+            lines.append(f"⚠️ 外壳未完成：{('、'.join(shell_failed[:5]))}")
+        if final_report_text:
+            lines.append(f"\n🧭 最终检查：{final_report_text}")
+        if vlm_review_text and vlm_review_text not in final_report_text:
+            lines.append(f"👁️ VLM 外审：{vlm_review_text}")
+        if vlm_skipped or vlm_timed_out:
+            lines.append(
+                f"👁️ VLM 跳过：{len(vlm_skipped)} 个，超时：{len(vlm_timed_out)} 个"
+            )
+        if snapshot_path:
+            lines.append(f"🧪 F5 分解快照：{snapshot_path}")
         return "\n".join(lines)
+
+    def _format_pending_tasks_summary(self, pending_tasks: List[Dict[str, Any]]) -> List[str]:
+        applied: List[str] = []
+        waiting: List[str] = []
+        attention: List[str] = []
+        for task in pending_tasks[:12]:
+            text = str(task.get("text") or "").strip()
+            if not text:
+                continue
+            status = str(task.get("status") or "")
+            short = text.replace("\n", " ")[:36]
+            if status.startswith("applied") or status in {"already_in_remaining_plan", "recorded_layout_constraint"}:
+                applied.append(short)
+            elif status in {"pending_next_generation", "queued_edit_or_waiting_for_actor", "pending_for_planner"}:
+                waiting.append(short)
+            elif "confirm" in status or status in {"recorded_no_matching_asset"}:
+                attention.append(short)
+        lines: List[str] = []
+        if applied:
+            lines.append(f"    - 已应用：{'；'.join(applied[:3])}")
+        if waiting:
+            lines.append(f"    - 已记录待补：{'；'.join(waiting[:3])}")
+        if attention:
+            lines.append(f"    - 需确认：{'；'.join(attention[:3])}")
+        return lines
+
+    def _role_compose_context(self, persona: str) -> str:
+        """Resolve role persona into advisory compose context."""
+        try:
+            from .role_registry import resolve_role_template
+            tpl = resolve_role_template(persona)
+            return tpl.to_compose_context() if tpl is not None else ""
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[MasterAgent] role compose context skipped: %s", e)
+            return ""
 
     def _gather_compose_text(self, user_text: str, messages: List[str]) -> str:
         """收集用于组合的文本：清单 + 布局/风格描述 + 当前指令。
@@ -665,11 +1692,34 @@ class MasterAgent:
         """单步场景编辑 — 含协同感知（意图预览 / 冲突检测 / 物体锁）。"""
         sender = self._extract_sender(messages)
 
+        # 注入引擎场景中已有的物体列表（供 LLM 感知当前状态，实现渐进式交互）
+        try:
+            from CoronaCore.core.managers import scene_manager
+            sc = scene_manager.get("")
+            if sc is None:
+                routes = scene_manager.list_all()
+                sc = scene_manager.get(routes[0]) if routes else None
+            if sc is not None:
+                actors = [{"name": a.name, "position": list(a.get_position())}
+                          for a in sc.get_actors()
+                          if not a.name.startswith("__room_")]
+                if actors:
+                    scene_state.setdefault("intermediate", {})["locked_actors"] = actors
+                    logger.info("[MasterAgent] scene: 注入 %d 个已有物体到 LLM 上下文", len(actors))
+        except Exception:
+            pass
+
         # 注入参考图 URL（用于 3D 模型生成）
         image_url = self._extract_image_url(messages)
         if image_url:
             scene_state.setdefault("intermediate", {})["reference_image_url"] = image_url
             logger.info("[MasterAgent] scene: reference image %r", image_url)
+
+        # 注入手动文件路径（用户直接指定导入的模型文件）
+        file_path = self._extract_file_path(user_text)
+        if file_path:
+            scene_state.setdefault("intermediate", {})["direct_model_path"] = file_path
+            logger.info("[MasterAgent] scene: direct file path %r", file_path)
 
         result = self.coordinator.handle(user_text=user_text, scene_state=scene_state, style_bible=style_bible)
 
@@ -705,8 +1755,7 @@ class MasterAgent:
 
         # 记录本轮对话到记忆单例（供后续记忆增强 / 上下文回忆）
         try:
-            from .memory import get_memory_manager
-            get_memory_manager().record_conversation(user_text, reply)
+            self.coordinator._memory_for_scene(scene_state).record_conversation(user_text, reply)
         except Exception as e:
             logger.warning("[MasterAgent] record_conversation failed: %s", e)
 
@@ -747,7 +1796,7 @@ class MasterAgent:
 
     def _handle_chat(self, persona: str, messages: List[str]) -> str:
         specialist = self._router.route(persona)
-        system = self._build_chat_system(specialist)
+        system = self._build_chat_system(specialist, persona)
 
         # 记录到 GroupAgent (用于后续总结)
         for msg in messages:
@@ -761,11 +1810,20 @@ class MasterAgent:
             return self._fallback_chat(system, messages)
         return self._call_caiapp(system, messages)
 
-    def _build_chat_system(self, specialist: Specialist) -> str:
+    def _build_chat_system(self, specialist: Specialist, persona: str = "") -> str:
         base = "你是场景设计助手。如果用户询问你的能力，引导他们使用场景指令或 /help 查看。回复简洁实用。"
         if specialist.key == "generalist":
-            return base + "\n\n你拥有全风格设计能力。"
-        return specialist.inject_prompt(base)
+            system = base + "\n\n你拥有全风格设计能力。"
+        else:
+            system = specialist.inject_prompt(base)
+        # T-2.4：role 注入说话风格（⟦DECIDE:role-depth⟧=只影响 voice，不进 decompose）。
+        # 未命中任何角色模板时原样返回，不注入人格（退化为通用助手）。
+        try:
+            from .role_registry import inject_persona_voice
+            system = inject_persona_voice(system, persona)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[MasterAgent] role persona 注入跳过: %s", e)
+        return system
 
     def _call_caiapp(self, system: str, messages: List[str]) -> str:
         try:
@@ -775,7 +1833,14 @@ class MasterAgent:
             text = f"{system}\n\n以下是群聊上下文：\n{convo}\n\n请以你的身份回复最新消息。"
             req = ChatRequest.from_text(text=text, metadata={"skip_conversation_store": True})
             chunks = AITool._cai_app.chat(req)
-            return "".join(chunks).strip()
+            # CAIApp.chat 返回的是 build_success_response JSON 信封；必须先抽
+            # llm_content[].part[].content_text，再做内部工具噪声过滤。
+            clean = [_extract_cai_text_chunk(c) for c in chunks]
+            reply = "".join(clean).strip()
+            if reply:
+                return reply
+            # 全被过滤掉（只有工具结果、没自然语言）→ 给个通用成功反馈，不回 raw JSON
+            return "✅ 已完成你的调整。"
         except Exception as e:
             logger.warning("[MasterAgent] CAIApp failed: %s, using fallback_chat", e)
             if self._fallback_chat:
@@ -839,6 +1904,36 @@ class MasterAgent:
             return text
         return messages[-1] if messages else ""
 
+    def _extract_current_agent_name(self, messages: List[str]) -> str:
+        """Read the explicitly injected current @agent context from orchestrator."""
+        for msg in messages:
+            m = re.search(r"本轮明确被 @ 的 AI 助手是：([^。\n]+)", str(msg or ""))
+            if m:
+                return m.group(1).strip()
+        return ""
+
+    def _extract_lanchat_context(self, messages: List[str]) -> Dict[str, str]:
+        """Extract internal LANChat routing scope injected by the orchestrator."""
+        context: Dict[str, str] = {}
+        aliases = {
+            "room_id": "room_id",
+            "lanchat_room_id": "room_id",
+            "plan_id": "plan_id",
+            "seed_plan_id": "plan_id",
+            "batch_id": "batch_id",
+            "agent_id": "agent_id",
+            "agent_name": "agent_name",
+        }
+        for msg in messages or []:
+            text = str(msg or "")
+            if "链路上下文" not in text:
+                continue
+            for key, value in re.findall(r"([a-zA-Z_][\w]*)=([^\s,，;；]+)", text):
+                mapped = aliases.get(key)
+                if mapped and value:
+                    context[mapped] = value.strip()
+        return context
+
     def _extract_sender(self, messages: List[str]) -> str:
         """从最近一条非摘要消息中提取发言人名字（用于协同锁/意图预览）。"""
         if not messages:
@@ -871,6 +1966,20 @@ class MasterAgent:
                 return m2.group(1)
         return ""
 
+    def _extract_file_path(self, text: str) -> str:
+        """从用户消息中提取显式指定的模型文件路径（.obj/.glb/.fbx等）。
+
+        用于"导入 F:\\path\\to\\model.obj"类指令——跳过搜索/生成，直接导入。
+        """
+        import re as _re, os as _os
+        m = _re.search(r"((?:[A-Za-z]:[/\\]|/)[^\s]{3,}\.(?:obj|glb|gltf|fbx|dae|stl))",
+                       text, _re.IGNORECASE)
+        if m:
+            p = m.group(1).replace("/", _os.sep).replace("\\", _os.sep)
+            if _os.path.isfile(p):
+                return p
+        return ""
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 工厂函数
@@ -887,7 +1996,7 @@ def create_master_agent(
         from cai_extensions.agent.agent_adapter import create_master_agent
         server._agent_runner = AgentRunner(ai_chat=create_master_agent())
 
-    scene_max_items: 单次场景组合生成的物体数量上限（默认 8）。
+    scene_max_items: 单次场景组合生成的物体数量上限（阶段测试期 4，省 hunyuan 消耗）。
     """
     return MasterAgent(fallback_chat=fallback_chat, global_style=global_style,
                        scene_max_items=scene_max_items)

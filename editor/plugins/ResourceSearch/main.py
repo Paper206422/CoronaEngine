@@ -72,6 +72,8 @@ ALLOWED_SEARCH_TYPES: FrozenSet[str] = frozenset({
     "script",       # 业务脚本 (.py)
 })
 
+RESOURCE_SEARCH_ENABLED = False
+
 
 # =============================================================================
 #  模块级单例
@@ -139,6 +141,9 @@ def _check_caller(caller: str) -> Optional[Dict[str, Any]]:
     Returns:
         None 表示通过;否则返回错误响应 dict(已带 status/error/code)
     """
+    if not RESOURCE_SEARCH_ENABLED:
+        return _disabled()
+
     if not caller or not isinstance(caller, str):
         caller = "anonymous"
 
@@ -575,10 +580,21 @@ def _err(code: str, message: str,
     return payload
 
 
+def _disabled() -> Dict[str, Any]:
+    return {
+        "status": "disabled",
+        "code": "resource_search_disabled",
+        "message": "ResourceSearch is disabled",
+        "items": [],
+        "total": 0,
+    }
+
+
 # 模块级公共 API
 __all__ = [
     "ResourceSearch",
     "ALLOWED_CALLERS",
     "DENIED_CALLERS",
     "ALLOWED_SEARCH_TYPES",
+    "RESOURCE_SEARCH_ENABLED",
 ]

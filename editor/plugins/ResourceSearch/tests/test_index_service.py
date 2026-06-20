@@ -213,6 +213,36 @@ class ResourceIndexServiceTests(unittest.TestCase):
             finally:
                 service.shutdown()
 
+    def test_disable_auto_rebuild_env_uses_cache_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            root = base / "project"
+            root.mkdir()
+            (root / "Asset.fbx").write_bytes(b"mesh")
+
+            service = ResourceIndexService(
+                lambda: [str(root)],
+                cache_dir=base / "cache",
+                poll_interval=60.0,
+            )
+            try:
+                with patch.dict("os.environ", {"CORONA_RESOURCESEARCH_DISABLE_AUTO_REBUILD": "1"}):
+                    status = service.prepare()
+                    self.assertFalse(status["ready"])
+                    self.assertEqual("idle", status["state"])
+                    self.assertTrue(status["auto_rebuild_disabled"])
+
+                    with patch.object(
+                        ResourceIndex,
+                        "rebuild",
+                        side_effect=AssertionError("unexpected rebuild"),
+                    ):
+                        refresh_status = service.request_refresh(force=True)
+                    self.assertFalse(refresh_status["ready"])
+                    self.assertEqual("idle", refresh_status["state"])
+            finally:
+                service.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()
