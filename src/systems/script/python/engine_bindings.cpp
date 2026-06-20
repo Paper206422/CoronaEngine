@@ -90,6 +90,9 @@ void BindAll(nanobind::module_& m) {
              "Set local rotation (Euler angles ZYX order) [pitch, yaw, roll]")
         .def("set_scale", &Geometry::set_scale, nb::arg("scale"),
              "Set local scale [x, y, z]")
+        .def("set_native_local_correction", &Geometry::set_native_local_correction,
+             nb::arg("offset"), nb::arg("scale"),
+             "Set native-only local correction applied before rendering")
         .def("get_position", &Geometry::get_position,
              "Get local position [x, y, z]")
         .def("get_rotation", &Geometry::get_rotation,

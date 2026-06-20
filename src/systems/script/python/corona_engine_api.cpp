@@ -1097,6 +1097,22 @@ void Corona::API::Geometry::set_scale(const std::array<float, 3>& scl) {
     }
 }
 
+void Corona::API::Geometry::set_native_local_correction(const std::array<float, 3>& offset, float scale) {
+    if (handle_ == 0) {
+        CFW_LOG_WARNING("[Geometry::set_native_local_correction] Invalid geometry handle");
+        return;
+    }
+
+    if (auto accessor = SharedDataHub::instance().geometry_storage().acquire_write(handle_)) {
+        accessor->native_local_correction_offset.x = offset[0];
+        accessor->native_local_correction_offset.y = offset[1];
+        accessor->native_local_correction_offset.z = offset[2];
+        accessor->native_local_correction_scale = scale;
+    } else {
+        CFW_LOG_ERROR("[Geometry::set_native_local_correction] Failed to acquire write access to geometry storage");
+    }
+}
+
 std::array<float, 3> Corona::API::Geometry::get_position() const {
     if (transform_handle_ == 0) {
         CFW_LOG_WARNING("[Geometry::get_position] Invalid transform handle");

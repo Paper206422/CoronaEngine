@@ -465,6 +465,31 @@ void apply_pending_camera_releases() {
     return out;
 }
 
+[[nodiscard]] bool has_native_local_correction(const Corona::GeometryDevice& geom) {
+    const auto& offset = geom.native_local_correction_offset;
+    return std::abs(geom.native_local_correction_scale - 1.0f) > 1e-6f ||
+           std::abs(offset.x) > 1e-6f ||
+           std::abs(offset.y) > 1e-6f ||
+           std::abs(offset.z) > 1e-6f;
+}
+
+[[nodiscard]] ktm::fmat4x4 apply_native_local_correction(
+    const ktm::fmat4x4& model_matrix,
+    const Corona::GeometryDevice& geom) {
+    if (!has_native_local_correction(geom)) {
+        return model_matrix;
+    }
+
+    ktm::fmat4x4 correction = ktm::fmat4x4::from_eye();
+    correction[0][0] = geom.native_local_correction_scale;
+    correction[1][1] = geom.native_local_correction_scale;
+    correction[2][2] = geom.native_local_correction_scale;
+    correction[3][0] = geom.native_local_correction_offset.x;
+    correction[3][1] = geom.native_local_correction_offset.y;
+    correction[3][2] = geom.native_local_correction_offset.z;
+    return multiply_ktm_mat4(model_matrix, correction);
+}
+
 bool collect_actor_instances_for_visibility(
     const Corona::SceneDevice& scene,
     RasterizerPipeline<visibility_vert_glsl, visibility_frag_glsl>& target_visibility,
@@ -513,6 +538,7 @@ bool collect_actor_instances_for_visibility(
                 ktm::fmat4x4 model_matrix{ktm::fmat4x4::from_eye()};
                 if (auto transform = transform_storage.try_acquire_read(geom->transform_handle)) {
                     model_matrix = transform->compute_matrix();
+                    model_matrix = apply_native_local_correction(model_matrix, *geom);
                     if (camera_basis != nullptr) {
                         model_matrix = multiply_ktm_mat4(*camera_basis, model_matrix);
                     }
@@ -1882,6 +1908,7 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                                     model_matrix = transform->compute_matrix();
                                     // 必须在 camera_basis 变换前提取世界位置（否则 model_matrix[3] 不再是世界坐标）
                                     world_center = transform->position;
+                                    model_matrix = apply_native_local_correction(model_matrix, *geom);
                                     if (camera_basis != nullptr) {
                                         model_matrix = multiply_ktm_mat4(*camera_basis, model_matrix);
                                     }

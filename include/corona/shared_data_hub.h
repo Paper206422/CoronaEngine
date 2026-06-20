@@ -70,6 +70,8 @@ struct GeometryDevice {
     std::uintptr_t transform_handle{};
     std::uintptr_t model_resource_handle{};
     std::vector<MeshDevice> mesh_handles;
+    ktm::fvec3 native_local_correction_offset{0.0f, 0.0f, 0.0f};
+    float native_local_correction_scale{1.0f};
 };
 
 struct MechanicsDevice {
