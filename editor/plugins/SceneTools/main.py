@@ -266,6 +266,37 @@ def _resolve_vision_model_path(scene_path: str, shape: dict) -> str:
     return os.path.abspath(os.path.join(os.path.dirname(scene_path), model_path))
 
 
+def _vision_model_native_local_correction(model_path: str):
+    if not model_path or os.path.splitext(model_path)[1].lower() != ".obj":
+        return None
+    vertices = []
+    try:
+        with open(model_path, "r", encoding="utf-8", errors="ignore") as file:
+            for line in file:
+                stripped = line.strip()
+                if not stripped.startswith("v "):
+                    continue
+                parts = stripped.split()
+                if len(parts) < 4:
+                    continue
+                vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
+    except (OSError, ValueError) as exc:
+        logger.warning("Failed to parse Vision model bounds for %s: %s", model_path, exc)
+        return None
+
+    if not vertices:
+        return None
+    center, max_axis = _aabb_center_and_max_axis(vertices)
+    return {
+        "native_local_correction_offset": [
+            _clean_near_zero(center[0]),
+            _clean_near_zero(center[1]),
+            _clean_near_zero(-center[2]),
+        ],
+        "native_local_correction_scale": _clean_near_zero(max_axis),
+    }
+
+
 def _flatten_matrix4x4(value):
     if isinstance(value, list) and len(value) == 16:
         try:
@@ -1473,6 +1504,10 @@ class SceneTools(PluginBase):
                     "model_path": model_path,
                     "source_path": abs_path,
                 }
+                if shape_type == "model":
+                    native_correction = _vision_model_native_local_correction(model_path)
+                    if native_correction:
+                        binding.update(native_correction)
                 if hasattr(actor, "set_external_vision_binding"):
                     actor.set_external_vision_binding(binding)
                 new_bindings.append(binding)
