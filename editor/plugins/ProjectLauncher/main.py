@@ -49,6 +49,51 @@ class ProjectLauncher(PluginBase):
         return target_full_path
 
     @staticmethod
+    def create_world_project(world_data: dict) -> dict:
+        """AI 世界创建专用：自动命名 + 保存到引擎 data 目录，无需用户指定 name/path。
+
+        与 create_project 的区别：不接收 name/path，全部由后端决定：
+        - 保存位置固定为引擎根目录下的 data/（core_path.repo_root/data）
+        - 名称按"模式 + 递增编号"自动生成并防重名（创造世界_1 / 剧情世界_1 ...）
+        - 把 worldPrompt 写入 project.ini 的 [Project] world_prompt，供引擎/AI 后续读取
+        返回 {name, path}，与打开普通项目的返回结构一致。
+        """
+        import configparser
+        from utils.settings import core_path
+
+        mode = world_data.get("mode", "creative")
+        prompt = world_data.get("prompt", "") or ""
+
+        # 引擎 data 目录（不存在则创建）
+        base_dir = os.path.join(str(core_path.repo_root), "data")
+        os.makedirs(base_dir, exist_ok=True)
+
+        # 模式 + 递增编号，防重名
+        label = "剧情世界" if mode == "story" else "创造世界"
+        index = 1
+        while os.path.exists(os.path.join(base_dir, f"{label}_{index}")):
+            index += 1
+        final_name = f"{label}_{index}"
+        target_full_path = os.path.join(base_dir, final_name)
+
+        # 复制模板并初始化 project.ini
+        project_ini = ProjectCopy.create_from_template(target_full_path, final_name, mode)
+
+        # 把世界提示词持久化进 project.ini，供引擎/AI 后续读取
+        try:
+            cfg = configparser.ConfigParser()
+            cfg.read(project_ini, encoding='utf-8')
+            if 'Project' not in cfg:
+                cfg['Project'] = {}
+            cfg['Project']['world_prompt'] = prompt
+            with open(project_ini, 'w', encoding='utf-8') as f:
+                cfg.write(f)
+        except Exception as e:
+            logger.error(f"Failed to persist world_prompt: {e}")
+
+        return {"name": final_name, "path": os.path.dirname(project_ini)}
+
+    @staticmethod
     def open_project(project_path: str) -> bool:
         """执行打开项目的逻辑（加载资源、初始化环境等）"""
         return ProjectCopy.open_and_update(project_path)

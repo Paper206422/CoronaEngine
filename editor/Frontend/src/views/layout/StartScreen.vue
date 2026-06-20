@@ -82,7 +82,9 @@ function handleStoryMode() {
 }
 
 function handleCreativeMode() {
-  router.push('/CreateGame');
+  // TODO(加入游戏): 原指向已删除的 /CreateGame，暂时回退到 /NewGame，
+  // 后续应接入真正的"加入游戏 / 联机"流程
+  router.push('/NewGame');
 }
 
 function handleRecentGames() {

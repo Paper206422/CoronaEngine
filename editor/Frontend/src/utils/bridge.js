@@ -387,6 +387,10 @@ export const projectLauncherService = {
   // 创建项目
   createProject: (projectData) =>
     Bridge.callCEF('ProjectLauncher', 'create_project', [projectData]),
+  // 创建 AI 世界项目：自动命名 + 存到引擎 data 目录，无需 name/path
+  // worldData: { mode: 'story'|'creative', prompt: string } -> { name, path }
+  createWorldProject: (worldData) =>
+    Bridge.callCEF('ProjectLauncher', 'create_world_project', [worldData]),
   // 打开项目（执行加载逻辑）
   openProject: (projectPath) => Bridge.callCEF('ProjectLauncher', 'open_project', [projectPath]),
   // 设置项目模式 (2D/3D/渲染)
