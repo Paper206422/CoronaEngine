@@ -126,7 +126,7 @@ Kernel variance_kernel = [&, pipeline_ref](Var<VarianceEstimatorParam> param) {
                     };
                     
                     $if(effective_weight > 0.001f) {
-                        SVGFDataDualVar tap_svgf = param.svgf_buffer.read(tap_idx);
+                        SVGFDataDualVar tap_svgf = param.svgf_buffer_prev.read(tap_idx);
                         acc_direct += tap_svgf->illumination_direct() * effective_weight;
                         acc_indirect += tap_svgf->illumination_indirect() * effective_weight;
                         acc_m1_direct += tap_svgf->first_moment_direct() * effective_weight;
@@ -300,7 +300,7 @@ Kernel variance_kernel = [&, pipeline_ref](Var<VarianceEstimatorParam> param) {
         output.illumi_indirect = make_RadType4(new_indirect, temporal_var_indirect);
         output.moments_direct = make_RadType4(new_m1_direct, new_m2_direct, new_history, 0.f);
         output.moments_indirect = make_RadType4(new_m1_indirect, new_m2_indirect, 0.f, 0.f);
-        param.svgf_buffer.write(index, output);
+        param.svgf_buffer_cur.write(index, output);
     };
 };
 
@@ -311,7 +311,8 @@ CommandBatch VarianceEstimator::dispatch_variance(RealTimeDenoiseInput &input) n
     VarianceEstimatorParam param;
     param.radiance_direct = input.direct.descriptor();
     param.radiance_indirect = input.indirect.descriptor();
-    param.svgf_buffer = svgf_->svgf_buffer().descriptor();
+    param.svgf_buffer_prev = svgf_->svgf_buffer_prev(input.frame_index).descriptor();
+    param.svgf_buffer_cur = svgf_->svgf_buffer_cur(input.frame_index).descriptor();
     param.visibility_buffer = input.visibility.descriptor();
     param.visibility_buffer_prev = input.prev_visibility.descriptor();
     param.motion_vectors = input.motion_vec.descriptor();

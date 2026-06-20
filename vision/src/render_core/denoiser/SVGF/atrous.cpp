@@ -204,7 +204,7 @@ CommandBatch AtrousFilter::dispatch_combined(vision::RealTimeDenoiseInput &input
     }
     
     param.visibility_buffer = input.visibility.descriptor();
-    param.svgf_buffer = svgf_->svgf_buffer().descriptor();
+    param.svgf_buffer = svgf_->svgf_buffer_cur(input.frame_index).descriptor();
     param.camera_pos = input.camera_pos;
 
     float l_phi = svgf_->sigma_rt();

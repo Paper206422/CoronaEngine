@@ -28,12 +28,13 @@ struct Epsilon {
 
     struct Modulator {
         static constexpr float kSoftEpsilon = 0.1f;
-        // Diffuse/specular signal mode (channels are diffuse=direct buffer, specular=indirect).
-        // Diffuse is demodulated by DIFFUSE albedo. Specular is left in radiance space by
-        // default (kDemodulateSpecular=false): a highlight is a directional spike not
-        // proportional to specular reflectance, and dividing by tiny F0 would re-create
-        // fireflies. Set kDualSignal=false to restore the old "full albedo on both channels".
-        static constexpr bool kDualSignal = true;
+        // Demodulation strategy is now chosen at runtime by RealTimeDenoiseInput::channel_kind
+        // (the producer declares whether the buffers are diffuse/specular or direct/indirect),
+        // NOT by kDualSignal. In the diffuse/specular case the diffuse channel is demodulated by
+        // DIFFUSE albedo and the specular channel is left in radiance space by default
+        // (kDemodulateSpecular=false): a highlight is a directional spike not proportional to
+        // specular reflectance, and dividing by tiny F0 would re-create fireflies. In the
+        // direct/indirect case both channels are demodulated by the full surface albedo.
         static constexpr bool kDemodulateSpecular = false;
     };
 
@@ -60,7 +61,10 @@ struct Epsilon {
     // neighborhood. This decouples anti-ghosting from history length, so a long,
     // clean history can be used for noise reduction without trailing/smearing.
     struct HistoryClamp {
-        static constexpr float kSigmaScale = 2.0f;   // ReLAX default; lower = stronger anti-ghost, more flicker risk
+        static constexpr float kSigmaScale = 1.5f;   // tightened from 2.0 (ReLAX default): with race-free
+                                                     // history (double-buffered) trailing on high-contrast
+                                                     // edges is now the dominant artifact; lower = stronger
+                                                     // anti-ghost, more flicker risk.
         static constexpr int kRadius = 1;            // 3x3 neighborhood
     };
 
@@ -127,12 +131,14 @@ struct Epsilon {
         static constexpr float kLargeStepLPhiMultiplier = 1.4f;
         static constexpr float kLargeStepNPhiMultiplier = 0.85f;
 
-        // Colour-history feedback (Schied 2017). kFeedbackEnabled is the master switch
-        // (turn off to cut the over-blur that compounds across frames). kFeedbackSpecular
-        // controls whether the SPECULAR channel is fed back too: default false, because
-        // feeding back a view-dependent specular signal (reprojected by surface motion)
-        // both over-blurs and ghosts highlights. Diffuse is always fed back when enabled.
-        static constexpr bool kFeedbackEnabled = true;
+        // Colour-history feedback (Schied 2017). kFeedbackEnabled is the master switch.
+        // Disabled: it was added to mask noise in the OLD racy/single-buffered history by
+        // compounding the spatial filter into history every frame. With the double-buffered
+        // race-free history (P0-A) that compounding now just over-blurs and trails (each
+        // frame re-filters an already-filtered history). The per-frame 4-iteration a-trous
+        // still denoises the display output; we simply no longer feed it back. kFeedbackSpecular
+        // controls whether the SPECULAR channel is fed back too (kept false; view-dependent).
+        static constexpr bool kFeedbackEnabled = false;
         static constexpr bool kFeedbackSpecular = false;
     };
 
