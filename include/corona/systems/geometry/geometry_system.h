@@ -98,9 +98,9 @@ struct LODMeshBuffers {
  * LODGenerationOptions 控制（参见 corona/resource/types/scene.h）。
  */
 struct MeshSimplificationConfig {
-    bool enabled      = true;   // 总开关：false 时整个 LOD 系统不工作
+    bool enabled      = false;  // 总开关：false 时整个 LOD 系统不工作
     int  max_lod_levels = 4;    // 最大 LOD 级别数（含 LOD 0 原始精度）
-    bool auto_on_load = true;   // 模型加载后是否自动将导入时的 LOD 数据上传 GPU
+    bool auto_on_load = false;  // 模型加载后是否自动将导入时的 LOD 数据上传 GPU
 };
 
 /**
