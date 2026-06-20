@@ -26,12 +26,22 @@
         <svg class="toolbar-icon" viewBox="0 0 16 16" fill="none"><path d="M2 10v3h12v-3M8 3v8M5 10l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span class="toolbar-label">导出</span>
       </button>
-      <div class="w-px h-4 mx-1" style="background: rgba(255,255,255,0.1);"></div>
-      <button class="toolbar-btn group" title="整理积木布局" @click="handleOrganize">
-        <svg class="toolbar-icon" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="1.5" width="5" height="5" rx="0.5" stroke="currentColor" stroke-width="1.3"/><rect x="9.5" y="1.5" width="5" height="5" rx="0.5" stroke="currentColor" stroke-width="1.3"/><rect x="1.5" y="9.5" width="5" height="5" rx="0.5" stroke="currentColor" stroke-width="1.3"/><rect x="9.5" y="9.5" width="5" height="5" rx="0.5" stroke="currentColor" stroke-width="1.3"/></svg>
-        <span class="toolbar-label">整理</span>
+      <button class="toolbar-btn group" title="清空工作区" @click="handleClear">
+        <svg class="toolbar-icon" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M5.33 4V2.67a1 1 0 011-1h3.34a1 1 0 011 1V4m1.33 0v9.33a1 1 0 01-1 1H4.33a1 1 0 01-1-1V4h9.34z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="toolbar-label">清空</span>
       </button>
       <div class="flex-1"></div>
+      <div class="flex items-center gap-0.5">
+        <button class="toolbar-btn group" title="缩小" @click="handleZoomOut">
+          <svg class="toolbar-icon" viewBox="0 0 16 16" fill="none"><path d="M4 8h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <button class="toolbar-btn group" title="恢复为100%" @click="handleZoomReset">
+          <span class="toolbar-label" style="min-width:36px;text-align:center;">{{ scaleText }}</span>
+        </button>
+        <button class="toolbar-btn group" title="放大" @click="handleZoomIn">
+          <svg class="toolbar-icon" viewBox="0 0 16 16" fill="none"><path d="M4 8h8M8 4v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+      </div>
       <button
         class="toolbar-btn group"
         :class="{ 'toolbar-btn-active': store.hasLayoutSider.value }"
@@ -46,7 +56,6 @@
     <div class="flex-1 flex overflow-hidden">
       <div ref="blockdiv" class="flex-1 relative" style="overflow: hidden;">
         <Search />
-        <Zoom />
         <Trashcan />
         <!-- 拖拽导入高亮遮罩 -->
         <div
@@ -171,7 +180,7 @@ import { scriptingService } from '@/utils/bridge.js';
 const { closePanel: closeDockPanel, isDocked } = useDockPanel();
 import DockTitleBar from '@/components/ui/DockTitleBar.vue';
 import Search from './Search.vue';
-import Zoom from './Zoom.vue';
+
 import Trashcan from './Trashcan.vue';
 import { useStore } from '../store/store.js';
 import {
@@ -687,6 +696,8 @@ const initBlocklyAndGenerators = async () => {
 
   if (!blocksRegistered) {
     const [
+      { defineAudioBlocks },
+      { defineCameraBlocks },
       { defineEngineBlocks },
       { defineAppearanceBlocks },
       { defineEventBlocks },
@@ -696,6 +707,8 @@ const initBlocklyAndGenerators = async () => {
       { defineVariableBlocks },
       { defineListBlocks },
     ] = await Promise.all([
+      import('@/blockly/blocks/audio.js'),
+      import('@/blockly/blocks/camera.js'),
       import('@/blockly/blocks/engine.js'),
       import('@/blockly/blocks/appearance.js'),
       import('@/blockly/blocks/event.js'),
@@ -707,46 +720,19 @@ const initBlocklyAndGenerators = async () => {
     ]);
 
     try {
-      defineEngineBlocks({ get value() { return currentActorNameVar; } });
-      defineAppearanceBlocks({ get value() { return currentActorNameVar; } });
-      defineEventBlocks({ get value() { return currentActorNameVar; } }, broadcastList, createNewBroadcast);
-      defineControlBlocks({ get value() { return currentActorNameVar; } });
-      defineDetectBlocks({ get value() { return currentActorNameVar; } });
+      defineAudioBlocks();
+      defineCameraBlocks();
+      defineEngineBlocks();
+      defineAppearanceBlocks();
+      defineEventBlocks(broadcastList, createNewBroadcast);
+      defineControlBlocks();
+      defineDetectBlocks();
       defineMathBlocks();
       defineVariableBlocks();
-      defineListBlocks({ get value() { return currentActorNameVar; } });
-
-      const [
-        { defineEngineGenerators },
-        { defineAppearanceGenerators },
-        { defineEventGenerators },
-        { defineControlGenerators },
-        { defineDetectGenerators },
-        { defineMathGenerators },
-        { defineVariableGenerators },
-        { defineListGenerators },
-      ] = await Promise.all([
-        import('@/blockly/generators/engine.js'),
-        import('@/blockly/generators/appearance.js'),
-        import('@/blockly/generators/event.js'),
-        import('@/blockly/generators/control.js'),
-        import('@/blockly/generators/detect.js'),
-        import('@/blockly/generators/math.js'),
-        import('@/blockly/generators/variable.js'),
-        import('@/blockly/generators/list.js'),
-      ]);
-
-      defineEngineGenerators();
-      defineAppearanceGenerators();
-      defineEventGenerators();
-      defineControlGenerators();
-      defineDetectGenerators();
-      defineMathGenerators();
-      defineVariableGenerators();
-      defineListGenerators();
+      defineListBlocks();
 
       // 加载自定义 workspaceToCode（hat过滤、handler路由、prelude等）
-      // 必须在所有 forBlock 生成器注册之后加载
+      // 该模块内部已包含所有分类生成器的注册，无需在此重复调用 define*Generators()
       await import('@/blockly/generators/index.js');
 
       blocksRegistered = true;
@@ -791,6 +777,9 @@ const initBlockly = async () => {
 
   store.workspace.value = workspace;
   store.workspaceSvg.value = workspace.workspaceSvg || workspace;
+
+  // 缩放比例监听
+  setupScaleListener(workspace);
 
   // 积木键盘事件转发到 Python（必须在 setupCefFieldInputFix 之前注册）
   setupScriptKeyForwarding();
@@ -986,17 +975,6 @@ async function handleToolbarExport() {
     }
   } else {
     fallbackDownload(jsonStr, suggestedName);
-  }
-}
-
-/** 整理积木布局 */
-function handleOrganize() {
-  if (!workspace) return;
-  try {
-    workspace.cleanUp();
-    showToast('✅ 积木已整理', 'success');
-  } catch (e) {
-    showToast('❌ 整理失败', 'error');
   }
 }
 
@@ -1213,118 +1191,76 @@ const handleClose = async () => {
   if (closeDockPanel) { closeDockPanel(); return; }
 };
 
-/**
- * 新建画布：保存当前状态 → 清空工作区 → 清除持久化状态
- * 确保后续切换 Actor 时不会加载旧积木
- */
-function handleNewCanvas() {
+/** 清空工作区 */
+function handleClear() {
   if (!workspace || !BlocklyLib) return;
+  if (workspace.getAllBlocks(false).length === 0) {
+    showToast('⚠️ 工作区已为空', 'warn');
+    return;
+  }
+  if (!confirm('确定要清空当前工作区的所有积木吗？此操作不可恢复。')) return;
 
-  // 1. 先保存当前状态（用户可能做了修改但还没切换）
   flushAutoSave();
-
-  // 2. 清除当前 Actor 的持久化状态
-  // 3. 清空工作区
   isLoadingWorkspace = true;
   try {
     workspace.clear();
+    showToast('✅ 工作区已清空', 'success');
   } catch (e) {
     logError('清空工作区失败', e);
+    showToast('❌ 清空失败', 'error');
   } finally {
     isLoadingWorkspace = false;
   }
-
-  // 4. 立即保存空的 workspace 状态（覆盖旧状态）
   updateGeneratedCode();
   saveCurrentWorkspace();
 }
 
-/**
- * 保存工作区：将当前积木序列化为 .blockly 文件并下载
- */
-async function handleSaveWorkspace() {
-  if (!workspace || !BlocklyLib) return;
-  const data = BlocklyLib.serialization.workspaces.save(workspace);
-  const jsonStr = JSON.stringify(data, null, 2);
-  const blob = new Blob([jsonStr], { type: 'application/json' });
+// ============================================================
+// 缩放功能
+// ============================================================
+const scaleText = ref('100%');
 
-  const actorLabel = props.embedded
-    ? (props.actorName || 'unknown')
-    : (currentActorName.value || 'unknown');
-  const suggestedName = `blockly_${actorLabel}_${Date.now()}.blockly`;
-
-  if (window.showSaveFilePicker) {
-    try {
-      const opts = {
-        types: [{ description: 'Blockly 项目文件', accept: { 'application/json': ['.blockly'] } }],
-        suggestedName,
-      };
-      const handle = await window.showSaveFilePicker(opts);
-      const writable = await handle.createWritable();
-      await writable.write(blob);
-      await writable.close();
-    } catch (e) {
-      // 用户取消或其他错误，静默
-    }
-  } else {
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = suggestedName;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    setTimeout(() => URL.revokeObjectURL(url), 150);
+function updateScale() {
+  const ws = store.workspace.value;
+  if (ws) {
+    scaleText.value = Math.floor((ws.scale || 1.0) * 100) + '%';
   }
 }
 
-/**
- * 打开工作区：从 .blockly 文件加载积木到当前工作区
- */
-function handleOpenWorkspace() {
-  if (!workspace || !BlocklyLib) return;
-  const input = document.createElement('input');
-  input.setAttribute('type', 'file');
-  input.setAttribute('accept', '.blockly');
-  input.addEventListener('change', function () {
-    const file = this.files[0];
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.blockly')) {
-      alert('仅支持 .blockly 格式的文件');
-      return;
+function handleZoomIn() {
+  const ws = store.workspace.value;
+  if (ws) { ws.zoom(0, 0, 0.15); updateScale(); }
+}
+
+function handleZoomOut() {
+  const ws = store.workspace.value;
+  if (ws) { ws.zoom(0, 0, -0.15); updateScale(); }
+}
+
+function handleZoomReset() {
+  const ws = store.workspace.value;
+  if (ws) { ws.zoomTo(0, 0, 1.0); updateScale(); }
+}
+
+// 缩放变化监听器引用
+let scaleChangeListener = null;
+
+function setupScaleListener(ws) {
+  teardownScaleListener();
+  if (!ws) return;
+  updateScale();
+  scaleChangeListener = () => updateScale();
+  ws.addChangeListener(scaleChangeListener);
+}
+
+function teardownScaleListener() {
+  if (scaleChangeListener) {
+    const ws = store.workspace.value;
+    if (ws) {
+      try { ws.removeChangeListener(scaleChangeListener); } catch {}
     }
-    const reader = new FileReader();
-    reader.addEventListener('load', function () {
-      let text = this.result;
-      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-
-      let json;
-      try {
-        json = JSON.parse(text);
-      } catch (e) {
-        console.error('[Blockly] JSON 解析失败：', e, '文件内容前100字符：', text.slice(0, 100));
-        alert('文件格式不正确，无法解析 JSON：' + (e.message || ''));
-        return;
-      }
-
-      if (!json || typeof json !== 'object') {
-        alert('文件格式不正确：JSON 根节点必须是对象');
-        return;
-      }
-
-      try {
-        BlocklyLib.serialization.workspaces.load(json, workspace);
-      } catch (e) {
-        console.error('[Blockly] 工作区加载失败：', e);
-        alert('工作区加载失败：' + (e.message || '未知错误'));
-      }
-    });
-    reader.addEventListener('error', function () {
-      alert('文件读取失败，请确认文件未损坏');
-    });
-    reader.readAsText(file, 'UTF-8');
-  });
-  input.click();
+    scaleChangeListener = null;
+  }
 }
 
 const handleWindowResize = () => resizeBlockly();
@@ -1364,11 +1300,18 @@ onMounted(async () => {
   }
 });
 
-onUnmounted(() => {
+onUnmounted(async () => {
+  // 1) 标记组件已卸载（阻止后续 resize/keyboard 回调操作已销毁对象）
+  let disposed = false;
+  const isAlive = () => !disposed && workspace !== null;
+  const safeResize = () => { if (isAlive() && BlocklyLib) { try { BlocklyLib.svgResize(workspace); } catch {} } };
+
   window.removeEventListener('resize', handleWindowResize);
   if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
   // 清理拖拽导入
   teardownDragDrop();
+  // 清理缩放监听
+  teardownScaleListener();
   // 清理键盘快捷键
   teardownKeyboardShortcuts();
   // 清理 CEF 键盘转发
@@ -1382,9 +1325,18 @@ onUnmounted(() => {
   if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
   // 清理提示定时器
   if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
-  // 销毁前立即保存当前工作区状态
-  flushAutoSave();
+
+  // ★ 关键修复：销毁前等待最后的保存完成，防止数据丢失
   if (workspace) {
+    try { await flushAutoSave(); } catch {}
+    try { await latestBlocklySavePromise; } catch {}
+  }
+
+  disposed = true;
+
+  if (workspace) {
+    // 移除 change listener 防止 dispose 过程中的回调
+    try { workspace.removeChangeListener(onWorkspaceChange); } catch {}
     try { workspace.dispose(); } catch {}
     workspace = null;
   }
@@ -1393,17 +1345,17 @@ onUnmounted(() => {
     sharedStore.workspace.value = null;
     sharedStore.workspaceSvg.value = null;
   }
-  // 重置积木注册标记，确保下次挂载时重新注册积木类型和生成器
-  blocksRegistered = false;
-  pythonGenerator = null;
+  // 所有工作区实例都已卸载时，重置共享的模块级状态
+  // 使用 mountedBlocklyWorkspaces 的大小作为引用计数（此时当前实例已通过 unregister 移除）
+  if (mountedBlocklyWorkspaces.size === 0) {
+    blocksRegistered = false;
+    pythonGenerator = null;
+  }
   generatedCode.value = '';
 });
 
 defineExpose({
   resize: resizeBlockly,
-  handleNewCanvas,
-  handleSaveWorkspace,
-  handleOpenWorkspace,
 });
 </script>
 
