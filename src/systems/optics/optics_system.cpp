@@ -465,6 +465,31 @@ void apply_pending_camera_releases() {
     return out;
 }
 
+[[nodiscard]] bool has_native_local_correction(const Corona::GeometryDevice& geom) {
+    const auto& offset = geom.native_local_correction_offset;
+    return std::abs(geom.native_local_correction_scale - 1.0f) > 1e-6f ||
+           std::abs(offset.x) > 1e-6f ||
+           std::abs(offset.y) > 1e-6f ||
+           std::abs(offset.z) > 1e-6f;
+}
+
+[[nodiscard]] ktm::fmat4x4 apply_native_local_correction(
+    const ktm::fmat4x4& model_matrix,
+    const Corona::GeometryDevice& geom) {
+    if (!has_native_local_correction(geom)) {
+        return model_matrix;
+    }
+
+    ktm::fmat4x4 correction = ktm::fmat4x4::from_eye();
+    correction[0][0] = geom.native_local_correction_scale;
+    correction[1][1] = geom.native_local_correction_scale;
+    correction[2][2] = geom.native_local_correction_scale;
+    correction[3][0] = geom.native_local_correction_offset.x;
+    correction[3][1] = geom.native_local_correction_offset.y;
+    correction[3][2] = geom.native_local_correction_offset.z;
+    return multiply_ktm_mat4(model_matrix, correction);
+}
+
 bool collect_actor_instances_for_visibility(
     const Corona::SceneDevice& scene,
     RasterizerPipeline<visibility_vert_glsl, visibility_frag_glsl>& target_visibility,
@@ -513,6 +538,7 @@ bool collect_actor_instances_for_visibility(
                 ktm::fmat4x4 model_matrix{ktm::fmat4x4::from_eye()};
                 if (auto transform = transform_storage.try_acquire_read(geom->transform_handle)) {
                     model_matrix = transform->compute_matrix();
+                    model_matrix = apply_native_local_correction(model_matrix, *geom);
                     if (camera_basis != nullptr) {
                         model_matrix = multiply_ktm_mat4(*camera_basis, model_matrix);
                     }
@@ -643,9 +669,12 @@ void bind_pipeline_scene_resource_early(
 }
 
 [[nodiscard]] auto create_vision_pipeline(
+    Corona::CameraVisionRenderMode mode,
     const std::shared_ptr<Corona::Systems::Vision::VisionSceneResource>& scene_resource = {})
     -> ocarina::SP<vision::Pipeline> {
     auto project_desc = make_default_vision_project_desc();
+    project_desc.output_desc.denoise =
+        Corona::Systems::Vision::vision_render_mode_uses_denoise(mode);
     auto pipeline = vision::Node::create_shared<vision::Pipeline>(project_desc.pipeline_desc);
     if (!pipeline) {
         return {};
@@ -654,8 +683,23 @@ void bind_pipeline_scene_resource_early(
     pipeline->init_project(project_desc);
     pipeline->init_postprocessor(project_desc.renderer_desc.denoiser_desc);
     pipeline->init();
-    pipeline->set_output_denoise(true);
+    pipeline->set_output_denoise(project_desc.output_desc.denoise);
     return pipeline;
+}
+
+void prepare_enabled_denoiser_for_runtime_switch(vision::Pipeline& pipeline) {
+    auto* integrator = pipeline.renderer().integrator().get();
+    auto* illum = dynamic_cast<vision::IlluminationIntegrator*>(integrator);
+    if (illum == nullptr) {
+        return;
+    }
+    auto* denoiser = illum->denoiser();
+    if (denoiser == nullptr || !denoiser->enabled()) {
+        return;
+    }
+    denoiser->prepare();
+    denoiser->compile();
+    pipeline.upload_bindless_array();
 }
 
 [[nodiscard]] auto select_scene_camera_handle(const Corona::SceneDevice& scene) -> std::uintptr_t {
@@ -962,13 +1006,11 @@ void bind_pipeline_scene_gpu_resource(
     }
     pipeline->init_postprocessor(project_desc.renderer_desc.denoiser_desc);
     pipeline->init();
-    pipeline->set_output_denoise(true);
+    pipeline->set_output_denoise(project_desc.output_desc.denoise);
     pipeline->prepare();
     // prepare() does not create FrameBuffer::view_texture_; the render path tone
     // maps into it and we later read it back, so create it explicitly here.
     pipeline->frame_buffer()->prepare_view_texture();
-    pipeline->set_output_denoise(
-        Corona::Systems::Vision::vision_render_mode_uses_denoise(mode));
     return pipeline;
 }
 
@@ -1866,6 +1908,7 @@ void OpticsSystem::optics_pipeline(float frame_count, uint64_t frame_index) {
                                     model_matrix = transform->compute_matrix();
                                     // 必须在 camera_basis 变换前提取世界位置（否则 model_matrix[3] 不再是世界坐标）
                                     world_center = transform->position;
+                                    model_matrix = apply_native_local_correction(model_matrix, *geom);
                                     if (camera_basis != nullptr) {
                                         model_matrix = multiply_ktm_mat4(*camera_basis, model_matrix);
                                     }
@@ -3179,7 +3222,7 @@ bool OpticsSystem::init_vision_lazy() {
         auto scene_resource = get_or_create_vision_scene_resource(
             make_vision_scene_resource_key("", VisionPipelineSource::EngineBuilt),
             "");
-        auto pipeline = create_vision_pipeline(scene_resource);
+        auto pipeline = create_vision_pipeline(current_vision_render_mode_, scene_resource);
         if (!pipeline) {
             CFW_LOG_ERROR("OpticsSystem: Failed to create Vision pipeline without external scene import");
             return false;
@@ -3673,7 +3716,7 @@ void OpticsSystem::apply_pending_vision_scene_load() {
         auto scene_resource = get_or_create_vision_scene_resource(
             make_vision_scene_resource_key("", VisionPipelineSource::EngineBuilt),
             "");
-        auto pipeline = create_vision_pipeline(scene_resource);
+        auto pipeline = create_vision_pipeline(requested_mode, scene_resource);
         if (!pipeline) {
             CFW_LOG_ERROR("OpticsSystem: failed to recreate engine-built Vision pipeline");
             return;
@@ -3788,7 +3831,13 @@ void OpticsSystem::apply_vision_render_mode(CameraVisionRenderMode mode) {
     }
 
     if (runtime.scene_path.empty()) {
-        pipeline->set_output_denoise(true);
+        const bool was_denoise_enabled =
+            Vision::vision_render_mode_uses_denoise(current_vision_render_mode_);
+        pipeline->set_output_denoise(Vision::vision_render_mode_uses_denoise(mode));
+        if (!was_denoise_enabled) {
+            prepare_enabled_denoiser_for_runtime_switch(*pipeline);
+            pipeline->clear_view_contexts();
+        }
         runtime.mode = mode;
         current_vision_render_mode_ = mode;
         rekey_active_runtime();

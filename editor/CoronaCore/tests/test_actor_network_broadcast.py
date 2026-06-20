@@ -1196,6 +1196,7 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
             self.assertTrue(actor_data["follow_camera"])
             self.assertFalse(actor_data["mechanics"]["physics_enabled"])
             self.assertEqual(actor_data["actor_guid"], "actor-hud")
+            self.assertTrue(actor_data["_suppress_network_broadcast"])
             self.assertEqual(
                 actor_data["geometry"]["position"],
                 [0.12345678912345678, -0.9876543219876543, 2.000000000000001],
@@ -1321,6 +1322,43 @@ class ActorNetworkBroadcastTests(unittest.TestCase):
 
             self.assertEqual(read_scene.vision_import_mode, "external_live")
             self.assertEqual(read_scene.vision_bindings[0]["actor_guid"], "actor-cube")
+
+    def test_scene_read_data_temporarily_disables_enabled_engine_scene(self):
+        class FakeEngineScene:
+            def __init__(self):
+                self.enabled = True
+                self.enabled_calls = []
+
+            def is_enabled(self):
+                return self.enabled
+
+            def set_enabled(self, enabled):
+                self.enabled = bool(enabled)
+                self.enabled_calls.append(self.enabled)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scene_path = Path(tmp) / "read.scene"
+            minimal = configparser.ConfigParser()
+            minimal["vision"] = {
+                "source_path": "D:/vision/scene.json",
+                "import_mode": "external_live",
+            }
+            with open(scene_path, "w", encoding="utf-8") as handle:
+                minimal.write(handle)
+
+            read_scene = scene_module.Scene.__new__(scene_module.Scene)
+            read_scene.route = str(scene_path)
+            read_scene.name = "read"
+            read_scene.file_data = configparser.ConfigParser()
+            read_scene._actors = []
+            read_scene.vision_bindings = []
+            read_scene.vision_unsupported_shapes = []
+            read_scene.engine_scene = FakeEngineScene()
+
+            read_scene.read_data()
+
+            self.assertTrue(read_scene.engine_scene.enabled)
+            self.assertEqual(read_scene.engine_scene.enabled_calls, [False, True])
 
     def test_scene_actor_alias_is_separate_from_unique_ini_key(self):
         with tempfile.TemporaryDirectory() as tmp:
