@@ -31,14 +31,19 @@ struct Epsilon {
     };
 
     struct Temporal {
-        static constexpr float kDepthThreshold = 0.05f;
+        // P1 (anti-ghosting): the previous values leaned far too hard on temporal
+        // accumulation (48-frame history, alpha capped at 0.15 under motion) to hide
+        // noise the weak spatial filter could not remove. After the P0 a-trous rewrite
+        // (dense 4-iteration B-spline) the spatial filter carries its weight, so history
+        // is shortened and motion response opened up to kill smearing/trailing.
+        static constexpr float kDepthThreshold = 0.03f;    // tighter disocclusion reject (was 0.05)
         static constexpr float kAlbedoThreshold = 0.15f;
         static constexpr float kNormalExp = 128.f;
         static constexpr float kNormalThreshold = 0.5f;
-        static constexpr float kMaxHistoryStatic = 48.f;
-        static constexpr float kMaxHistoryFast = 8.f;
+        static constexpr float kMaxHistoryStatic = 16.f;   // static alpha_min 1/16 vs 1/48 (was 48)
+        static constexpr float kMaxHistoryFast = 4.f;      // fast-motion alpha_min 1/4 (was 8)
         static constexpr float kMotionScaleDivisor = 16.f;
-        static constexpr float kMotionAlphaScale = 0.15f;
+        static constexpr float kMotionAlphaScale = 0.5f;   // motion can reach alpha 0.5 (was 0.15)
         static constexpr float kMotionAlphaDivisor = 8.f;
     };
 
@@ -87,8 +92,8 @@ struct Epsilon {
         static constexpr float kMinPhi = 0.05f;
         static constexpr float kMinVariance = 0.001f;   // Half-safe (was 0.00005f)
 
-        static constexpr uint kIterationCount = 2;
-        static constexpr uint kStepSizes[2] = {2, 5};
+        static constexpr uint kIterationCount = 4;
+        static constexpr uint kStepSizes[4] = {1, 2, 4, 8};
 
         static constexpr uint kLargeStepThreshold = 4;
         static constexpr float kLargeStepLPhiMultiplier = 1.4f;
